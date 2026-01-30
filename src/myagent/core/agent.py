@@ -36,6 +36,9 @@ from ..skills import SkillRegistry, SkillLoader, SkillEntry, SkillCatalog
 from ..tools.mcp import MCPClient, mcp_client
 from ..tools.mcp_catalog import MCPCatalog
 
+# 记忆系统
+from ..memory import MemoryManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -165,6 +168,40 @@ class Agent:
                 "required": ["skill_name", "feedback"]
             }
         },
+        # === 记忆工具 ===
+        {
+            "name": "add_memory",
+            "description": "记录重要信息到长期记忆 (用于学习用户偏好、成功模式、错误教训等)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "要记住的内容"},
+                    "type": {"type": "string", "enum": ["fact", "preference", "skill", "error", "rule"], "description": "记忆类型"},
+                    "importance": {"type": "number", "description": "重要性 (0-1)", "default": 0.5}
+                },
+                "required": ["content", "type"]
+            }
+        },
+        {
+            "name": "search_memory",
+            "description": "搜索相关记忆",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词"},
+                    "type": {"type": "string", "enum": ["fact", "preference", "skill", "error", "rule"], "description": "记忆类型过滤 (可选)"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "get_memory_stats",
+            "description": "获取记忆系统统计信息",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
     ]
     
     def __init__(
@@ -205,6 +242,13 @@ class Agent:
         self.mcp_client = mcp_client
         self.mcp_catalog = MCPCatalog()
         
+        # 记忆系统
+        self.memory_manager = MemoryManager(
+            data_dir=settings.project_root / "data" / "memory",
+            memory_md_path=settings.memory_path,
+            brain=self.brain,
+        )
+        
         # 动态工具列表（基础工具 + 技能工具）
         self._tools = list(self.BASE_TOOLS)
         
@@ -232,11 +276,14 @@ class Agent:
         # 加载 MCP 配置
         await self._load_mcp_servers()
         
-        # 设置系统提示词 (包含技能清单和 MCP 清单)
+        # 启动记忆会话
+        session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+        self.memory_manager.start_session(session_id)
+        self._current_session_id = session_id
+        
+        # 设置系统提示词 (包含技能清单、MCP 清单和相关记忆)
         base_prompt = self.identity.get_system_prompt()
         self._context.system = self._build_system_prompt(base_prompt)
-        
-        # TODO: 加载记忆
         
         self._initialized = True
         logger.info(
@@ -301,16 +348,18 @@ class Agent:
             self._mcp_catalog_text = ""
             logger.info("No MCP configuration directory found")
     
-    def _build_system_prompt(self, base_prompt: str) -> str:
+    def _build_system_prompt(self, base_prompt: str, task_description: str = "") -> str:
         """
-        构建系统提示词 (包含技能清单和 MCP 清单)
+        构建系统提示词 (包含技能清单、MCP 清单和相关记忆)
         
         遵循规范的渐进式披露:
         - Agent Skills: name + description 在系统提示中
         - MCP: server + tool name + description 在系统提示中
+        - Memory: 相关记忆按需注入
         
         Args:
             base_prompt: 基础提示词 (身份信息)
+            task_description: 任务描述 (用于检索相关记忆)
         
         Returns:
             完整的系统提示词
@@ -321,9 +370,14 @@ class Agent:
         # MCP 清单 (Model Context Protocol 规范)
         mcp_catalog = getattr(self, '_mcp_catalog_text', '')
         
+        # 相关记忆 (按任务相关性注入)
+        memory_context = self.memory_manager.get_injection_context(task_description)
+        
         return f"""{base_prompt}
 {skill_catalog}
 {mcp_catalog}
+{memory_context}
+
 ## Built-in Tools
 
 You have access to the following built-in tools:
@@ -341,6 +395,17 @@ You have access to the following built-in tools:
 - **get_skill_reference**: Get reference documentation
 - **generate_skill**: Create a new skill when existing ones don't meet the need
 - **improve_skill**: Improve an existing skill based on feedback
+
+### Memory Management
+- **add_memory**: Save important information to long-term memory
+- **search_memory**: Search for relevant memories
+- **get_memory_stats**: Get memory system statistics
+
+**Important**: 主动使用记忆功能！
+- 学到新东西时，用 add_memory 记住
+- 发现用户偏好时，记录为 preference
+- 找到有效解决方案时，记录为 skill
+- 遇到错误教训时，记录为 error
 """
     
     async def chat(self, message: str) -> str:
@@ -364,6 +429,9 @@ You have access to the following built-in tools:
             "content": message,
             "timestamp": datetime.now().isoformat(),
         })
+        
+        # 记录到记忆系统 (自动提取重要信息)
+        self.memory_manager.record_turn("user", message)
         
         # 更新上下文
         self._context.messages.append({
@@ -396,6 +464,9 @@ You have access to the following built-in tools:
             "role": "assistant",
             "content": response_text,
         })
+        
+        # 记录到记忆系统
+        self.memory_manager.record_turn("assistant", response_text)
         
         logger.info(f"Agent: {response_text[:100]}...")
         
@@ -578,6 +649,99 @@ You have access to the following built-in tools:
                     return f"✅ 技能已改进: {skill_name}\n测试: {'通过' if result.test_passed else '未通过'}"
                 else:
                     return f"❌ 技能改进失败: {result.error or '未知错误'}"
+            
+            # === 记忆工具 ===
+            elif tool_name == "add_memory":
+                from ..memory.types import Memory, MemoryType, MemoryPriority
+                
+                content = tool_input["content"]
+                mem_type_str = tool_input["type"]
+                importance = tool_input.get("importance", 0.5)
+                
+                # 类型映射
+                type_map = {
+                    "fact": MemoryType.FACT,
+                    "preference": MemoryType.PREFERENCE,
+                    "skill": MemoryType.SKILL,
+                    "error": MemoryType.ERROR,
+                    "rule": MemoryType.RULE,
+                }
+                mem_type = type_map.get(mem_type_str, MemoryType.FACT)
+                
+                # 根据重要性确定优先级
+                if importance >= 0.8:
+                    priority = MemoryPriority.PERMANENT
+                elif importance >= 0.6:
+                    priority = MemoryPriority.LONG_TERM
+                else:
+                    priority = MemoryPriority.SHORT_TERM
+                
+                memory = Memory(
+                    type=mem_type,
+                    priority=priority,
+                    content=content,
+                    source="manual",
+                    importance_score=importance,
+                )
+                
+                memory_id = self.memory_manager.add_memory(memory)
+                if memory_id:
+                    return f"✅ 已记住: [{mem_type_str}] {content[:100]}{'...' if len(content) > 100 else ''}\nID: {memory_id}"
+                else:
+                    return "⚠️ 记忆已存在或记录失败"
+            
+            elif tool_name == "search_memory":
+                from ..memory.types import MemoryType
+                
+                query = tool_input["query"]
+                type_filter = tool_input.get("type")
+                
+                mem_type = None
+                if type_filter:
+                    type_map = {
+                        "fact": MemoryType.FACT,
+                        "preference": MemoryType.PREFERENCE,
+                        "skill": MemoryType.SKILL,
+                        "error": MemoryType.ERROR,
+                        "rule": MemoryType.RULE,
+                    }
+                    mem_type = type_map.get(type_filter)
+                
+                memories = self.memory_manager.search_memories(
+                    query=query,
+                    memory_type=mem_type,
+                    limit=10
+                )
+                
+                if not memories:
+                    return f"未找到与 '{query}' 相关的记忆"
+                
+                output = f"找到 {len(memories)} 条相关记忆:\n\n"
+                for m in memories:
+                    output += f"- [{m.type.value}] {m.content}\n"
+                    output += f"  (重要性: {m.importance_score:.1f}, 访问次数: {m.access_count})\n\n"
+                
+                return output
+            
+            elif tool_name == "get_memory_stats":
+                stats = self.memory_manager.get_stats()
+                
+                output = f"""记忆系统统计:
+
+- 总记忆数: {stats['total']}
+- 今日会话: {stats['sessions_today']}
+- 待处理会话: {stats['unprocessed_sessions']}
+
+按类型:
+"""
+                for type_name, count in stats.get('by_type', {}).items():
+                    output += f"  - {type_name}: {count}\n"
+                
+                output += "\n按优先级:\n"
+                for priority, count in stats.get('by_priority', {}).items():
+                    output += f"  - {priority}: {count}\n"
+                
+                return output
             
             else:
                 return f"未知工具: {tool_name}"
@@ -813,3 +977,45 @@ You have access to the following built-in tools:
     def conversation_history(self) -> list[dict]:
         """对话历史"""
         return self._conversation_history.copy()
+    
+    # ==================== 记忆系统方法 ====================
+    
+    async def shutdown(self, task_description: str = "", success: bool = True, errors: list = None) -> None:
+        """
+        关闭 Agent 并保存记忆
+        
+        Args:
+            task_description: 会话的主要任务描述
+            success: 任务是否成功
+            errors: 遇到的错误列表
+        """
+        logger.info("Shutting down agent...")
+        
+        # 结束记忆会话
+        self.memory_manager.end_session(
+            task_description=task_description,
+            success=success,
+            errors=errors or [],
+        )
+        
+        # 同步到 MEMORY.md
+        self.memory_manager.sync_to_memory_md()
+        
+        self._running = False
+        logger.info("Agent shutdown complete")
+    
+    async def consolidate_memories(self) -> dict:
+        """
+        整理记忆 (批量处理未处理的会话)
+        
+        适合在空闲时段 (如凌晨) 由 cron job 调用
+        
+        Returns:
+            整理结果统计
+        """
+        logger.info("Starting memory consolidation...")
+        return await self.memory_manager.consolidate_daily()
+    
+    def get_memory_stats(self) -> dict:
+        """获取记忆统计"""
+        return self.memory_manager.get_stats()
