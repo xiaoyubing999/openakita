@@ -165,18 +165,21 @@ class MessageGateway:
         处理单条消息
         """
         try:
-            # 1. 预处理钩子
+            # 1. 发送"正在输入"状态
+            await self._send_typing(message)
+            
+            # 2. 预处理钩子
             for hook in self._pre_process_hooks:
                 message = await hook(message)
             
-            # 2. 获取或创建会话
+            # 3. 获取或创建会话
             session = self.session_manager.get_session(
                 channel=message.channel,
                 chat_id=message.chat_id,
                 user_id=message.user_id,
             )
             
-            # 3. 记录消息到会话
+            # 4. 记录消息到会话
             session.add_message(
                 role="user",
                 content=message.plain_text,
@@ -184,26 +187,63 @@ class MessageGateway:
                 channel_message_id=message.channel_message_id,
             )
             
-            # 4. 调用 Agent 处理
-            response_text = await self._call_agent(session, message)
+            # 5. 调用 Agent 处理（期间持续发送 typing 状态）
+            response_text = await self._call_agent_with_typing(session, message)
             
-            # 5. 后处理钩子
+            # 6. 后处理钩子
             for hook in self._post_process_hooks:
                 response_text = await hook(message, response_text)
             
-            # 6. 记录响应到会话
+            # 7. 记录响应到会话
             session.add_message(
                 role="assistant",
                 content=response_text,
             )
             
-            # 7. 发送响应
+            # 8. 发送响应
             await self._send_response(message, response_text)
             
         except Exception as e:
             logger.error(f"Error handling message {message.id}: {e}")
             # 发送错误提示
             await self._send_error(message, str(e))
+    
+    async def _send_typing(self, message: UnifiedMessage) -> None:
+        """发送正在输入状态"""
+        adapter = self._adapters.get(message.channel)
+        if adapter and hasattr(adapter, 'send_typing'):
+            try:
+                await adapter.send_typing(message.chat_id)
+            except Exception:
+                pass  # 忽略 typing 发送失败
+    
+    async def _call_agent_with_typing(self, session: Session, message: UnifiedMessage) -> str:
+        """
+        调用 Agent 处理消息，期间持续发送 typing 状态
+        """
+        import asyncio
+        
+        # 创建 typing 状态持续发送的任务
+        typing_task = asyncio.create_task(self._keep_typing(message))
+        
+        try:
+            # 调用 Agent
+            response_text = await self._call_agent(session, message)
+            return response_text
+        finally:
+            # 停止 typing 状态发送
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+    
+    async def _keep_typing(self, message: UnifiedMessage) -> None:
+        """持续发送 typing 状态（每 4 秒一次）"""
+        import asyncio
+        while True:
+            await self._send_typing(message)
+            await asyncio.sleep(4)  # Telegram typing 状态持续约 5 秒
     
     async def _call_agent(self, session: Session, message: UnifiedMessage) -> str:
         """
@@ -226,33 +266,61 @@ class MessageGateway:
     
     async def _send_response(self, original: UnifiedMessage, response: str) -> None:
         """
-        发送响应
+        发送响应（带重试和长消息分割）
         """
+        import asyncio
+        
         adapter = self._adapters.get(original.channel)
         if not adapter:
             logger.error(f"No adapter for channel: {original.channel}")
             return
         
-        # 构建响应消息（不使用 parse_mode，避免特殊字符导致解析失败）
-        outgoing = OutgoingMessage.text(
-            chat_id=original.chat_id,
-            text=response,
-            reply_to=original.channel_message_id,
-            thread_id=original.thread_id,
-        )
+        # 分割长消息（Telegram 限制 4096 字符）
+        max_length = 4000  # 留一些余量
+        messages = []
+        if len(response) <= max_length:
+            messages = [response]
+        else:
+            # 按换行符分割，尽量保持段落完整
+            current = ""
+            for line in response.split('\n'):
+                if len(current) + len(line) + 1 <= max_length:
+                    current += line + '\n'
+                else:
+                    if current:
+                        messages.append(current.rstrip())
+                    current = line + '\n'
+            if current:
+                messages.append(current.rstrip())
         
-        try:
-            await adapter.send_message(outgoing)
-        except Exception as e:
-            logger.error(f"Failed to send response: {e}")
-            # 发送失败时尝试发送纯文本错误提示
-            try:
-                await adapter.send_text(
-                    chat_id=original.chat_id,
-                    text=f"消息发送失败，请稍后重试。",
-                )
-            except:
-                pass
+        # 发送每个部分（带重试）
+        for i, text in enumerate(messages):
+            outgoing = OutgoingMessage.text(
+                chat_id=original.chat_id,
+                text=text,
+                reply_to=original.channel_message_id if i == 0 else None,
+                thread_id=original.thread_id,
+            )
+            
+            # 重试最多 3 次
+            for attempt in range(3):
+                try:
+                    await adapter.send_message(outgoing)
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"Send failed (attempt {attempt + 1}), retrying: {e}")
+                        await asyncio.sleep(1)
+                    else:
+                        logger.error(f"Failed to send response after 3 attempts: {e}")
+                        # 最后一次失败，尝试发送错误提示
+                        try:
+                            await adapter.send_text(
+                                chat_id=original.chat_id,
+                                text=f"消息发送失败，请稍后重试。",
+                            )
+                        except:
+                            pass
     
     async def _send_error(self, original: UnifiedMessage, error: str) -> None:
         """
