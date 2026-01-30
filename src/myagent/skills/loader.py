@@ -1,19 +1,34 @@
 """
 技能加载器
 
-支持从文件、目录、包动态加载技能。
+遵循 Agent Skills 规范 (agentskills.io/specification)
+从标准目录结构加载 SKILL.md 定义的技能
 """
 
-import importlib.util
 import logging
+import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Type
+from typing import Optional
 
-from .base import BaseSkill
+from .parser import ParsedSkill, SkillParser, SkillMetadata
 from .registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# 标准技能目录 (按优先级排序)
+SKILL_DIRECTORIES = [
+    # 项目级别
+    ".cursor/skills",
+    ".claude/skills",
+    ".codex/skills",
+    "skills",
+    # 用户级别 (全局)
+    "~/.cursor/skills",
+    "~/.claude/skills",
+    "~/.codex/skills",
+]
 
 
 class SkillLoader:
@@ -21,167 +36,275 @@ class SkillLoader:
     技能加载器
     
     支持:
-    - 从 Python 文件加载
-    - 从目录加载所有技能
-    - 从包名加载
+    - 从标准目录自动发现技能
+    - 解析 SKILL.md 文件
+    - 加载技能脚本
+    - 渐进式披露
     """
     
-    def __init__(self, registry: Optional[SkillRegistry] = None):
+    def __init__(
+        self,
+        registry: Optional[SkillRegistry] = None,
+        parser: Optional[SkillParser] = None,
+    ):
         self.registry = registry if registry is not None else SkillRegistry()
+        self.parser = parser or SkillParser()
+        self._loaded_skills: dict[str, ParsedSkill] = {}
     
-    def load_from_file(self, path: str) -> Optional[BaseSkill]:
+    def discover_skill_directories(self, base_path: Optional[Path] = None) -> list[Path]:
         """
-        从文件加载技能
-        
-        文件应该包含一个继承 BaseSkill 的类。
+        发现所有技能目录
         
         Args:
-            path: Python 文件路径
+            base_path: 基础路径 (项目根目录)
         
         Returns:
-            技能实例或 None
+            存在的技能目录列表
         """
-        file_path = Path(path)
+        base_path = base_path or Path.cwd()
+        directories = []
         
-        if not file_path.exists():
-            logger.error(f"Skill file not found: {path}")
-            return None
+        for skill_dir in SKILL_DIRECTORIES:
+            if skill_dir.startswith("~"):
+                path = Path(skill_dir).expanduser()
+            else:
+                path = base_path / skill_dir
+            
+            if path.exists() and path.is_dir():
+                directories.append(path)
+                logger.debug(f"Found skill directory: {path}")
         
-        if not file_path.suffix == ".py":
-            logger.error(f"Not a Python file: {path}")
-            return None
-        
-        try:
-            # 动态加载模块
-            module_name = f"skill_{file_path.stem}"
-            spec = importlib.util.spec_from_file_location(module_name, file_path)
-            
-            if spec is None or spec.loader is None:
-                logger.error(f"Cannot load module spec from: {path}")
-                return None
-            
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-            
-            # 查找 BaseSkill 子类
-            skill_class = self._find_skill_class(module)
-            
-            if skill_class is None:
-                logger.error(f"No BaseSkill subclass found in: {path}")
-                return None
-            
-            # 实例化并注册
-            skill = skill_class()
-            self.registry.register(skill)
-            
-            logger.info(f"Loaded skill from {path}: {skill.name}")
-            return skill
-            
-        except Exception as e:
-            logger.error(f"Failed to load skill from {path}: {e}")
-            return None
+        return directories
     
-    def load_from_directory(
-        self,
-        directory: str,
-        recursive: bool = False,
-    ) -> list[BaseSkill]:
+    def load_all(self, base_path: Optional[Path] = None) -> int:
+        """
+        从所有标准目录加载技能
+        
+        Args:
+            base_path: 基础路径
+        
+        Returns:
+            加载的技能数量
+        """
+        directories = self.discover_skill_directories(base_path)
+        loaded = 0
+        
+        for skill_dir in directories:
+            loaded += self.load_from_directory(skill_dir)
+        
+        return loaded
+    
+    def load_from_directory(self, directory: Path) -> int:
         """
         从目录加载所有技能
         
+        每个子目录如果包含 SKILL.md 则被视为一个技能
+        
         Args:
-            directory: 目录路径
-            recursive: 是否递归子目录
+            directory: 技能目录
         
         Returns:
-            加载的技能列表
+            加载的技能数量
         """
-        dir_path = Path(directory)
+        if not directory.exists():
+            logger.warning(f"Skill directory not found: {directory}")
+            return 0
         
-        if not dir_path.is_dir():
-            logger.error(f"Not a directory: {directory}")
-            return []
+        loaded = 0
         
-        skills = []
-        pattern = "**/*.py" if recursive else "*.py"
-        
-        for file_path in dir_path.glob(pattern):
-            # 跳过 __init__.py 和以 _ 开头的文件
-            if file_path.name.startswith("_"):
+        for item in directory.iterdir():
+            if not item.is_dir():
                 continue
             
-            skill = self.load_from_file(str(file_path))
-            if skill:
-                skills.append(skill)
+            skill_md = item / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            
+            try:
+                skill = self.load_skill(item)
+                if skill:
+                    loaded += 1
+            except Exception as e:
+                logger.error(f"Failed to load skill from {item}: {e}")
         
-        logger.info(f"Loaded {len(skills)} skills from {directory}")
-        return skills
+        logger.info(f"Loaded {loaded} skills from {directory}")
+        return loaded
     
-    def load_from_package(self, package_name: str) -> Optional[BaseSkill]:
+    def load_skill(self, skill_dir: Path) -> Optional[ParsedSkill]:
         """
-        从包名加载技能
-        
-        包应该有一个 skill 或 Skill 类继承自 BaseSkill。
+        加载单个技能
         
         Args:
-            package_name: 包名
+            skill_dir: 技能目录
         
         Returns:
-            技能实例或 None
+            ParsedSkill 或 None
         """
         try:
-            module = importlib.import_module(package_name)
+            skill = self.parser.parse_directory(skill_dir)
             
-            skill_class = self._find_skill_class(module)
+            # 验证
+            errors = self.parser.validate(skill)
+            if errors:
+                for error in errors:
+                    logger.warning(f"Skill validation warning: {error}")
             
-            if skill_class is None:
-                logger.error(f"No BaseSkill subclass found in package: {package_name}")
-                return None
-            
-            skill = skill_class()
+            # 注册到 registry
             self.registry.register(skill)
+            self._loaded_skills[skill.metadata.name] = skill
             
-            logger.info(f"Loaded skill from package {package_name}: {skill.name}")
+            logger.info(f"Loaded skill: {skill.metadata.name}")
             return skill
             
-        except ImportError as e:
-            logger.error(f"Cannot import package {package_name}: {e}")
-            return None
         except Exception as e:
-            logger.error(f"Failed to load skill from package {package_name}: {e}")
+            logger.error(f"Failed to load skill from {skill_dir}: {e}")
             return None
     
-    def _find_skill_class(self, module) -> Optional[Type[BaseSkill]]:
-        """在模块中查找 BaseSkill 子类"""
-        for name in dir(module):
-            obj = getattr(module, name)
-            
-            # 检查是否是类
-            if not isinstance(obj, type):
-                continue
-            
-            # 检查是否是 BaseSkill 子类（排除 BaseSkill 本身）
-            if issubclass(obj, BaseSkill) and obj is not BaseSkill:
-                return obj
+    def get_skill(self, name: str) -> Optional[ParsedSkill]:
+        """获取已加载的技能"""
+        return self._loaded_skills.get(name)
+    
+    def get_skill_body(self, name: str) -> Optional[str]:
+        """
+        获取技能的完整指令 (body)
         
+        这是渐进式披露的第二级:
+        - 第一级: 元数据 (name, description) - 启动时加载
+        - 第二级: 完整指令 (body) - 激活时加载
+        - 第三级: 资源文件 - 按需加载
+        """
+        skill = self._loaded_skills.get(name)
+        if skill:
+            return skill.body
         return None
     
-    def unload(self, name: str) -> bool:
+    def get_script_content(self, name: str, script_name: str) -> Optional[str]:
         """
-        卸载技能
+        获取技能脚本内容
         
         Args:
             name: 技能名称
+            script_name: 脚本文件名
         
         Returns:
-            是否成功
+            脚本内容或 None
         """
-        return self.registry.unregister(name)
-    
-    def reload(self, name: str) -> Optional[BaseSkill]:
-        """
-        重新加载技能（TODO: 需要记录原始路径）
-        """
-        logger.warning("Reload not yet implemented")
+        skill = self._loaded_skills.get(name)
+        if not skill or not skill.scripts_dir:
+            return None
+        
+        script_path = skill.scripts_dir / script_name
+        if script_path.exists():
+            return script_path.read_text(encoding='utf-8')
+        
         return None
+    
+    def run_script(
+        self,
+        name: str,
+        script_name: str,
+        args: Optional[list[str]] = None,
+        cwd: Optional[Path] = None,
+    ) -> tuple[bool, str]:
+        """
+        运行技能脚本
+        
+        Args:
+            name: 技能名称
+            script_name: 脚本文件名
+            args: 命令行参数
+            cwd: 工作目录
+        
+        Returns:
+            (成功, 输出) 元组
+        """
+        skill = self._loaded_skills.get(name)
+        if not skill or not skill.scripts_dir:
+            return False, f"Skill or scripts not found: {name}"
+        
+        script_path = skill.scripts_dir / script_name
+        if not script_path.exists():
+            return False, f"Script not found: {script_name}"
+        
+        # 确定如何运行脚本
+        args = args or []
+        
+        if script_path.suffix == '.py':
+            cmd = [sys.executable, str(script_path)] + args
+        elif script_path.suffix in ('.sh', '.bash'):
+            cmd = ['bash', str(script_path)] + args
+        elif script_path.suffix == '.js':
+            cmd = ['node', str(script_path)] + args
+        else:
+            # 尝试直接运行
+            cmd = [str(script_path)] + args
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd or skill.skill_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            
+            output = result.stdout
+            if result.stderr:
+                output += f"\nSTDERR:\n{result.stderr}"
+            
+            return result.returncode == 0, output
+            
+        except subprocess.TimeoutExpired:
+            return False, "Script execution timed out"
+        except Exception as e:
+            return False, f"Script execution failed: {e}"
+    
+    def get_reference(self, name: str, ref_name: str) -> Optional[str]:
+        """
+        获取技能参考文档
+        
+        Args:
+            name: 技能名称
+            ref_name: 参考文档名称 (如 REFERENCE.md)
+        
+        Returns:
+            文档内容或 None
+        """
+        skill = self._loaded_skills.get(name)
+        if not skill or not skill.references_dir:
+            return None
+        
+        ref_path = skill.references_dir / ref_name
+        if ref_path.exists():
+            return ref_path.read_text(encoding='utf-8')
+        
+        return None
+    
+    def unload_skill(self, name: str) -> bool:
+        """卸载技能"""
+        if name in self._loaded_skills:
+            del self._loaded_skills[name]
+            self.registry.unregister(name)
+            logger.info(f"Unloaded skill: {name}")
+            return True
+        return False
+    
+    def reload_skill(self, name: str) -> Optional[ParsedSkill]:
+        """重新加载技能"""
+        skill = self._loaded_skills.get(name)
+        if not skill:
+            return None
+        
+        skill_dir = skill.skill_dir
+        self.unload_skill(name)
+        return self.load_skill(skill_dir)
+    
+    @property
+    def loaded_count(self) -> int:
+        """已加载技能数量"""
+        return len(self._loaded_skills)
+    
+    @property
+    def loaded_skills(self) -> list[ParsedSkill]:
+        """所有已加载的技能"""
+        return list(self._loaded_skills.values())

@@ -8,12 +8,16 @@ Agent 主类 - 协调所有模块
 - 执行 Ralph 循环
 - 管理对话和记忆
 - 自我进化（技能搜索、安装、生成）
+
+Skills 系统遵循 Agent Skills 规范 (agentskills.io)
+MCP 系统遵循 Model Context Protocol 规范 (modelcontextprotocol.io)
 """
 
 import logging
 import uuid
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from .brain import Brain, Context, Response
@@ -25,10 +29,11 @@ from ..tools.shell import ShellTool
 from ..tools.file import FileTool
 from ..tools.web import WebTool
 
-# 技能系统
-from ..skills.registry import SkillRegistry
-from ..skills.loader import SkillLoader
-from ..skills.market import SkillMarket
+# 技能系统 (SKILL.md 规范)
+from ..skills import SkillRegistry, SkillLoader, SkillEntry
+
+# MCP 系统
+from ..tools.mcp import MCPClient, mcp_client
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,7 @@ class Agent:
     
     # 基础工具定义 (Claude API tool use format)
     BASE_TOOLS = [
+        # === 文件系统工具 ===
         {
             "name": "run_shell",
             "description": "执行Shell命令，用于运行系统命令、创建目录、执行脚本等",
@@ -88,62 +94,51 @@ class Agent:
                 "required": ["path"]
             }
         },
-        {
-            "name": "search_skill",
-            "description": "在GitHub上搜索可用的技能/工具",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
-                    "limit": {"type": "integer", "description": "结果数量限制", "default": 5}
-                },
-                "required": ["query"]
-            }
-        },
-        {
-            "name": "install_skill",
-            "description": "从GitHub安装技能",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "GitHub仓库URL"},
-                    "name": {"type": "string", "description": "技能名称(可选)"}
-                },
-                "required": ["url"]
-            }
-        },
-        {
-            "name": "generate_skill",
-            "description": "自动生成一个新技能",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string", "description": "技能功能描述"},
-                    "name": {"type": "string", "description": "技能名称(可选)"}
-                },
-                "required": ["description"]
-            }
-        },
+        # === Skills 工具 (SKILL.md 规范) ===
         {
             "name": "list_skills",
-            "description": "列出已安装的技能",
+            "description": "列出已安装的技能 (遵循 Agent Skills 规范)",
             "input_schema": {
                 "type": "object",
                 "properties": {}
             }
         },
         {
-            "name": "use_skill",
-            "description": "使用已安装的技能",
+            "name": "get_skill_info",
+            "description": "获取技能的详细信息和指令",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "技能名称"}
+                },
+                "required": ["skill_name"]
+            }
+        },
+        {
+            "name": "run_skill_script",
+            "description": "运行技能的脚本",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "skill_name": {"type": "string", "description": "技能名称"},
-                    "params": {"type": "object", "description": "技能参数"}
+                    "script_name": {"type": "string", "description": "脚本文件名 (如 get_time.py)"},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "命令行参数"}
+                },
+                "required": ["skill_name", "script_name"]
+            }
+        },
+        {
+            "name": "get_skill_reference",
+            "description": "获取技能的参考文档",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "技能名称"},
+                    "ref_name": {"type": "string", "description": "参考文档名称 (默认 REFERENCE.md)", "default": "REFERENCE.md"}
                 },
                 "required": ["skill_name"]
             }
-        }
+        },
     ]
     
     def __init__(
@@ -167,28 +162,12 @@ class Agent:
         self.file_tool = FileTool()
         self.web_tool = WebTool()
         
-        # 初始化技能系统
+        # 初始化技能系统 (SKILL.md 规范)
         self.skill_registry = SkillRegistry()
         self.skill_loader = SkillLoader(self.skill_registry)
-        self.skill_market = SkillMarket(
-            registry=self.skill_registry,
-            skills_dir=settings.skills_path,
-        )
         
-        # 延迟导入进化系统（避免循环导入）
-        from ..evolution.analyzer import NeedAnalyzer
-        from ..evolution.generator import SkillGenerator
-        
-        # 初始化进化系统
-        self.need_analyzer = NeedAnalyzer(
-            brain=self.brain,
-            skill_registry=self.skill_registry,
-        )
-        self.skill_generator = SkillGenerator(
-            brain=self.brain,
-            skills_dir=settings.skills_path,
-            skill_registry=self.skill_registry,
-        )
+        # MCP 客户端
+        self.mcp_client = mcp_client
         
         # 动态工具列表（基础工具 + 技能工具）
         self._tools = list(self.BASE_TOOLS)
@@ -223,15 +202,25 @@ class Agent:
         logger.info(f"Agent '{self.name}' initialized with {self.skill_registry.count} skills")
     
     async def _load_installed_skills(self) -> None:
-        """加载已安装的技能"""
-        skills_dir = settings.skills_path
-        if not skills_dir.exists():
-            skills_dir.mkdir(parents=True, exist_ok=True)
-            return
+        """
+        加载已安装的技能 (遵循 Agent Skills 规范)
         
-        # 加载目录中的技能
-        loaded_skills = self.skill_loader.load_from_directory(str(skills_dir), recursive=True)
-        logger.info(f"Loaded {len(loaded_skills)} skills from {skills_dir}")
+        技能从以下目录加载:
+        - skills/ (项目级别)
+        - .cursor/skills/ (Cursor 兼容)
+        """
+        # 从所有标准目录加载
+        loaded = self.skill_loader.load_all(settings.project_root)
+        logger.info(f"Loaded {loaded} skills from standard directories")
+        
+        # 更新工具列表，添加技能工具
+        self._update_skill_tools()
+    
+    def _update_skill_tools(self) -> None:
+        """更新工具列表，添加技能相关工具"""
+        # 基础工具已在 BASE_TOOLS 中定义
+        # 这里可以添加动态生成的技能工具
+        pass
     
     async def chat(self, message: str) -> str:
         """
@@ -353,7 +342,7 @@ class Agent:
         logger.info(f"Executing tool: {tool_name} with {tool_input}")
         
         try:
-            # === 基础工具 ===
+            # === 基础文件系统工具 ===
             if tool_name == "run_shell":
                 result = await self.shell_tool.run(
                     tool_input["command"],
@@ -379,61 +368,64 @@ class Agent:
                 files = await self.file_tool.list_dir(tool_input["path"])
                 return f"目录内容:\n" + "\n".join(files)
             
-            # === 技能系统工具 ===
-            elif tool_name == "search_skill":
-                results = await self.skill_market.search(
-                    tool_input["query"],
-                    limit=tool_input.get("limit", 5)
-                )
-                if not results:
-                    return "未找到相关技能"
-                output = "找到以下技能:\n"
-                for i, skill in enumerate(results, 1):
-                    output += f"{i}. {skill.name}: {skill.description}\n   URL: {skill.url}\n"
-                return output
-            
-            elif tool_name == "install_skill":
-                skill = await self.skill_market.install(
-                    tool_input["url"],
-                    name=tool_input.get("name")
-                )
-                if skill:
-                    return f"✅ 技能安装成功: {skill.name} v{skill.version}\n描述: {skill.description}"
-                else:
-                    return "❌ 技能安装失败，请检查URL或日志"
-            
-            elif tool_name == "generate_skill":
-                result = await self.skill_generator.generate(
-                    tool_input["description"],
-                    name=tool_input.get("name")
-                )
-                if result.success:
-                    return f"✅ 技能生成成功: {result.skill_name}\n文件: {result.file_path}\n测试: {'通过' if result.test_passed else '未通过'}"
-                else:
-                    return f"❌ 技能生成失败: {result.error}"
-            
+            # === Skills 工具 (SKILL.md 规范) ===
             elif tool_name == "list_skills":
                 skills = self.skill_registry.list_all()
                 if not skills:
-                    return "当前没有已安装的技能"
-                output = f"已安装 {len(skills)} 个技能:\n"
+                    return "当前没有已安装的技能\n\n提示: 技能应放在 skills/ 目录下，每个技能是一个包含 SKILL.md 的文件夹"
+                
+                output = f"已安装 {len(skills)} 个技能 (遵循 Agent Skills 规范):\n\n"
                 for skill in skills:
-                    output += f"- {skill.name} v{skill.version}: {skill.description}\n"
+                    auto = "自动" if not skill.disable_model_invocation else "手动"
+                    output += f"**{skill.name}** [{auto}]\n"
+                    output += f"  {skill.description[:100]}{'...' if len(skill.description) > 100 else ''}\n\n"
                 return output
             
-            elif tool_name == "use_skill":
+            elif tool_name == "get_skill_info":
                 skill_name = tool_input["skill_name"]
-                params = tool_input.get("params", {})
-                
                 skill = self.skill_registry.get(skill_name)
+                
                 if not skill:
                     return f"❌ 未找到技能: {skill_name}"
                 
-                result = await skill.execute(**params)
-                if result.success:
-                    return f"✅ 技能执行成功:\n{result.data}"
+                # 获取完整的 body (Level 2)
+                body = skill.get_body()
+                
+                output = f"# 技能: {skill.name}\n\n"
+                output += f"**描述**: {skill.description}\n"
+                if skill.license:
+                    output += f"**许可证**: {skill.license}\n"
+                if skill.compatibility:
+                    output += f"**兼容性**: {skill.compatibility}\n"
+                output += f"\n---\n\n"
+                output += body or "(无详细指令)"
+                
+                return output
+            
+            elif tool_name == "run_skill_script":
+                skill_name = tool_input["skill_name"]
+                script_name = tool_input["script_name"]
+                args = tool_input.get("args", [])
+                
+                success, output = self.skill_loader.run_script(
+                    skill_name, script_name, args
+                )
+                
+                if success:
+                    return f"✅ 脚本执行成功:\n{output}"
                 else:
-                    return f"❌ 技能执行失败: {result.error}"
+                    return f"❌ 脚本执行失败:\n{output}"
+            
+            elif tool_name == "get_skill_reference":
+                skill_name = tool_input["skill_name"]
+                ref_name = tool_input.get("ref_name", "REFERENCE.md")
+                
+                content = self.skill_loader.get_reference(skill_name, ref_name)
+                
+                if content:
+                    return f"# 参考文档: {ref_name}\n\n{content}"
+                else:
+                    return f"❌ 未找到参考文档: {skill_name}/{ref_name}"
             
             else:
                 return f"未知工具: {tool_name}"
@@ -444,7 +436,7 @@ class Agent:
     
     async def execute_task(self, task: Task) -> TaskResult:
         """
-        执行任务（带工具调用和自我进化）
+        执行任务（带工具调用）
         
         Args:
             task: 任务对象
@@ -457,23 +449,6 @@ class Agent:
         
         logger.info(f"Executing task: {task.description[:100]}...")
         
-        # 分析任务需要的能力
-        analysis = await self.need_analyzer.analyze_task(task.description)
-        logger.info(f"Task analysis: complexity={analysis.complexity}, missing={len(analysis.missing_capabilities)}")
-        
-        # 如果有缺失的能力，提示可以搜索或生成技能
-        evolution_hint = ""
-        if analysis.missing_capabilities:
-            missing_names = [gap.name for gap in analysis.missing_capabilities]
-            evolution_hint = f"""
-
-注意：检测到可能需要以下能力: {', '.join(missing_names)}
-如果当前工具无法完成任务，你可以：
-1. 使用 search_skill 搜索相关技能
-2. 使用 install_skill 安装找到的技能
-3. 使用 generate_skill 自动生成新技能
-4. 使用 use_skill 调用已安装的技能"""
-        
         # 构建工具列表提示
         tools_desc = """
 你有以下工具可以使用：
@@ -484,31 +459,30 @@ class Agent:
 - read_file: 读取文件
 - list_directory: 列出目录
 
-技能管理:
-- search_skill: 在GitHub上搜索技能
-- install_skill: 安装技能
-- generate_skill: 自动生成新技能
+技能系统 (Agent Skills 规范):
 - list_skills: 列出已安装的技能
-- use_skill: 使用已安装的技能"""
+- get_skill_info: 获取技能详细信息和指令
+- run_skill_script: 运行技能脚本
+- get_skill_reference: 获取技能参考文档"""
         
         # 添加已安装技能的描述
         installed_skills = self.skill_registry.list_all()
         if installed_skills:
             tools_desc += "\n\n已安装的技能:"
             for skill in installed_skills:
-                tools_desc += f"\n- {skill.name}: {skill.description}"
+                desc = skill.description[:80] + "..." if len(skill.description) > 80 else skill.description
+                tools_desc += f"\n- {skill.name}: {desc}"
         
         # 构建系统提示词
-        system_prompt = self.identity.get_system_prompt() + tools_desc + evolution_hint + """
+        system_prompt = self.identity.get_system_prompt() + tools_desc + """
 
-请使用工具来实际执行任务。如果遇到困难：
-1. 先尝试用现有工具解决
-2. 如果不行，搜索或生成需要的技能
-3. 安装后使用新技能完成任务
+请使用工具来实际执行任务。
+- 对于已安装的技能，先用 get_skill_info 查看使用方法
+- 然后用 run_skill_script 运行相应脚本
 永不放弃，直到任务完成！"""
 
         messages = [{"role": "user", "content": task.description}]
-        max_tool_iterations = 30  # 增加迭代次数以支持技能进化
+        max_tool_iterations = 30
         iteration = 0
         final_response = ""
         
@@ -657,11 +631,13 @@ class Agent:
             "message": "API key configured" if settings.anthropic_api_key else "API key missing",
         }
         
-        # 检查技能系统
+        # 检查技能系统 (SKILL.md 规范)
+        skill_count = self.skill_registry.count
         results["checks"]["skills"] = {
             "status": "ok",
-            "message": f"已安装 {self.skill_registry.count} 个技能",
-            "count": self.skill_registry.count,
+            "message": f"已安装 {skill_count} 个技能 (Agent Skills 规范)",
+            "count": skill_count,
+            "skills": [s.name for s in self.skill_registry.list_all()],
         }
         
         # 检查技能目录
@@ -671,9 +647,15 @@ class Agent:
             "message": str(skills_path),
         }
         
-        # TODO: 添加更多检查
-        # - 存储系统
-        # - MCP 连接
+        # 检查 MCP 客户端
+        mcp_servers = self.mcp_client.list_servers()
+        mcp_connected = self.mcp_client.list_connected()
+        results["checks"]["mcp"] = {
+            "status": "ok",
+            "message": f"配置 {len(mcp_servers)} 个服务器, 已连接 {len(mcp_connected)} 个",
+            "servers": mcp_servers,
+            "connected": mcp_connected,
+        }
         
         logger.info(f"Self-check complete: {results['status']}")
         

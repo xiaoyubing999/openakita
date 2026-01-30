@@ -21,6 +21,9 @@ dependencies = [
     # Core LLM
     "anthropic>=0.40.0",
     
+    # MCP (Model Context Protocol)
+    "mcp>=1.0.0",
+    
     # CLI and UI
     "rich>=13.7.0",
     "prompt-toolkit>=3.0.43",
