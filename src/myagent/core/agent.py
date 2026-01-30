@@ -321,29 +321,34 @@ class Agent:
         """
         加载 MCP 服务器配置
         
-        扫描 MCP 配置目录，生成工具清单用于系统提示
+        扫描所有 MCP 配置目录并合并，生成工具清单用于系统提示
         """
-        # 尝试多个可能的 MCP 配置目录
+        # 所有可能的 MCP 配置目录 (优先级: 项目本地 > Cursor)
         possible_dirs = [
-            # Cursor 项目级 MCP 目录
-            Path.home() / ".cursor" / "projects" / "d-coder-myagent" / "mcps",
-            # 通用 Cursor MCP 目录
-            Path.home() / ".cursor" / "mcps",
-            # 项目本地 MCP 目录
-            settings.project_root / "mcps",
-            settings.project_root / ".mcp",
+            # 1. 项目本地 MCP 目录 (MyAgent 自己的，优先)
+            (settings.project_root / "mcps", "project"),
+            (settings.project_root / ".mcp", "project"),
+            # 2. Cursor 项目级 MCP 目录 (继承 Cursor 的)
+            (Path.home() / ".cursor" / "projects" / "d-coder-myagent" / "mcps", "cursor"),
+            # 3. 通用 Cursor MCP 目录
+            (Path.home() / ".cursor" / "mcps", "cursor-global"),
         ]
         
-        mcp_dir = None
-        for dir_path in possible_dirs:
-            if dir_path.exists():
-                mcp_dir = dir_path
-                break
+        # 扫描所有存在的目录并合并
+        total_count = 0
+        loaded_dirs = []
         
-        if mcp_dir:
-            count = self.mcp_catalog.scan_mcp_directory(mcp_dir)
+        for dir_path, source in possible_dirs:
+            if dir_path.exists():
+                count = self.mcp_catalog.scan_mcp_directory(dir_path)
+                if count > 0:
+                    total_count += count
+                    loaded_dirs.append(f"{source}:{dir_path.name}({count})")
+                    logger.info(f"Loaded {count} MCP servers from {dir_path} [{source}]")
+        
+        if total_count > 0:
             self._mcp_catalog_text = self.mcp_catalog.generate_catalog()
-            logger.info(f"Loaded {count} MCP servers from {mcp_dir}")
+            logger.info(f"Total MCP servers: {total_count} from {loaded_dirs}")
         else:
             self._mcp_catalog_text = ""
             logger.info("No MCP configuration directory found")

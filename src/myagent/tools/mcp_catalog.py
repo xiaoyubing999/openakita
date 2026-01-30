@@ -75,22 +75,28 @@ CallMcpTool(server="mysql-test", toolName="execute_query", arguments={{"sql": "S
         self._servers: list[MCPServerInfo] = []
         self._cached_catalog: Optional[str] = None
     
-    def scan_mcp_directory(self, mcp_dir: Optional[Path] = None) -> int:
+    def scan_mcp_directory(self, mcp_dir: Optional[Path] = None, clear: bool = False) -> int:
         """
         扫描 MCP 配置目录
         
         Args:
             mcp_dir: MCP 目录路径
+            clear: 是否清空已有服务器 (默认 False，追加模式)
         
         Returns:
-            发现的服务器数量
+            本次发现的服务器数量
         """
         mcp_dir = mcp_dir or self.mcp_config_dir
         if not mcp_dir or not mcp_dir.exists():
             logger.warning(f"MCP config directory not found: {mcp_dir}")
             return 0
         
-        self._servers = []
+        if clear:
+            self._servers = []
+        
+        # 已存在的服务器 ID (用于去重)
+        existing_ids = {s.identifier for s in self._servers}
+        new_count = 0
         
         for server_dir in mcp_dir.iterdir():
             if not server_dir.is_dir():
@@ -98,10 +104,16 @@ CallMcpTool(server="mysql-test", toolName="execute_query", arguments={{"sql": "S
             
             server_info = self._load_server(server_dir)
             if server_info:
-                self._servers.append(server_info)
+                # 去重: 如果已存在相同 ID 的服务器，跳过 (项目本地优先)
+                if server_info.identifier not in existing_ids:
+                    self._servers.append(server_info)
+                    existing_ids.add(server_info.identifier)
+                    new_count += 1
+                else:
+                    logger.debug(f"Skipped duplicate MCP server: {server_info.identifier}")
         
-        logger.info(f"Scanned {len(self._servers)} MCP servers from {mcp_dir}")
-        return len(self._servers)
+        logger.info(f"Added {new_count} new MCP servers from {mcp_dir} (total: {len(self._servers)})")
+        return new_count
     
     def _load_server(self, server_dir: Path) -> Optional[MCPServerInfo]:
         """加载单个 MCP 服务器配置"""
