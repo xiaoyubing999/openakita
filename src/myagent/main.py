@@ -188,6 +188,9 @@ async def start_im_channels(agent: Agent):
     
     _message_gateway.agent_handler = agent_handler
     
+    # 设置 Agent 的 scheduler gateway，让定时任务可以发送通知
+    agent.set_scheduler_gateway(_message_gateway)
+    
     # 启动网关
     if adapters_started:
         await _message_gateway.start()

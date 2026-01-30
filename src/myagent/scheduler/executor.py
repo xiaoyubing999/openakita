@@ -152,9 +152,17 @@ class TaskExecutor:
             return
         
         try:
-            # 构建通知消息
-            status = "✅ 成功" if success else "❌ 失败"
-            notification = f"""**定时任务执行通知**
+            # 判断是否是提醒类任务（根据任务名称或描述）
+            is_reminder = any(keyword in task.name.lower() or keyword in task.description.lower() 
+                            for keyword in ['提醒', '通知', 'remind', 'alert', 'notify'])
+            
+            if is_reminder and success:
+                # 提醒类任务：直接发送 Agent 的回复内容
+                notification = message
+            else:
+                # 其他任务：发送执行报告
+                status = "✅ 成功" if success else "❌ 失败"
+                notification = f"""**定时任务执行通知**
 
 任务: {task.name}
 状态: {status}

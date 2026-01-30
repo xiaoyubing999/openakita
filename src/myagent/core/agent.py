@@ -543,12 +543,15 @@ class Agent:
         """启动定时任务调度器"""
         try:
             from ..scheduler import TaskScheduler
-            from ..scheduler.executor import create_default_executor
+            from ..scheduler.executor import TaskExecutor
+            
+            # 创建执行器（gateway 稍后通过 set_scheduler_gateway 设置）
+            self._task_executor = TaskExecutor(timeout_seconds=300)
             
             # 创建调度器
             self.task_scheduler = TaskScheduler(
                 storage_path=settings.project_root / "data" / "scheduler",
-                executor=create_default_executor(timeout_seconds=300),
+                executor=self._task_executor.execute,
             )
             
             # 启动调度器
@@ -1437,13 +1440,27 @@ class Agent:
                 from ..scheduler import ScheduledTask, TriggerType
                 
                 trigger_type = TriggerType(tool_input["trigger_type"])
+                
+                # 获取当前 IM 会话信息（如果有）
+                channel_id = None
+                chat_id = None
+                user_id = None
+                
+                if Agent._current_im_session:
+                    session = Agent._current_im_session
+                    channel_id = session.channel
+                    chat_id = session.chat_id
+                    user_id = session.user_id
+                
                 task = ScheduledTask.create(
                     name=tool_input["name"],
                     description=tool_input["description"],
                     trigger_type=trigger_type,
                     trigger_config=tool_input["trigger_config"],
                     prompt=tool_input["prompt"],
-                    user_id=getattr(self, '_current_session_id', None),
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    chat_id=chat_id,
                 )
                 
                 task_id = await self.task_scheduler.add_task(task)
@@ -1794,6 +1811,19 @@ class Agent:
         return self._conversation_history.copy()
     
     # ==================== 记忆系统方法 ====================
+    
+    def set_scheduler_gateway(self, gateway: Any) -> None:
+        """
+        设置定时任务调度器的消息网关
+        
+        用于定时任务执行后发送通知到 IM 通道
+        
+        Args:
+            gateway: MessageGateway 实例
+        """
+        if hasattr(self, '_task_executor') and self._task_executor:
+            self._task_executor.gateway = gateway
+            logger.info("Scheduler gateway configured")
     
     async def shutdown(self, task_description: str = "", success: bool = True, errors: list = None) -> None:
         """
