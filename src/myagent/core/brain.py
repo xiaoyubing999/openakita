@@ -5,9 +5,12 @@ Brain 模块 - 与 Claude API 交互
 - 发送请求到 Claude API
 - 管理对话历史
 - 工具调用
+- API 故障切换
 """
 
 import logging
+import asyncio
+import time
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
@@ -36,8 +39,28 @@ class Context:
     tools: list[ToolParam] = field(default_factory=list)
 
 
+@dataclass
+class LLMEndpoint:
+    """LLM API 端点配置"""
+    name: str
+    api_key: str
+    base_url: str
+    model: str
+    priority: int = 0  # 优先级，数字越小优先级越高
+    healthy: bool = True
+    last_check: float = 0
+    fail_count: int = 0
+
+
 class Brain:
-    """Agent 大脑 - LLM 交互层"""
+    """Agent 大脑 - LLM 交互层（支持故障切换）"""
+    
+    # 健康检查间隔（秒）
+    HEALTH_CHECK_INTERVAL = 60
+    # 失败阈值，超过则标记为不健康
+    FAIL_THRESHOLD = 3
+    # 请求超时（秒）
+    REQUEST_TIMEOUT = 30
     
     def __init__(
         self,
@@ -46,23 +69,161 @@ class Brain:
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ):
-        self.api_key = api_key or settings.anthropic_api_key
-        self.base_url = base_url or settings.anthropic_base_url
-        self.model = model or settings.default_model
         self.max_tokens = max_tokens or settings.max_tokens
         
-        if not self.api_key:
+        # 配置多个 API 端点
+        self._endpoints: list[LLMEndpoint] = []
+        
+        # 主端点（云雾 AI）
+        primary_key = api_key or settings.anthropic_api_key
+        primary_url = base_url or settings.anthropic_base_url
+        primary_model = model or settings.default_model
+        
+        if primary_key:
+            self._endpoints.append(LLMEndpoint(
+                name="primary",
+                api_key=primary_key,
+                base_url=primary_url,
+                model=primary_model,
+                priority=0,
+            ))
+        
+        # 备用端点（MiniMax）
+        backup_key = getattr(settings, 'backup_api_key', None) or "MINIMAX_KEY_REMOVED"
+        backup_url = getattr(settings, 'backup_base_url', None) or "https://api.minimaxi.com/anthropic"
+        backup_model = getattr(settings, 'backup_model', None) or "MiniMax-M2.1"
+        
+        if backup_key:
+            self._endpoints.append(LLMEndpoint(
+                name="backup (MiniMax)",
+                api_key=backup_key,
+                base_url=backup_url,
+                model=backup_model,
+                priority=1,
+            ))
+        
+        if not self._endpoints:
             raise ValueError(
-                "Anthropic API key is required. "
+                "At least one API key is required. "
                 "Set ANTHROPIC_API_KEY environment variable or pass api_key parameter."
             )
         
-        # 支持自定义 base_url（云雾AI等转发服务）
-        self.client = Anthropic(
-            api_key=self.api_key,
-            base_url=self.base_url,
-        )
-        logger.info(f"Brain initialized with model: {self.model}, base_url: {self.base_url}")
+        # 按优先级排序
+        self._endpoints.sort(key=lambda x: x.priority)
+        
+        # 当前使用的端点索引
+        self._current_endpoint_idx = 0
+        
+        # 创建客户端
+        self._clients: dict[str, Anthropic] = {}
+        for ep in self._endpoints:
+            self._clients[ep.name] = Anthropic(
+                api_key=ep.api_key,
+                base_url=ep.base_url,
+            )
+        
+        # 公开属性（兼容旧代码）
+        self._update_public_attrs()
+        
+        logger.info(f"Brain initialized with {len(self._endpoints)} endpoints")
+        for ep in self._endpoints:
+            logger.info(f"  - {ep.name}: {ep.model} @ {ep.base_url}")
+    
+    def _update_public_attrs(self) -> None:
+        """更新公开属性"""
+        ep = self._endpoints[self._current_endpoint_idx]
+        self.api_key = ep.api_key
+        self.base_url = ep.base_url
+        self.model = ep.model
+        self.client = self._clients[ep.name]
+    
+    def _get_healthy_endpoint(self) -> Optional[LLMEndpoint]:
+        """获取健康的端点"""
+        for ep in self._endpoints:
+            if ep.healthy:
+                return ep
+        # 如果所有都不健康，重置并返回第一个
+        for ep in self._endpoints:
+            ep.healthy = True
+            ep.fail_count = 0
+        return self._endpoints[0] if self._endpoints else None
+    
+    def _mark_endpoint_failed(self, endpoint: LLMEndpoint) -> None:
+        """标记端点失败"""
+        endpoint.fail_count += 1
+        if endpoint.fail_count >= self.FAIL_THRESHOLD:
+            endpoint.healthy = False
+            logger.warning(f"Endpoint {endpoint.name} marked as unhealthy after {endpoint.fail_count} failures")
+    
+    def _mark_endpoint_success(self, endpoint: LLMEndpoint) -> None:
+        """标记端点成功"""
+        endpoint.fail_count = 0
+        endpoint.healthy = True
+        endpoint.last_check = time.time()
+    
+    async def health_check(self, endpoint: Optional[LLMEndpoint] = None) -> bool:
+        """
+        健康检查
+        
+        Args:
+            endpoint: 要检查的端点，None 则检查当前端点
+        
+        Returns:
+            是否健康
+        """
+        if endpoint is None:
+            endpoint = self._endpoints[self._current_endpoint_idx]
+        
+        client = self._clients[endpoint.name]
+        
+        try:
+            # 发送简单测试请求
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.messages.create,
+                    model=endpoint.model,
+                    max_tokens=10,
+                    messages=[{"role": "user", "content": "hi"}],
+                ),
+                timeout=10,
+            )
+            self._mark_endpoint_success(endpoint)
+            logger.info(f"Health check passed for {endpoint.name}")
+            return True
+        except Exception as e:
+            self._mark_endpoint_failed(endpoint)
+            logger.warning(f"Health check failed for {endpoint.name}: {e}")
+            return False
+    
+    def switch_to_backup(self) -> bool:
+        """
+        切换到备用端点
+        
+        Returns:
+            是否成功切换
+        """
+        old_ep = self._endpoints[self._current_endpoint_idx]
+        
+        # 查找下一个健康的端点
+        for i, ep in enumerate(self._endpoints):
+            if i != self._current_endpoint_idx and ep.healthy:
+                self._current_endpoint_idx = i
+                self._update_public_attrs()
+                logger.info(f"Switched from {old_ep.name} to {ep.name}")
+                return True
+        
+        logger.warning("No healthy backup endpoint available")
+        return False
+    
+    def get_current_endpoint_info(self) -> dict:
+        """获取当前端点信息"""
+        ep = self._endpoints[self._current_endpoint_idx]
+        return {
+            "name": ep.name,
+            "model": ep.model,
+            "base_url": ep.base_url,
+            "healthy": ep.healthy,
+        }
     
     async def think(
         self,
@@ -72,7 +233,7 @@ class Brain:
         tools: Optional[list[ToolParam]] = None,
     ) -> Response:
         """
-        发送思考请求到 LLM
+        发送思考请求到 LLM（带自动故障切换）
         
         Args:
             prompt: 用户输入
@@ -98,50 +259,85 @@ class Brain:
         # 确定工具列表
         tool_list = tools or (context.tools if context else [])
         
-        try:
-            # 构建请求参数
-            request_params: dict[str, Any] = {
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "messages": messages,
-            }
+        # 尝试所有端点
+        last_error = None
+        tried_endpoints = set()
+        
+        while len(tried_endpoints) < len(self._endpoints):
+            endpoint = self._get_healthy_endpoint()
+            if endpoint is None or endpoint.name in tried_endpoints:
+                # 没有更多端点可尝试
+                break
             
-            if sys_prompt:
-                request_params["system"] = sys_prompt
+            tried_endpoints.add(endpoint.name)
+            client = self._clients[endpoint.name]
             
-            if tool_list:
-                request_params["tools"] = tool_list
-            
-            # 发送请求
-            response: Message = self.client.messages.create(**request_params)
-            
-            # 解析响应
-            content = ""
-            tool_calls = []
-            
-            for block in response.content:
-                if block.type == "text":
-                    content += block.text
-                elif block.type == "tool_use":
-                    tool_calls.append({
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    })
-            
-            return Response(
-                content=content,
-                tool_calls=tool_calls,
-                stop_reason=response.stop_reason or "",
-                usage={
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                },
-            )
-            
-        except Exception as e:
-            logger.error(f"Brain think error: {e}")
-            raise
+            try:
+                # 构建请求参数
+                request_params: dict[str, Any] = {
+                    "model": endpoint.model,
+                    "max_tokens": self.max_tokens,
+                    "messages": messages,
+                }
+                
+                if sys_prompt:
+                    request_params["system"] = sys_prompt
+                
+                if tool_list:
+                    request_params["tools"] = tool_list
+                
+                # 发送请求（带超时）
+                logger.info(f"Sending request to {endpoint.name} ({endpoint.model})")
+                
+                response: Message = await asyncio.wait_for(
+                    asyncio.to_thread(client.messages.create, **request_params),
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                
+                # 成功，标记端点健康
+                self._mark_endpoint_success(endpoint)
+                
+                # 解析响应
+                content = ""
+                tool_calls = []
+                
+                for block in response.content:
+                    if block.type == "text":
+                        content += block.text
+                    elif block.type == "tool_use":
+                        tool_calls.append({
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
+                
+                return Response(
+                    content=content,
+                    tool_calls=tool_calls,
+                    stop_reason=response.stop_reason or "",
+                    usage={
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                    },
+                )
+                
+            except asyncio.TimeoutError:
+                last_error = f"Request timeout ({self.REQUEST_TIMEOUT}s) for {endpoint.name}"
+                logger.warning(last_error)
+                self._mark_endpoint_failed(endpoint)
+                # 尝试切换到备用
+                self.switch_to_backup()
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Request failed for {endpoint.name}: {e}")
+                self._mark_endpoint_failed(endpoint)
+                # 尝试切换到备用
+                self.switch_to_backup()
+        
+        # 所有端点都失败
+        logger.error(f"All endpoints failed. Last error: {last_error}")
+        raise RuntimeError(f"All LLM endpoints failed: {last_error}")
     
     async def plan(self, task: str, context: Optional[Context] = None) -> str:
         """
