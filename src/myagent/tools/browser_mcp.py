@@ -44,8 +44,27 @@ class BrowserMCP:
     # 工具定义
     TOOLS = [
         BrowserTool(
+            name="browser_open",
+            description="启动浏览器。如果需要用户观看操作过程或调试，设置 visible=True；如果只是后台自动化任务，设置 visible=False",
+            arguments={
+                "type": "object",
+                "properties": {
+                    "visible": {
+                        "type": "boolean",
+                        "description": "是否显示浏览器窗口。True=用户可见(调试/演示), False=后台运行(自动化)",
+                        "default": False
+                    },
+                    "ask_user": {
+                        "type": "boolean",
+                        "description": "是否先询问用户偏好。如果为 True，会返回提示让你询问用户",
+                        "default": False
+                    }
+                }
+            }
+        ),
+        BrowserTool(
             name="browser_navigate",
-            description="导航到指定 URL",
+            description="导航到指定 URL (如果浏览器未启动，会自动以后台模式启动)",
             arguments={
                 "type": "object",
                 "properties": {
@@ -153,11 +172,28 @@ class BrowserMCP:
         self._browser = None
         self._page: Optional[Any] = None
         self._started = False
+        self._visible = False  # 当前是否可见模式
     
-    async def start(self) -> bool:
-        """启动浏览器"""
+    async def start(self, visible: bool = None) -> bool:
+        """
+        启动浏览器
+        
+        Args:
+            visible: 是否可见模式。None 使用默认设置，True 显示窗口，False 后台运行
+        """
         if self._started:
-            return True
+            # 如果已启动但模式不同，需要重启
+            if visible is not None and visible != self._visible:
+                logger.info(f"Browser mode change requested: visible={visible}, restarting...")
+                await self.stop()
+            else:
+                return True
+        
+        # 确定是否 headless
+        if visible is not None:
+            headless = not visible
+        else:
+            headless = self.headless
         
         try:
             # 延迟导入 playwright
@@ -165,7 +201,7 @@ class BrowserMCP:
             
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
-                headless=self.headless,
+                headless=headless,
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--no-sandbox',
@@ -177,7 +213,8 @@ class BrowserMCP:
             self._page.set_default_timeout(30000)
             
             self._started = True
-            logger.info(f"Browser MCP started (headless={self.headless})")
+            self._visible = not headless
+            logger.info(f"Browser MCP started (visible={self._visible})")
             return True
             
         except ImportError:
@@ -221,6 +258,13 @@ class BrowserMCP:
         Returns:
             {"success": bool, "result": Any, "error": str}
         """
+        # browser_open 是特殊的，需要先处理
+        if tool_name == "browser_open":
+            return await self._open_browser(
+                arguments.get("visible", False),
+                arguments.get("ask_user", False)
+            )
+        
         if not self._started:
             success = await self.start()
             if not success:
@@ -285,6 +329,56 @@ class BrowserMCP:
             return {"success": False, "error": str(e)}
     
     # ==================== 工具实现 ====================
+    
+    async def _open_browser(self, visible: bool, ask_user: bool) -> dict:
+        """
+        启动浏览器
+        
+        Args:
+            visible: 是否显示浏览器窗口
+            ask_user: 是否询问用户
+        """
+        if ask_user:
+            # 返回提示，让 agent 询问用户
+            return {
+                "success": True,
+                "result": {
+                    "action": "ask_user",
+                    "message": "请询问用户是否希望看到浏览器操作过程：\n"
+                               "- 选择「是」：打开可见的浏览器窗口，可以看到自动化操作过程\n"
+                               "- 选择「否」：后台静默运行，速度更快但看不到过程",
+                    "options": ["visible", "headless"]
+                }
+            }
+        
+        # 如果已启动且模式相同，直接返回
+        if self._started and self._visible == visible:
+            return {
+                "success": True,
+                "result": {
+                    "status": "already_running",
+                    "visible": self._visible,
+                    "message": f"浏览器已在{'可见' if self._visible else '后台'}模式运行"
+                }
+            }
+        
+        # 启动浏览器
+        success = await self.start(visible=visible)
+        
+        if success:
+            return {
+                "success": True,
+                "result": {
+                    "status": "started",
+                    "visible": self._visible,
+                    "message": f"浏览器已启动 ({'可见模式 - 用户可以看到操作' if self._visible else '后台模式 - 静默运行'})"
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": "无法启动浏览器。请确保已安装 playwright: pip install playwright && playwright install chromium"
+            }
     
     async def _navigate(self, url: str) -> dict:
         """导航到 URL"""

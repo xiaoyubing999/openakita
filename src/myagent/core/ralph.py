@@ -38,6 +38,7 @@ class Task:
     """任务定义"""
     id: str
     description: str
+    session_id: Optional[str] = None  # 关联的会话 ID，用于隔离不同会话的任务
     status: TaskStatus = TaskStatus.PENDING
     priority: int = 0
     attempts: int = 0
@@ -286,10 +287,11 @@ class RalphLoop:
             
             # 更新 Active Task 部分
             task = self._current_task
+            session_line = f"- **Session**: {task.session_id}\n" if task.session_id else ""
             task_info = f"""### Active Task
 
 - **ID**: {task.id}
-- **描述**: {task.description}
+{session_line}- **描述**: {task.description}
 - **状态**: {task.status.value}
 - **尝试次数**: {task.attempts}
 - **最后更新**: {datetime.now().isoformat()}

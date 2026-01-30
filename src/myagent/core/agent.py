@@ -41,6 +41,12 @@ from ..memory import MemoryManager
 
 logger = logging.getLogger(__name__)
 
+# 上下文管理常量
+DEFAULT_MAX_CONTEXT_TOKENS = 180000  # Claude 3.5 Sonnet 默认上下文限制 (留 20k buffer)
+CHARS_PER_TOKEN = 4  # 简单估算: 约 4 字符 = 1 token
+MIN_RECENT_TURNS = 4  # 至少保留最近 4 轮对话
+SUMMARY_TARGET_TOKENS = 500  # 摘要目标 token 数
+
 
 class Agent:
     """
@@ -204,8 +210,28 @@ class Agent:
         },
         # === 浏览器工具 (browser-use MCP) ===
         {
+            "name": "browser_open",
+            "description": "启动浏览器。在执行任何浏览器操作前，先调用此工具决定是否让用户看到浏览器窗口。"
+                           "如果任务需要用户观看操作过程、调试、或演示，设置 visible=True；"
+                           "如果只是后台自动化任务（如抓取数据），设置 visible=False。"
+                           "不确定时可以设置 ask_user=True 先询问用户偏好。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "visible": {
+                        "type": "boolean", 
+                        "description": "是否显示浏览器窗口。True=用户可见(调试/演示), False=后台运行(自动化)"
+                    },
+                    "ask_user": {
+                        "type": "boolean",
+                        "description": "是否先询问用户偏好。设为 True 时会返回提示让你询问用户"
+                    }
+                }
+            }
+        },
+        {
             "name": "browser_navigate",
-            "description": "打开浏览器并导航到指定 URL",
+            "description": "导航到指定 URL (如果浏览器未启动，会自动以后台模式启动)",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -409,11 +435,12 @@ class Agent:
         """启动内置服务 (如 browser-use)"""
         self._builtin_mcp_count = 0
         
-        # 启动浏览器服务 (作为内置工具，不是 MCP)
+        # 初始化浏览器服务 (作为内置工具，不是 MCP)
+        # 注意: 不自动启动浏览器，由 browser_open 工具控制启动时机和模式
         try:
             from ..tools.browser_mcp import BrowserMCP
-            self.browser_mcp = BrowserMCP(headless=True)
-            await self.browser_mcp.start()
+            self.browser_mcp = BrowserMCP(headless=True)  # 默认后台模式
+            # 不在这里 await self.browser_mcp.start()，让 LLM 通过 browser_open 控制
             
             # 注意: 浏览器工具已在 BASE_TOOLS 中定义，不需要注册到 MCP catalog
             # 这样 LLM 就会直接使用 browser_navigate 等工具名，而不是 MCP 格式
@@ -458,9 +485,24 @@ class Agent:
 
 {tools_text}
 
-**重要提示**:
-1. 工具直接使用工具名调用，不需要任何前缀
-2. 主动使用记忆功能记录学到的东西
+## 重要提示
+
+### 工具调用
+- 工具直接使用工具名调用，不需要任何前缀
+
+### 记忆管理 (非常重要!)
+**主动使用记忆功能**，在以下情况必须调用 add_memory:
+- 学到新东西时 → 记录为 FACT
+- 发现用户偏好时 → 记录为 PREFERENCE  
+- 找到有效解决方案时 → 记录为 SKILL
+- 遇到错误教训时 → 记录为 ERROR
+- 发现重要规则时 → 记录为 RULE
+
+**记忆时机**:
+1. 任务完成后，回顾学到了什么
+2. 用户明确表达偏好时
+3. 解决了一个难题时
+4. 犯错后找到正确方法时
 """
     
     def _generate_tools_text(self) -> str:
@@ -474,7 +516,7 @@ class Agent:
             "File System": ["run_shell", "write_file", "read_file", "list_directory"],
             "Skills Management": ["list_skills", "get_skill_info", "run_skill_script", "get_skill_reference", "generate_skill", "improve_skill"],
             "Memory Management": ["add_memory", "search_memory", "get_memory_stats"],
-            "Browser Automation": ["browser_navigate", "browser_click", "browser_type", "browser_get_content", "browser_screenshot"],
+            "Browser Automation": ["browser_open", "browser_navigate", "browser_click", "browser_type", "browser_get_content", "browser_screenshot"],
         }
         
         # 构建工具名到描述的映射
@@ -507,6 +549,199 @@ class Agent:
         
         return "\n".join(lines)
     
+    # ==================== 上下文管理 ====================
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        估算文本的 token 数量
+        
+        简单估算: 约 4 字符 = 1 token (对中英文混合比较准确)
+        """
+        if not text:
+            return 0
+        return len(text) // CHARS_PER_TOKEN + 1
+    
+    def _estimate_messages_tokens(self, messages: list[dict]) -> int:
+        """估算消息列表的 token 数量"""
+        total = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total += self._estimate_tokens(content)
+            elif isinstance(content, list):
+                # 处理复杂内容 (tool_use, tool_result 等)
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            total += self._estimate_tokens(item.get("text", ""))
+                        elif item.get("type") == "tool_result":
+                            total += self._estimate_tokens(str(item.get("content", "")))
+                        elif item.get("type") == "tool_use":
+                            total += self._estimate_tokens(json.dumps(item.get("input", {})))
+                        # 图片等二进制内容单独计算
+                        elif item.get("type") == "image":
+                            total += 1000  # 图片固定估算
+            total += 4  # 每条消息的格式开销
+        return total
+    
+    async def _compress_context(self, messages: list[dict], max_tokens: int = None) -> list[dict]:
+        """
+        压缩对话上下文
+        
+        策略:
+        1. 保留最近 MIN_RECENT_TURNS 轮对话
+        2. 将早期对话摘要成简短描述
+        3. 如果还是太长，逐步删除中间内容
+        
+        Args:
+            messages: 消息列表
+            max_tokens: 最大 token 数 (默认使用 DEFAULT_MAX_CONTEXT_TOKENS)
+        
+        Returns:
+            压缩后的消息列表
+        """
+        max_tokens = max_tokens or DEFAULT_MAX_CONTEXT_TOKENS
+        
+        # 估算系统提示的 token
+        system_tokens = self._estimate_tokens(self._context.system)
+        available_tokens = max_tokens - system_tokens - 1000  # 留 1000 给响应
+        
+        current_tokens = self._estimate_messages_tokens(messages)
+        
+        # 如果没超过限制，直接返回
+        if current_tokens <= available_tokens:
+            return messages
+        
+        logger.info(f"Context too large ({current_tokens} tokens), compressing...")
+        
+        # 计算需要保留的最近对话数量 (user + assistant = 1 轮)
+        recent_count = MIN_RECENT_TURNS * 2  # 4 轮 = 8 条消息
+        
+        if len(messages) <= recent_count:
+            # 消息本身就不多，尝试截断长消息
+            return self._truncate_long_messages(messages, available_tokens)
+        
+        # 分离早期消息和最近消息
+        early_messages = messages[:-recent_count]
+        recent_messages = messages[-recent_count:]
+        
+        # 尝试摘要早期对话
+        summary = await self._summarize_messages(early_messages)
+        
+        # 构建压缩后的消息列表
+        compressed = []
+        
+        if summary:
+            compressed.append({
+                "role": "user",
+                "content": f"[之前的对话摘要]\n{summary}"
+            })
+            compressed.append({
+                "role": "assistant", 
+                "content": "好的，我已了解之前的对话内容，请继续。"
+            })
+        
+        compressed.extend(recent_messages)
+        
+        # 检查压缩后的大小
+        compressed_tokens = self._estimate_messages_tokens(compressed)
+        
+        if compressed_tokens <= available_tokens:
+            logger.info(f"Compressed context from {current_tokens} to {compressed_tokens} tokens")
+            return compressed
+        
+        # 还是太长，进一步截断
+        logger.warning(f"Context still too large ({compressed_tokens} tokens), truncating further...")
+        return self._truncate_long_messages(compressed, available_tokens)
+    
+    async def _summarize_messages(self, messages: list[dict]) -> str:
+        """
+        将消息列表摘要成简短描述
+        
+        使用 LLM 生成摘要
+        """
+        if not messages:
+            return ""
+        
+        # 构建对话文本
+        conversation_text = ""
+        for msg in messages:
+            role = "用户" if msg["role"] == "user" else "助手"
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                # 截断过长的内容
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                conversation_text += f"{role}: {content}\n"
+            elif isinstance(content, list):
+                # 复杂内容只保留文本部分
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        texts.append(item.get("text", "")[:200])
+                if texts:
+                    conversation_text += f"{role}: {' '.join(texts)}\n"
+        
+        if not conversation_text:
+            return ""
+        
+        try:
+            # 使用 LLM 生成摘要
+            response = self.brain.client.messages.create(
+                model=self.brain.model,
+                max_tokens=SUMMARY_TARGET_TOKENS,
+                system="你是一个对话摘要助手。请用简洁的中文摘要以下对话的要点，只保留最重要的信息。",
+                messages=[{
+                    "role": "user",
+                    "content": f"请摘要以下对话（200字以内）:\n\n{conversation_text}"
+                }]
+            )
+            
+            summary = ""
+            for block in response.content:
+                if block.type == "text":
+                    summary += block.text
+            
+            return summary.strip()
+            
+        except Exception as e:
+            logger.warning(f"Failed to summarize messages: {e}")
+            # 回退: 简单截取
+            return f"[早期对话共 {len(messages)} 条消息，内容已省略]"
+    
+    def _truncate_long_messages(self, messages: list[dict], max_tokens: int) -> list[dict]:
+        """
+        截断过长的消息内容
+        
+        策略: 保留消息结构，但截断过长的文本内容
+        """
+        truncated = []
+        remaining_tokens = max_tokens
+        
+        # 从后往前处理，优先保留最近的消息
+        for msg in reversed(messages):
+            content = msg.get("content", "")
+            msg_tokens = 0
+            
+            if isinstance(content, str):
+                msg_tokens = self._estimate_tokens(content)
+                if msg_tokens > remaining_tokens:
+                    # 需要截断
+                    max_chars = remaining_tokens * CHARS_PER_TOKEN
+                    content = content[:max_chars] + "\n[内容过长已截断...]"
+                    msg_tokens = remaining_tokens
+            
+            truncated.insert(0, {
+                "role": msg["role"],
+                "content": content
+            })
+            remaining_tokens -= msg_tokens
+            
+            if remaining_tokens <= 0:
+                break
+        
+        return truncated
+    
     async def chat(self, message: str) -> str:
         """
         对话接口
@@ -538,18 +773,8 @@ class Agent:
             "content": message,
         })
         
-        # 判断是否是简单对话还是需要执行任务
-        if self._is_task_request(message):
-            # 作为任务执行（Ralph 模式）
-            result = await self.execute_task_from_message(message)
-            response_text = self._format_task_result(result)
-        else:
-            # 简单对话
-            response = await self.brain.think(
-                message,
-                context=self._context,
-            )
-            response_text = response.content
+        # 统一使用工具调用流程，让 LLM 自己决定是否需要工具
+        response_text = await self._chat_with_tools(message)
         
         # 添加响应到历史
         self._conversation_history.append({
@@ -564,6 +789,13 @@ class Agent:
             "content": response_text,
         })
         
+        # 定期检查并压缩持久上下文（每 10 轮对话检查一次）
+        if len(self._context.messages) > 20:
+            current_tokens = self._estimate_messages_tokens(self._context.messages)
+            if current_tokens > DEFAULT_MAX_CONTEXT_TOKENS * 0.7:  # 70% 阈值时预压缩
+                logger.info(f"Proactively compressing persistent context ({current_tokens} tokens)")
+                self._context.messages = await self._compress_context(self._context.messages)
+        
         # 记录到记忆系统
         self.memory_manager.record_turn("assistant", response_text)
         
@@ -571,50 +803,103 @@ class Agent:
         
         return response_text
     
-    def _is_task_request(self, message: str) -> bool:
+    async def _chat_with_tools(self, message: str) -> str:
         """
-        判断是否是需要执行工具的任务请求
+        对话处理，支持工具调用
         
-        简单问答、代码解释、知识问题等不需要执行工具
-        需要创建文件、运行命令、使用技能等操作的才是任务
+        让 LLM 自己决定是否需要工具，不做硬编码判断
+        
+        Args:
+            message: 用户消息
+        
+        Returns:
+            最终响应文本
         """
-        # 排除纯问题（问号结尾且较短）
-        if (message.strip().endswith("？") or message.strip().endswith("?")) and len(message) < 50:
-            return False
+        # 使用完整的对话历史（已包含当前用户消息）
+        # 复制一份，避免工具调用的中间消息污染原始上下文
+        messages = list(self._context.messages)
         
-        # 排除很短的消息
-        if len(message) < 10:
-            return False
+        # 检查并压缩上下文（如果接近限制）
+        messages = await self._compress_context(messages)
         
-        # 任务关键词（需要执行工具操作的）
-        task_keywords = [
-            # 文件操作
-            "创建", "生成", "写入", "保存",
-            "在目录", "在文件夹", "mkdir", "touch",
-            "删除", "移动", "复制", "重命名",
-            # 命令执行
-            "运行", "执行", "启动", "部署",
-            "下载", "安装", "pip install", "npm install",
-            # 技能相关
-            "技能", "skill", "搜索技能", "安装技能", "生成技能",
-            # 项目相关
-            "项目", "工程", "脚手架",
-        ]
+        max_iterations = 15  # 最多 15 轮工具调用
         
-        # 检查是否匹配任务模式
-        message_lower = message.lower()
-        for kw in task_keywords:
-            if kw in message or kw.lower() in message_lower:
-                return True
+        for iteration in range(max_iterations):
+            # 每次迭代前检查上下文大小（工具调用可能产生大量输出）
+            if iteration > 0:
+                messages = await self._compress_context(messages)
+            
+            # 调用 Brain，传递工具列表
+            response = self.brain.client.messages.create(
+                model=self.brain.model,
+                max_tokens=self.brain.max_tokens,
+                system=self._context.system,
+                tools=self._tools,
+                messages=messages,
+            )
+            
+            # 处理响应
+            tool_calls = []
+            text_content = ""
+            
+            for block in response.content:
+                if block.type == "text":
+                    text_content += block.text
+                elif block.type == "tool_use":
+                    tool_calls.append({
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+            
+            # 如果没有工具调用，直接返回文本
+            if not tool_calls:
+                return text_content
+            
+            # 有工具调用，需要执行
+            logger.info(f"Chat iteration {iteration + 1}, {len(tool_calls)} tool calls")
+            
+            # 构建 assistant 消息
+            assistant_content = []
+            for block in response.content:
+                if block.type == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+            
+            messages.append({"role": "assistant", "content": assistant_content})
+            
+            # 执行工具并收集结果
+            tool_results = []
+            for tool_call in tool_calls:
+                result = await self._execute_tool(tool_call["name"], tool_call["input"])
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call["id"],
+                    "content": result,
+                })
+                logger.info(f"Tool {tool_call['name']} result: {result[:100]}...")
+            
+            messages.append({"role": "user", "content": tool_results})
+            
+            # 检查是否结束
+            if response.stop_reason == "end_turn":
+                break
         
-        # 默认不是任务（简单对话）
-        return False
+        # 返回最后一次的文本响应
+        return text_content or "操作完成"
     
     async def execute_task_from_message(self, message: str) -> TaskResult:
         """从消息创建并执行任务"""
         task = Task(
             id=str(uuid.uuid4())[:8],
             description=message,
+            session_id=getattr(self, '_current_session_id', None),  # 关联当前会话
             priority=1,
         )
         return await self.execute_task(task)
@@ -908,6 +1193,10 @@ class Agent:
         while iteration < max_tool_iterations:
             iteration += 1
             logger.info(f"Task iteration {iteration}")
+            
+            # 检查并压缩上下文（任务执行可能产生大量工具输出）
+            if iteration > 1:
+                messages = await self._compress_context(messages)
             
             # 调用 Brain
             response = self.brain.client.messages.create(
