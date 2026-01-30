@@ -234,6 +234,12 @@ class Brain:
         这是对 client.messages.create 的包装，自动处理故障切换。
         Agent 中应使用此方法而不是直接调用 client.messages.create。
         
+        故障切换逻辑:
+        1. 从当前端点开始尝试
+        2. 失败则尝试下一个端点
+        3. 所有端点都失败才报错
+        4. 成功后如果不是主端点，下次会先尝试主端点（自动恢复）
+        
         Args:
             **kwargs: 传递给 messages.create 的参数
         
@@ -241,20 +247,14 @@ class Brain:
             LLM 响应
         """
         last_error = None
-        tried_endpoints = set()
         
-        while len(tried_endpoints) < len(self._endpoints):
-            endpoint = self._get_healthy_endpoint()
-            if endpoint is None or endpoint.name in tried_endpoints:
-                break
-            
-            tried_endpoints.add(endpoint.name)
+        # 按优先级尝试所有端点
+        for i, endpoint in enumerate(self._endpoints):
             client = self._clients[endpoint.name]
             
-            # 使用端点的模型
+            # 使用端点的模型（覆盖 kwargs 中的 model）
             request_kwargs = kwargs.copy()
-            if "model" not in request_kwargs:
-                request_kwargs["model"] = endpoint.model
+            request_kwargs["model"] = endpoint.model
             
             try:
                 logger.info(f"Sending request to {endpoint.name} ({endpoint.model})")
@@ -263,13 +263,23 @@ class Brain:
                 
                 # 成功
                 self._mark_endpoint_success(endpoint)
+                
+                # 如果不是主端点成功，记录一下
+                if i > 0:
+                    logger.info(f"Request succeeded on backup endpoint: {endpoint.name}")
+                    # 下次请求仍会从主端点开始尝试（自动恢复机制）
+                
                 return response
                 
             except Exception as e:
                 last_error = str(e)
                 logger.warning(f"Request failed for {endpoint.name}: {e}")
                 self._mark_endpoint_failed(endpoint)
-                self.switch_to_backup()
+                
+                # 如果还有更多端点，继续尝试
+                if i < len(self._endpoints) - 1:
+                    logger.info(f"Trying next endpoint...")
+                    continue
         
         raise RuntimeError(f"All LLM endpoints failed: {last_error}")
     
