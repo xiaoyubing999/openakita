@@ -114,12 +114,14 @@ class Brain:
         # 当前使用的端点索引
         self._current_endpoint_idx = 0
         
-        # 创建客户端
+        # 创建客户端（设置超时和禁用自动重试）
         self._clients: dict[str, Anthropic] = {}
         for ep in self._endpoints:
             self._clients[ep.name] = Anthropic(
                 api_key=ep.api_key,
                 base_url=ep.base_url,
+                timeout=self.REQUEST_TIMEOUT,  # 请求超时
+                max_retries=0,  # 禁用 SDK 自动重试，由我们自己控制故障切换
             )
         
         # 公开属性（兼容旧代码）
