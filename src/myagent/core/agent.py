@@ -30,7 +30,7 @@ from ..tools.file import FileTool
 from ..tools.web import WebTool
 
 # 技能系统 (SKILL.md 规范)
-from ..skills import SkillRegistry, SkillLoader, SkillEntry
+from ..skills import SkillRegistry, SkillLoader, SkillEntry, SkillCatalog
 
 # MCP 系统
 from ..tools.mcp import MCPClient, mcp_client
@@ -190,6 +190,7 @@ class Agent:
         # 初始化技能系统 (SKILL.md 规范)
         self.skill_registry = SkillRegistry()
         self.skill_loader = SkillLoader(self.skill_registry)
+        self.skill_catalog = SkillCatalog(self.skill_registry)
         
         # 延迟导入自进化系统（避免循环导入）
         from ..evolution.generator import SkillGenerator
@@ -223,11 +224,12 @@ class Agent:
         # 加载身份文档
         self.identity.load()
         
-        # 设置系统提示词
-        self._context.system = self.identity.get_system_prompt()
-        
         # 加载已安装的技能
         await self._load_installed_skills()
+        
+        # 设置系统提示词 (包含技能清单)
+        base_prompt = self.identity.get_system_prompt()
+        self._context.system = self._build_system_prompt(base_prompt)
         
         # TODO: 加载记忆
         
@@ -246,6 +248,10 @@ class Agent:
         loaded = self.skill_loader.load_all(settings.project_root)
         logger.info(f"Loaded {loaded} skills from standard directories")
         
+        # 生成技能清单 (用于系统提示)
+        self._skill_catalog_text = self.skill_catalog.generate_catalog()
+        logger.info(f"Generated skill catalog with {self.skill_catalog.skill_count} skills")
+        
         # 更新工具列表，添加技能工具
         self._update_skill_tools()
     
@@ -254,6 +260,41 @@ class Agent:
         # 基础工具已在 BASE_TOOLS 中定义
         # 这里可以添加动态生成的技能工具
         pass
+    
+    def _build_system_prompt(self, base_prompt: str) -> str:
+        """
+        构建系统提示词 (包含技能清单)
+        
+        遵循 Agent Skills 规范的渐进式披露:
+        - 在系统提示中包含所有技能的 name + description
+        - 让大模型知道有哪些技能可用
+        - 大模型根据 description 判断何时使用某个技能
+        
+        Args:
+            base_prompt: 基础提示词 (身份信息)
+        
+        Returns:
+            完整的系统提示词
+        """
+        # 技能清单已在 _load_installed_skills 中生成
+        skill_catalog = getattr(self, '_skill_catalog_text', '')
+        
+        return f"""{base_prompt}
+{skill_catalog}
+## Tools Available
+
+You have access to the following tools:
+- **run_shell**: Execute shell commands
+- **write_file**: Write content to files
+- **read_file**: Read file contents
+- **list_directory**: List directory contents
+- **list_skills**: List all installed skills
+- **get_skill_info**: Load full instructions for a skill (use when activating a skill)
+- **run_skill_script**: Execute a skill's script
+- **get_skill_reference**: Get reference documentation
+- **generate_skill**: Create a new skill when existing ones don't meet the need
+- **improve_skill**: Improve an existing skill based on feedback
+"""
     
     async def chat(self, message: str) -> str:
         """
@@ -513,44 +554,18 @@ class Agent:
         
         logger.info(f"Executing task: {task.description[:100]}...")
         
-        # 构建工具列表提示
-        tools_desc = """
-你有以下工具可以使用：
+        # 使用已构建的系统提示词 (包含技能清单)
+        # 技能清单已在初始化时注入到 _context.system 中
+        system_prompt = self._context.system + """
 
-基础工具:
-- run_shell: 执行Shell命令
-- write_file: 写入文件
-- read_file: 读取文件
-- list_directory: 列出目录
+## Task Execution Strategy
 
-技能系统 (Agent Skills 规范):
-- list_skills: 列出已安装的技能
-- get_skill_info: 获取技能详细信息和指令
-- run_skill_script: 运行技能脚本
-- get_skill_reference: 获取技能参考文档
+请使用工具来实际执行任务:
 
-自进化 (生成新技能):
-- generate_skill: 自动生成新技能 (SKILL.md 规范)
-- improve_skill: 改进已有技能"""
-        
-        # 添加已安装技能的描述
-        installed_skills = self.skill_registry.list_all()
-        if installed_skills:
-            tools_desc += "\n\n已安装的技能:"
-            for skill in installed_skills:
-                desc = skill.description[:80] + "..." if len(skill.description) > 80 else skill.description
-                tools_desc += f"\n- {skill.name}: {desc}"
-        
-        # 构建系统提示词
-        system_prompt = self.identity.get_system_prompt() + tools_desc + """
-
-请使用工具来实际执行任务。
-
-执行策略:
-1. 先用 list_skills 查看已有技能
-2. 如果有相关技能，用 get_skill_info 查看使用方法
-3. 用 run_skill_script 运行脚本
-4. 如果没有合适的技能，用 generate_skill 自动生成新技能
+1. **Check skill catalog above** - 技能清单已在上方，根据描述判断是否有匹配的技能
+2. **If skill matches**: Use `get_skill_info(skill_name)` to load full instructions
+3. **Run script**: Use `run_skill_script(skill_name, script_name, args)`
+4. **If no skill matches**: Use `generate_skill(description)` to create one
 
 永不放弃，直到任务完成！"""
 

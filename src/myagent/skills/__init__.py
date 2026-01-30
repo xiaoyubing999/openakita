@@ -2,6 +2,10 @@
 技能系统
 
 遵循 Agent Skills 规范 (agentskills.io/specification)
+支持渐进式披露:
+- Level 1: 技能清单 (name + description) - 系统提示
+- Level 2: 完整指令 (SKILL.md body) - 激活时
+- Level 3: 资源文件 - 按需加载
 """
 
 from .parser import (
@@ -25,6 +29,11 @@ from .loader import (
     SKILL_DIRECTORIES,
 )
 
+from .catalog import (
+    SkillCatalog,
+    generate_skill_catalog,
+)
+
 __all__ = [
     # Parser
     "SkillParser",
@@ -41,4 +50,7 @@ __all__ = [
     # Loader
     "SkillLoader",
     "SKILL_DIRECTORIES",
+    # Catalog
+    "SkillCatalog",
+    "generate_skill_catalog",
 ]
