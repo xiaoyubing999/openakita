@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # 尝试导入官方 MCP SDK
 try:
-    from mcp import Client, StdioServerParameters
+    from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     MCP_SDK_AVAILABLE = True
 except ImportError:

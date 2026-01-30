@@ -34,6 +34,7 @@ from ..skills import SkillRegistry, SkillLoader, SkillEntry, SkillCatalog
 
 # MCP 系统
 from ..tools.mcp import MCPClient, mcp_client
+from ..tools.mcp_catalog import MCPCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +201,9 @@ class Agent:
             skill_registry=self.skill_registry,
         )
         
-        # MCP 客户端
+        # MCP 系统
         self.mcp_client = mcp_client
+        self.mcp_catalog = MCPCatalog()
         
         # 动态工具列表（基础工具 + 技能工具）
         self._tools = list(self.BASE_TOOLS)
@@ -227,14 +229,21 @@ class Agent:
         # 加载已安装的技能
         await self._load_installed_skills()
         
-        # 设置系统提示词 (包含技能清单)
+        # 加载 MCP 配置
+        await self._load_mcp_servers()
+        
+        # 设置系统提示词 (包含技能清单和 MCP 清单)
         base_prompt = self.identity.get_system_prompt()
         self._context.system = self._build_system_prompt(base_prompt)
         
         # TODO: 加载记忆
         
         self._initialized = True
-        logger.info(f"Agent '{self.name}' initialized with {self.skill_registry.count} skills")
+        logger.info(
+            f"Agent '{self.name}' initialized with "
+            f"{self.skill_registry.count} skills, "
+            f"{self.mcp_catalog.server_count} MCP servers"
+        )
     
     async def _load_installed_skills(self) -> None:
         """
@@ -261,14 +270,44 @@ class Agent:
         # 这里可以添加动态生成的技能工具
         pass
     
+    async def _load_mcp_servers(self) -> None:
+        """
+        加载 MCP 服务器配置
+        
+        扫描 MCP 配置目录，生成工具清单用于系统提示
+        """
+        # 尝试多个可能的 MCP 配置目录
+        possible_dirs = [
+            # Cursor 项目级 MCP 目录
+            Path.home() / ".cursor" / "projects" / "d-coder-myagent" / "mcps",
+            # 通用 Cursor MCP 目录
+            Path.home() / ".cursor" / "mcps",
+            # 项目本地 MCP 目录
+            settings.project_root / "mcps",
+            settings.project_root / ".mcp",
+        ]
+        
+        mcp_dir = None
+        for dir_path in possible_dirs:
+            if dir_path.exists():
+                mcp_dir = dir_path
+                break
+        
+        if mcp_dir:
+            count = self.mcp_catalog.scan_mcp_directory(mcp_dir)
+            self._mcp_catalog_text = self.mcp_catalog.generate_catalog()
+            logger.info(f"Loaded {count} MCP servers from {mcp_dir}")
+        else:
+            self._mcp_catalog_text = ""
+            logger.info("No MCP configuration directory found")
+    
     def _build_system_prompt(self, base_prompt: str) -> str:
         """
-        构建系统提示词 (包含技能清单)
+        构建系统提示词 (包含技能清单和 MCP 清单)
         
-        遵循 Agent Skills 规范的渐进式披露:
-        - 在系统提示中包含所有技能的 name + description
-        - 让大模型知道有哪些技能可用
-        - 大模型根据 description 判断何时使用某个技能
+        遵循规范的渐进式披露:
+        - Agent Skills: name + description 在系统提示中
+        - MCP: server + tool name + description 在系统提示中
         
         Args:
             base_prompt: 基础提示词 (身份信息)
@@ -276,18 +315,26 @@ class Agent:
         Returns:
             完整的系统提示词
         """
-        # 技能清单已在 _load_installed_skills 中生成
+        # 技能清单 (Agent Skills 规范)
         skill_catalog = getattr(self, '_skill_catalog_text', '')
+        
+        # MCP 清单 (Model Context Protocol 规范)
+        mcp_catalog = getattr(self, '_mcp_catalog_text', '')
         
         return f"""{base_prompt}
 {skill_catalog}
-## Tools Available
+{mcp_catalog}
+## Built-in Tools
 
-You have access to the following tools:
+You have access to the following built-in tools:
+
+### File System
 - **run_shell**: Execute shell commands
 - **write_file**: Write content to files
 - **read_file**: Read file contents
 - **list_directory**: List directory contents
+
+### Skills Management
 - **list_skills**: List all installed skills
 - **get_skill_info**: Load full instructions for a skill (use when activating a skill)
 - **run_skill_script**: Execute a skill's script
