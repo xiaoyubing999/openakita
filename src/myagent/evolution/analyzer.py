@@ -50,7 +50,7 @@ class NeedAnalyzer:
         skill_registry: Optional[SkillRegistry] = None,
     ):
         self.brain = brain
-        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_registry = skill_registry if skill_registry is not None else SkillRegistry()
     
     async def analyze_task(self, task: str) -> TaskAnalysis:
         """

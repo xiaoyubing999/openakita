@@ -27,7 +27,7 @@ class SkillLoader:
     """
     
     def __init__(self, registry: Optional[SkillRegistry] = None):
-        self.registry = registry or SkillRegistry()
+        self.registry = registry if registry is not None else SkillRegistry()
     
     def load_from_file(self, path: str) -> Optional[BaseSkill]:
         """

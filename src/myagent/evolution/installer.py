@@ -39,7 +39,7 @@ class AutoInstaller:
         skill_registry: Optional[SkillRegistry] = None,
     ):
         self.market = skill_market or SkillMarket()
-        self.registry = skill_registry or SkillRegistry()
+        self.registry = skill_registry if skill_registry is not None else SkillRegistry()
         self.shell = ShellTool()
     
     async def install_capability(self, gap: CapabilityGap) -> InstallResult:

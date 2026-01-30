@@ -47,7 +47,7 @@ class SkillMarket:
         registry: Optional[SkillRegistry] = None,
         skills_dir: Optional[Path] = None,
     ):
-        self.registry = registry or SkillRegistry()
+        self.registry = registry if registry is not None else SkillRegistry()
         self.skills_dir = skills_dir or settings.skills_path
         self.web = WebTool()
         self.shell = ShellTool()

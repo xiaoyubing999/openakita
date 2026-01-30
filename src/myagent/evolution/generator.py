@@ -46,7 +46,7 @@ class SkillGenerator:
     ):
         self.brain = brain
         self.skills_dir = skills_dir or settings.skills_path
-        self.registry = skill_registry or SkillRegistry()
+        self.registry = skill_registry if skill_registry is not None else SkillRegistry()
         self.loader = SkillLoader(self.registry)
         self.file_tool = FileTool()
         self.shell = ShellTool()
