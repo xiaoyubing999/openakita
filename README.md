@@ -118,7 +118,7 @@ Through **Multi-Agent architecture** for efficient parallelism:
 ### Requirements
 
 - Python 3.11+
-- [Anthropic API Key](https://console.anthropic.com/)
+- LLM API Key (Anthropic, OpenAI-compatible, or Chinese providers)
 
 ### Recommended Models
 
