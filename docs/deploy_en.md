@@ -91,6 +91,9 @@ tenacity>=8.2.3
 sentence-transformers>=2.2.0  # Local embedding model
 chromadb>=0.4.0               # Vector database
 
+# Multi-Agent Orchestration
+pyzmq>=25.0.0                 # ZeroMQ inter-process communication
+
 # IM Channels (optional)
 python-telegram-bot>=21.0  # Telegram
 ```
@@ -331,11 +334,19 @@ TELEGRAM_BOT_TOKEN=your-bot-token
 
 ### 8. Initialize Data Directory
 
+**Linux/macOS:**
 ```bash
-# Create data directories
-mkdir -p data
-mkdir -p data/sessions
-mkdir -p data/media
+mkdir -p data data/sessions data/media
+```
+
+**Windows (PowerShell):**
+```powershell
+New-Item -ItemType Directory -Force -Path data, data\sessions, data\media
+```
+
+**Windows (CMD):**
+```cmd
+mkdir data data\sessions data\media
 ```
 
 ### 9. Verify Installation
@@ -385,6 +396,27 @@ python -m openakita
 | `DINGTALK_APP_SECRET` | App Secret |
 | `QQ_ENABLED` | Enable QQ |
 | `QQ_ONEBOT_URL` | OneBot WebSocket URL |
+
+### Memory System Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `EMBEDDING_MODEL` | Embedding model name (default: shibing624/text2vec-base-chinese) |
+| `EMBEDDING_DEVICE` | Compute device (cpu or cuda) |
+| `MEMORY_HISTORY_DAYS` | Days to retain conversation history |
+| `MEMORY_MAX_HISTORY_FILES` | Max history files |
+| `MEMORY_MAX_HISTORY_SIZE_MB` | Max history storage size (MB) |
+
+### Multi-Agent Orchestration Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `ORCHESTRATION_ENABLED` | Enable multi-agent orchestration (true/false) |
+| `ORCHESTRATION_BUS_ADDRESS` | ZMQ bus address |
+| `ORCHESTRATION_PUB_ADDRESS` | ZMQ pub address |
+| `ORCHESTRATION_MIN_WORKERS` | Minimum worker count |
+| `ORCHESTRATION_MAX_WORKERS` | Maximum worker count |
+| `ORCHESTRATION_HEARTBEAT_INTERVAL` | Heartbeat interval (seconds) |
 
 ---
 

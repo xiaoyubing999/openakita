@@ -91,6 +91,9 @@ tenacity>=8.2.3
 sentence-transformers>=2.2.0  # 本地 embedding 模型
 chromadb>=0.4.0               # 向量数据库
 
+# 多 Agent 协同
+pyzmq>=25.0.0                 # ZeroMQ 进程间通信
+
 # IM 通道 (可选)
 python-telegram-bot>=21.0  # Telegram
 ```
@@ -177,7 +180,7 @@ argparse         # 命令行解析
 **Windows (PowerShell):**
 ```powershell
 # 下载并运行部署脚本
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/your-repo/openakita/main/scripts/deploy.ps1" -OutFile "scripts/deploy.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/openakita/openakita/main/scripts/deploy.ps1" -OutFile "scripts/deploy.ps1"
 .\scripts\deploy.ps1
 ```
 
@@ -189,7 +192,7 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/your-repo/openakita/ma
 **Linux/macOS (Bash):**
 ```bash
 # 下载并运行部署脚本
-curl -O https://raw.githubusercontent.com/your-repo/openakita/main/scripts/deploy.sh
+curl -O https://raw.githubusercontent.com/openakita/openakita/main/scripts/deploy.sh
 chmod +x scripts/deploy.sh
 ./scripts/deploy.sh
 ```
@@ -292,7 +295,7 @@ brew install git
 ### 3. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/openakita.git
+git clone https://github.com/openakita/openakita.git
 cd openakita
 ```
 
@@ -360,11 +363,19 @@ TELEGRAM_BOT_TOKEN=your-bot-token
 
 ### 8. 初始化数据目录
 
+**Linux/macOS:**
 ```bash
-# 创建数据目录
-mkdir -p data
-mkdir -p data/sessions
-mkdir -p data/media
+mkdir -p data data/sessions data/media
+```
+
+**Windows (PowerShell):**
+```powershell
+New-Item -ItemType Directory -Force -Path data, data\sessions, data\media
+```
+
+**Windows (CMD):**
+```cmd
+mkdir data data\sessions data\media
 ```
 
 ### 9. 验证安装
@@ -414,6 +425,27 @@ python -m openakita
 | `DINGTALK_APP_SECRET` | App Secret |
 | `QQ_ENABLED` | 启用 QQ |
 | `QQ_ONEBOT_URL` | OneBot WebSocket URL |
+
+### 记忆系统配置
+
+| 变量名 | 说明 |
+|--------|------|
+| `EMBEDDING_MODEL` | Embedding 模型名称 (默认: shibing624/text2vec-base-chinese) |
+| `EMBEDDING_DEVICE` | 计算设备 (cpu 或 cuda) |
+| `MEMORY_HISTORY_DAYS` | 历史对话保留天数 |
+| `MEMORY_MAX_HISTORY_FILES` | 历史对话最大文件数 |
+| `MEMORY_MAX_HISTORY_SIZE_MB` | 历史对话最大占用空间 (MB) |
+
+### 多 Agent 协同配置
+
+| 变量名 | 说明 |
+|--------|------|
+| `ORCHESTRATION_ENABLED` | 是否启用多 Agent 协同 (true/false) |
+| `ORCHESTRATION_BUS_ADDRESS` | ZMQ 总线地址 |
+| `ORCHESTRATION_PUB_ADDRESS` | ZMQ 广播地址 |
+| `ORCHESTRATION_MIN_WORKERS` | 最小 Worker 数量 |
+| `ORCHESTRATION_MAX_WORKERS` | 最大 Worker 数量 |
+| `ORCHESTRATION_HEARTBEAT_INTERVAL` | 心跳间隔 (秒) |
 
 ---
 
