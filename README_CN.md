@@ -89,7 +89,35 @@ OpenAkita 不只是一个工具 — 它是一个记住你、理解你、与你�
 
 > 💡 **建议**：复杂任务建议开启"扩展思考"模式。将模型设为 `*-thinking` 版本（如 `claude-opus-4-5-20251101-thinking`）可获得更好的推理效果。
 
-### 安装
+### 快速安装（推荐）
+
+**一行命令安装，交互式配置向导：**
+
+```bash
+# 从 PyPI 安装
+pip install openakita
+
+# 运行配置向导（交互式引导配置）
+openakita init
+```
+
+配置向导将引导你完成：
+- LLM API 配置（API 密钥、模型选择）
+- IM 通道设置（可选：Telegram、飞书等）
+- 记忆系统配置
+- 目录结构创建
+
+**或使用一键安装脚本：**
+
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+```
+
+### 手动安装
 
 ```bash
 # 克隆仓库
@@ -103,9 +131,12 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # 安装
 pip install -e .
 
-# 配置环境变量
+# 运行配置向导
+openakita init
+
+# 或手动配置
 cp .env.example .env
-# 编辑 .env 添加你的 ANTHROPIC_API_KEY
+# 编辑 .env 添加你的 API 密钥
 ```
 
 ### 配置

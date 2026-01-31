@@ -132,7 +132,35 @@ Through **Multi-Agent architecture** for efficient parallelism:
 
 > 💡 **Tip**: Enable "extended thinking" mode for complex tasks. Set model to `*-thinking` variant (e.g., `claude-opus-4-5-20251101-thinking`) for better reasoning.
 
-### Installation
+### Quick Install (Recommended)
+
+**One-line install with interactive setup wizard:**
+
+```bash
+# Install from PyPI
+pip install openakita
+
+# Run setup wizard (interactive configuration)
+openakita init
+```
+
+The setup wizard will guide you through:
+- LLM API configuration (API key, model selection)
+- IM channel setup (optional: Telegram, Feishu, etc.)
+- Memory system configuration
+- Directory structure creation
+
+**Or use the quick start script:**
+
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+```
+
+### Manual Installation
 
 ```bash
 # Clone repository
@@ -146,9 +174,12 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # Install
 pip install -e .
 
-# Configure
+# Run setup wizard
+openakita init
+
+# Or configure manually
 cp .env.example .env
-# Edit .env, fill in ANTHROPIC_API_KEY
+# Edit .env, fill in your API keys
 ```
 
 ### Run

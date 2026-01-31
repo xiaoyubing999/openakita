@@ -654,6 +654,34 @@ def main(
 
 
 @app.command()
+def init(
+    project_dir: Optional[str] = typer.Argument(None, help="项目目录（默认当前目录）"),
+):
+    """
+    初始化 OpenAkita - 交互式配置向导
+    
+    运行此命令启动配置向导，引导您完成：
+    - LLM API 配置
+    - IM 通道配置（可选）
+    - 记忆系统配置
+    - 目录结构创建
+    
+    示例:
+        openakita init
+        openakita init ./my-project
+    """
+    from .setup import SetupWizard
+    
+    wizard = SetupWizard(project_dir)
+    success = wizard.run()
+    
+    if success:
+        raise typer.Exit(0)
+    else:
+        raise typer.Exit(1)
+
+
+@app.command()
 def run(
     task: str = typer.Argument(..., help="要执行的任务"),
 ):
