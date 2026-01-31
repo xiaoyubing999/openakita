@@ -77,6 +77,13 @@ install_venv_package() {
 
 # Create virtual environment (with auto-install of venv package if needed)
 echo -e "${YELLOW}Creating virtual environment...${NC}"
+
+# Check if venv exists AND is valid (has activate script)
+if [ -d ".venv" ] && [ ! -f ".venv/bin/activate" ]; then
+    echo -e "${YELLOW}Found incomplete venv, removing and recreating...${NC}"
+    rm -rf .venv
+fi
+
 if [ ! -d ".venv" ]; then
     # Try to create venv, install package if it fails
     if ! $PYTHON_CMD -m venv .venv 2>/dev/null; then
