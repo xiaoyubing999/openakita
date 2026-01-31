@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = Field(default=True, description="是否启用定时任务调度器")
     scheduler_timezone: str = Field(default="Asia/Shanghai", description="调度器时区")
     scheduler_max_concurrent: int = Field(default=5, description="最大并发任务数")
+    scheduler_task_timeout: int = Field(default=600, description="定时任务执行超时时间（秒），默认 600 秒（10分钟）")
     
     # === 通道配置 ===
     # Telegram

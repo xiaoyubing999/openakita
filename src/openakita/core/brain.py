@@ -62,7 +62,7 @@ class Brain:
     # 失败阈值，超过则标记为不健康
     FAIL_THRESHOLD = 3
     # 请求超时（秒）
-    REQUEST_TIMEOUT = 30
+    REQUEST_TIMEOUT = 60
     # 主端点恢复检查间隔（秒）
     RECOVERY_CHECK_INTERVAL = 60
     
@@ -387,34 +387,54 @@ class Brain:
             
             endpoint = self._endpoints[idx]
             
-            try:
-                thinking_status = "thinking" if use_thinking else "fast"
-                logger.info(f"Sending request to {endpoint.name} ({endpoint.model}) [{thinking_status}]")
-                
-                if endpoint.client_type == "openai":
-                    response = self._call_openai_endpoint(endpoint, kwargs, use_thinking=use_thinking)
-                else:
-                    response = self._call_anthropic_endpoint(endpoint, kwargs)
-                
-                # 成功，更新当前端点
-                self._mark_endpoint_success(endpoint)
-                self._current_endpoint_idx = idx
-                self._update_public_attrs()
-                
-                if idx > 0:
-                    logger.info(f"")
-                    logger.info(f"  ╔══════════════════════════════════════════╗")
-                    logger.info(f"  ║  故障切换 → {endpoint.model:<28}║")
-                    logger.info(f"  ╚══════════════════════════════════════════╝")
-                
-                return response
-                
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Request failed for {endpoint.name}: {e}")
-                self._mark_endpoint_failed(endpoint)
-                
-                # 继续尝试下一个端点
+            # 对每个端点最多重试 2 次（共 3 次尝试）
+            max_retries = 2
+            for retry in range(max_retries + 1):
+                try:
+                    thinking_status = "thinking" if use_thinking else "fast"
+                    retry_info = f" (retry {retry})" if retry > 0 else ""
+                    logger.info(f"Sending request to {endpoint.name} ({endpoint.model}) [{thinking_status}]{retry_info}")
+                    
+                    if endpoint.client_type == "openai":
+                        response = self._call_openai_endpoint(endpoint, kwargs, use_thinking=use_thinking)
+                    else:
+                        response = self._call_anthropic_endpoint(endpoint, kwargs)
+                    
+                    # 成功，更新当前端点
+                    self._mark_endpoint_success(endpoint)
+                    self._current_endpoint_idx = idx
+                    self._update_public_attrs()
+                    
+                    if idx > 0:
+                        logger.info(f"")
+                        logger.info(f"  ╔══════════════════════════════════════════╗")
+                        logger.info(f"  ║  故障切换 → {endpoint.model:<28}║")
+                        logger.info(f"  ╚══════════════════════════════════════════╝")
+                    
+                    return response
+                    
+                except Exception as e:
+                    last_error = str(e)
+                    
+                    # 判断是否是可重试的错误（连接错误、超时等）
+                    is_retryable = any(x in str(e).lower() for x in [
+                        'connection', 'timeout', 'temporary', 'reset', 
+                        'network', 'unavailable', 'refused'
+                    ])
+                    
+                    if retry < max_retries and is_retryable:
+                        wait_time = (retry + 1) * 2  # 2秒, 4秒
+                        logger.warning(f"Request failed for {endpoint.name}: {e}, retrying in {wait_time}s...")
+                        import time as time_module
+                        time_module.sleep(wait_time)
+                        continue
+                    
+                    logger.warning(f"Request failed for {endpoint.name}: {e}")
+                    self._mark_endpoint_failed(endpoint)
+                    break
+            
+            # 继续尝试下一个端点
+            if len(self._endpoints) > 1:
                 logger.info(f"Trying next endpoint...")
         
         raise RuntimeError(f"All LLM endpoints failed: {last_error}")
@@ -653,7 +673,18 @@ class Brain:
                 break
             
             tried_endpoints.add(endpoint.name)
-            client = self._clients[endpoint.name]
+            
+            # 根据端点类型选择正确的客户端
+            if endpoint.client_type == "openai":
+                if endpoint.name not in self._openai_clients:
+                    logger.warning(f"OpenAI client not found for {endpoint.name}, skipping")
+                    continue
+                client = self._openai_clients[endpoint.name]
+            else:
+                if endpoint.name not in self._anthropic_clients:
+                    logger.warning(f"Anthropic client not found for {endpoint.name}, skipping")
+                    continue
+                client = self._anthropic_clients[endpoint.name]
             
             try:
                 # 构建请求参数
@@ -711,27 +742,73 @@ class Brain:
                 
                 logger.info("=" * 80)
                 
-                response: Message = await asyncio.wait_for(
-                    asyncio.to_thread(client.messages.create, **request_params),
-                    timeout=self.REQUEST_TIMEOUT,
-                )
+                # 根据端点类型调用不同的 API
+                if endpoint.client_type == "openai":
+                    # OpenAI 格式调用
+                    openai_messages = []
+                    if sys_prompt:
+                        openai_messages.append({"role": "system", "content": sys_prompt})
+                    for msg in messages:
+                        role = msg.get("role", msg["role"] if isinstance(msg, dict) else "user")
+                        msg_content = msg.get("content", "")
+                        if isinstance(msg_content, list):
+                            text_parts = []
+                            for part in msg_content:
+                                if isinstance(part, dict) and part.get("type") == "text":
+                                    text_parts.append(part.get("text", ""))
+                            msg_content = "\n".join(text_parts) if text_parts else str(msg_content)
+                        openai_messages.append({"role": role, "content": msg_content})
+                    
+                    openai_response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.chat.completions.create,
+                            model=endpoint.model,
+                            messages=openai_messages,
+                            max_tokens=self.max_tokens,
+                        ),
+                        timeout=self.REQUEST_TIMEOUT,
+                    )
+                    
+                    # 转换 OpenAI 响应为统一格式
+                    choice = openai_response.choices[0]
+                    response_content = choice.message.content or ""
+                    response_tool_calls = []
+                    response_stop_reason = "end_turn" if choice.finish_reason == "stop" else (choice.finish_reason or "")
+                    response_usage = {
+                        "input_tokens": openai_response.usage.prompt_tokens if openai_response.usage else 0,
+                        "output_tokens": openai_response.usage.completion_tokens if openai_response.usage else 0,
+                    }
+                else:
+                    # Anthropic 格式调用
+                    response: Message = await asyncio.wait_for(
+                        asyncio.to_thread(client.messages.create, **request_params),
+                        timeout=self.REQUEST_TIMEOUT,
+                    )
+                    
+                    # 解析 Anthropic 响应
+                    response_content = ""
+                    response_tool_calls = []
+                    for block in response.content:
+                        if block.type == "text":
+                            response_content += block.text
+                        elif block.type == "tool_use":
+                            response_tool_calls.append({
+                                "id": block.id,
+                                "name": block.name,
+                                "input": block.input,
+                            })
+                    response_stop_reason = response.stop_reason or ""
+                    response_usage = {
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                    }
                 
                 # 成功，标记端点健康
                 self._mark_endpoint_success(endpoint)
                 
-                # 解析响应
-                content = ""
-                tool_calls = []
-                
-                for block in response.content:
-                    if block.type == "text":
-                        content += block.text
-                    elif block.type == "tool_use":
-                        tool_calls.append({
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
+                # 统一变量名
+                content = response_content
+                tool_calls = response_tool_calls
                 
                 # === 输出 LLM 响应日志（完整）===
                 logger.info("=" * 80)
@@ -745,18 +822,15 @@ class Brain:
                     for tc in tool_calls:
                         logger.info(f"  - {tc['name']}:")
                         logger.info(f"      {tc['input']}")
-                logger.info(f"[STOP REASON] {response.stop_reason}")
-                logger.info(f"[USAGE] input={response.usage.input_tokens}, output={response.usage.output_tokens}")
+                logger.info(f"[STOP REASON] {response_stop_reason}")
+                logger.info(f"[USAGE] input={response_usage['input_tokens']}, output={response_usage['output_tokens']}")
                 logger.info("=" * 80)
                 
                 return Response(
                     content=content,
                     tool_calls=tool_calls,
-                    stop_reason=response.stop_reason or "",
-                    usage={
-                        "input_tokens": response.usage.input_tokens,
-                        "output_tokens": response.usage.output_tokens,
-                    },
+                    stop_reason=response_stop_reason,
+                    usage=response_usage,
                 )
                 
             except asyncio.TimeoutError:

@@ -57,8 +57,33 @@ echo -e "${GREEN}✓ Python $PYTHON_VERSION${NC}\n"
 # Check pip
 echo -e "${YELLOW}Checking pip...${NC}"
 if ! $PYTHON_CMD -m pip --version &> /dev/null; then
-    echo -e "${RED}Error: pip is not installed.${NC}"
-    exit 1
+    echo -e "${YELLOW}pip not found. Installing pip...${NC}"
+    
+    # Try ensurepip first (built-in method)
+    if $PYTHON_CMD -m ensurepip --upgrade &> /dev/null; then
+        echo -e "${GREEN}✓ pip installed via ensurepip${NC}"
+    else
+        # Fallback to get-pip.py
+        echo -e "${YELLOW}Downloading get-pip.py...${NC}"
+        if command -v curl &> /dev/null; then
+            curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+        elif command -v wget &> /dev/null; then
+            wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+        else
+            echo -e "${RED}Error: Neither curl nor wget is available to download pip.${NC}"
+            echo "Please install pip manually: https://pip.pypa.io/en/stable/installation/"
+            exit 1
+        fi
+        
+        $PYTHON_CMD /tmp/get-pip.py --user
+        rm -f /tmp/get-pip.py
+        
+        if ! $PYTHON_CMD -m pip --version &> /dev/null; then
+            echo -e "${RED}Error: Failed to install pip.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ pip installed via get-pip.py${NC}"
+    fi
 fi
 echo -e "${GREEN}✓ pip is available${NC}\n"
 

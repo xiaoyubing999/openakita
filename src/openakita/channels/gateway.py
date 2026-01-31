@@ -506,9 +506,9 @@ class MessageGateway:
             result = await adapter.send_text(chat_id, text, **kwargs)
             
             # 记录到 session 历史
-            if record_to_session and self._session_manager:
+            if record_to_session and self.session_manager:
                 try:
-                    self._session_manager.add_message(
+                    self.session_manager.add_message(
                         channel=channel,
                         chat_id=chat_id,
                         user_id=user_id,
@@ -543,7 +543,7 @@ class MessageGateway:
         )
         
         # 记录到 session 历史（用指定的 role）
-        if self._session_manager:
+        if self.session_manager:
             try:
                 session.add_message(
                     role=role,

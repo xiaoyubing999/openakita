@@ -13,6 +13,7 @@ Skills 系统遵循 Agent Skills 规范 (agentskills.io)
 MCP 系统遵循 Model Context Protocol 规范 (modelcontextprotocol.io)
 """
 
+import asyncio
 import logging
 import uuid
 import json
@@ -1111,7 +1112,7 @@ class Agent:
             from ..scheduler.executor import TaskExecutor
             
             # 创建执行器（gateway 稍后通过 set_scheduler_gateway 设置）
-            self._task_executor = TaskExecutor(timeout_seconds=300)
+            self._task_executor = TaskExecutor(timeout_seconds=settings.scheduler_task_timeout)
             
             # 创建调度器
             self.task_scheduler = TaskScheduler(
@@ -1535,8 +1536,9 @@ class Agent:
             return ""
         
         try:
-            # 使用 LLM 生成摘要
-            response = self.brain.messages_create(
+            # 使用 LLM 生成摘要（在线程池中执行同步调用）
+            response = await asyncio.to_thread(
+                self.brain.messages_create,
                 model=self.brain.model,
                 max_tokens=SUMMARY_TARGET_TOKENS,
                 system="你是一个对话摘要助手。请用简洁的中文摘要以下对话的要点，只保留最重要的信息。",
@@ -1863,8 +1865,9 @@ class Agent:
             if iteration > 0:
                 working_messages = await self._compress_context(working_messages)
             
-            # 调用 Brain，传递工具列表
-            response = self.brain.messages_create(
+            # 调用 Brain，传递工具列表（在线程池中执行同步调用，避免事件循环冲突）
+            response = await asyncio.to_thread(
+                self.brain.messages_create,
                 model=self.brain.model,
                 max_tokens=self.brain.max_tokens,
                 system=system_prompt,
@@ -1960,8 +1963,9 @@ class Agent:
             if iteration > 0:
                 messages = await self._compress_context(messages)
             
-            # 调用 Brain，传递工具列表
-            response = self.brain.messages_create(
+            # 调用 Brain，传递工具列表（在线程池中执行同步调用）
+            response = await asyncio.to_thread(
+                self.brain.messages_create,
                 model=self.brain.model,
                 max_tokens=self.brain.max_tokens,
                 system=self._context.system,
@@ -2686,8 +2690,9 @@ class Agent:
             if iteration > 1:
                 messages = await self._compress_context(messages)
             
-            # 调用 Brain
-            response = self.brain.messages_create(
+            # 调用 Brain（在线程池中执行同步调用）
+            response = await asyncio.to_thread(
+                self.brain.messages_create,
                 model=self.brain.model,
                 max_tokens=self.brain.max_tokens,
                 system=system_prompt,
