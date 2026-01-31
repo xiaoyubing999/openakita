@@ -106,10 +106,10 @@ Through **Multi-Agent architecture** for efficient parallelism:
 |----------|--------|
 | **CLI** | ✅ Full Support |
 | **Telegram** | ✅ Full Support |
-| **Feishu** | ✅ Supported |
-| **WeCom** | ✅ Supported |
-| **DingTalk** | ✅ Supported |
-| **QQ** | 🚧 In Development |
+| **Feishu** | ⚠️ Implemented, Not Tested |
+| **WeCom** | ⚠️ Implemented, Not Tested |
+| **DingTalk** | ⚠️ Implemented, Not Tested |
+| **QQ** | ⚠️ Implemented, Not Tested |
 
 ## Quick Start
 
