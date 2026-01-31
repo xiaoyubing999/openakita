@@ -216,12 +216,18 @@ class Brain:
                 self._current_endpoint_idx = i
                 self._update_public_attrs()
                 logger.info(f"  → Using {endpoint.name} as current endpoint")
+                logger.info(f"")
+                logger.info(f"  ╔══════════════════════════════════════════╗")
+                logger.info(f"  ║  当前 LLM: {endpoint.model:<30}║")
+                logger.info(f"  ╚══════════════════════════════════════════╝")
                 return
         
         # 所有端点都失败
         logger.error("All endpoints failed health check! Will retry on first request.")
         self._current_endpoint_idx = 0
         self._update_public_attrs()
+        ep = self._endpoints[0]
+        logger.info(f"  当前 LLM (fallback): {ep.model}")
     
     def _update_public_attrs(self) -> None:
         """更新公开属性"""
