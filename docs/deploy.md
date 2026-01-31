@@ -1,4 +1,6 @@
-# OpenAkita 部署文档
+# OpenAkita 部署文档 (中文版)
+
+[English Version](./deploy_en.md)
 
 > 完整的从零开始部署指南
 
@@ -348,7 +350,7 @@ cp .env.example .env
 # 必需 - Anthropic API Key
 ANTHROPIC_API_KEY=sk-your-api-key-here
 
-# 可选 - 使用第三方代理
+# 可选 - 自定义 API 端点
 ANTHROPIC_BASE_URL=https://api.anthropic.com
 
 # 可选 - Telegram 机器人
@@ -521,18 +523,16 @@ playwright install-deps
 
 ### Q: API 连接超时？
 
-检查网络环境，如果在国内，可以：
-1. 使用 VPN/代理
-2. 配置第三方 API 转发服务：
+检查网络环境，可以配置自定义 API 端点：
 ```ini
-ANTHROPIC_BASE_URL=https://your-proxy-service.com
+ANTHROPIC_BASE_URL=https://your-api-endpoint.com
 ```
 
 ### Q: Telegram Bot 无法启动？
 
 1. 检查 Token 是否正确
 2. 确认网络能访问 `api.telegram.org`
-3. 如果在国内，需要配置代理
+3. 检查防火墙设置
 
 ### Q: 内存不足？
 
