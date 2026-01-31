@@ -147,6 +147,12 @@ echo -e "${GREEN}✓ pip is available${NC}\n"
 # Install OpenAkita
 echo -e "${YELLOW}Installing OpenAkita...${NC}"
 pip install --upgrade pip > /dev/null 2>&1
+
+# Install CPU-only PyTorch first (saves ~2GB disk space)
+echo -e "${YELLOW}Installing PyTorch (CPU-only)...${NC}"
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+echo -e "${GREEN}✓ PyTorch (CPU) installed${NC}"
+
 pip install openakita
 echo -e "${GREEN}✓ OpenAkita installed${NC}\n"
 
