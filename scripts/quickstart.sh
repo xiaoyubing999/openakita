@@ -54,40 +54,25 @@ if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" 
 fi
 echo -e "${GREEN}✓ Python $PYTHON_VERSION${NC}\n"
 
-# Check pip
-echo -e "${YELLOW}Checking pip...${NC}"
-if ! $PYTHON_CMD -m pip --version &> /dev/null; then
-    echo -e "${YELLOW}pip not found. Installing pip...${NC}"
-    
-    # Try ensurepip first (built-in method)
-    if $PYTHON_CMD -m ensurepip --upgrade &> /dev/null; then
-        echo -e "${GREEN}✓ pip installed via ensurepip${NC}"
+# Check venv module availability
+echo -e "${YELLOW}Checking venv module...${NC}"
+if ! $PYTHON_CMD -m venv --help &> /dev/null; then
+    echo -e "${YELLOW}venv module not available. Trying to install python3-venv...${NC}"
+    if command -v apt &> /dev/null; then
+        sudo apt update && sudo apt install -y python3-venv python3-pip
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y python3-pip
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y python3-pip
     else
-        # Fallback to get-pip.py
-        echo -e "${YELLOW}Downloading get-pip.py...${NC}"
-        if command -v curl &> /dev/null; then
-            curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-        elif command -v wget &> /dev/null; then
-            wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-        else
-            echo -e "${RED}Error: Neither curl nor wget is available to download pip.${NC}"
-            echo "Please install pip manually: https://pip.pypa.io/en/stable/installation/"
-            exit 1
-        fi
-        
-        $PYTHON_CMD /tmp/get-pip.py --user
-        rm -f /tmp/get-pip.py
-        
-        if ! $PYTHON_CMD -m pip --version &> /dev/null; then
-            echo -e "${RED}Error: Failed to install pip.${NC}"
-            exit 1
-        fi
-        echo -e "${GREEN}✓ pip installed via get-pip.py${NC}"
+        echo -e "${RED}Error: Cannot install venv module automatically.${NC}"
+        echo "Please install python3-venv manually for your distribution."
+        exit 1
     fi
 fi
-echo -e "${GREEN}✓ pip is available${NC}\n"
+echo -e "${GREEN}✓ venv module is available${NC}\n"
 
-# Create virtual environment (optional but recommended)
+# Create virtual environment first (this avoids PEP 668 issues)
 echo -e "${YELLOW}Creating virtual environment...${NC}"
 if [ ! -d ".venv" ]; then
     $PYTHON_CMD -m venv .venv
@@ -100,6 +85,38 @@ fi
 echo -e "${YELLOW}Activating virtual environment...${NC}"
 source .venv/bin/activate
 echo -e "${GREEN}✓ Virtual environment activated${NC}\n"
+
+# Check pip inside venv (venv should include pip, but may need ensurepip)
+echo -e "${YELLOW}Checking pip in virtual environment...${NC}"
+if ! python -m pip --version &> /dev/null; then
+    echo -e "${YELLOW}pip not found in venv. Installing pip...${NC}"
+    
+    # Try ensurepip first
+    if python -m ensurepip --upgrade &> /dev/null; then
+        echo -e "${GREEN}✓ pip installed via ensurepip${NC}"
+    else
+        # Fallback to get-pip.py (safe inside venv)
+        echo -e "${YELLOW}Downloading get-pip.py...${NC}"
+        if command -v curl &> /dev/null; then
+            curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+        elif command -v wget &> /dev/null; then
+            wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
+        else
+            echo -e "${RED}Error: Neither curl nor wget is available to download pip.${NC}"
+            exit 1
+        fi
+        
+        python /tmp/get-pip.py
+        rm -f /tmp/get-pip.py
+        
+        if ! python -m pip --version &> /dev/null; then
+            echo -e "${RED}Error: Failed to install pip in virtual environment.${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ pip installed via get-pip.py${NC}"
+    fi
+fi
+echo -e "${GREEN}✓ pip is available${NC}\n"
 
 # Install OpenAkita
 echo -e "${YELLOW}Installing OpenAkita...${NC}"
