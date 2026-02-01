@@ -118,6 +118,7 @@ class ScheduledTask:
     # 执行内容
     prompt: str = ""               # 发送给 Agent 的 prompt（仅 TASK 类型使用）
     script_path: Optional[str] = None  # 预置脚本路径
+    action: Optional[str] = None   # 系统动作标识（如 system:daily_memory）
     
     # 通知配置
     channel_id: Optional[str] = None   # 结果发送的通道
@@ -127,6 +128,7 @@ class ScheduledTask:
     # 状态
     enabled: bool = True
     status: TaskStatus = TaskStatus.PENDING
+    deletable: bool = True  # 是否允许删除（系统任务设为 False）
     
     # 执行记录
     last_run: Optional[datetime] = None
@@ -336,6 +338,7 @@ class ScheduledTask:
             "user_id": self.user_id,
             "enabled": self.enabled,
             "status": self.status.value,
+            "deletable": self.deletable,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "next_run": self.next_run.isoformat() if self.next_run else None,
             "run_count": self.run_count,
@@ -363,6 +366,7 @@ class ScheduledTask:
             user_id=data.get("user_id"),
             enabled=data.get("enabled", True),
             status=TaskStatus(data.get("status", "pending")),
+            deletable=data.get("deletable", True),
             last_run=datetime.fromisoformat(data["last_run"]) if data.get("last_run") else None,
             next_run=datetime.fromisoformat(data["next_run"]) if data.get("next_run") else None,
             run_count=data.get("run_count", 0),

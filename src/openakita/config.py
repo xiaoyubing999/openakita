@@ -52,8 +52,22 @@ class Settings(BaseSettings):
     )
     database_path: str = Field(default="data/agent.db", description="数据库路径")
     
-    # 日志
+    # === 日志配置 ===
     log_level: str = Field(default="INFO", description="日志级别")
+    log_dir: str = Field(default="logs", description="日志目录")
+    log_file_prefix: str = Field(default="openakita", description="日志文件前缀")
+    log_max_size_mb: int = Field(default=10, description="单个日志文件最大大小（MB）")
+    log_backup_count: int = Field(default=30, description="保留的日志文件数量")
+    log_retention_days: int = Field(default=30, description="日志保留天数")
+    log_format: str = Field(
+        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        description="日志格式"
+    )
+    log_to_console: bool = Field(default=True, description="是否输出到控制台")
+    log_to_file: bool = Field(default=True, description="是否输出到文件")
+    
+    # === Whisper 语音识别 ===
+    whisper_model: str = Field(default="base", description="Whisper 模型 (tiny/base/small/medium/large)")
     
     # GitHub
     github_token: str = Field(default="", description="GitHub Token")
@@ -167,6 +181,26 @@ class Settings(BaseSettings):
     def db_full_path(self) -> Path:
         """数据库完整路径"""
         return self.project_root / self.database_path
+    
+    @property
+    def log_dir_path(self) -> Path:
+        """日志目录完整路径"""
+        return self.project_root / self.log_dir
+    
+    @property
+    def log_file_path(self) -> Path:
+        """主日志文件路径"""
+        return self.log_dir_path / f"{self.log_file_prefix}.log"
+    
+    @property
+    def error_log_path(self) -> Path:
+        """错误日志文件路径（只记录 ERROR/CRITICAL）"""
+        return self.log_dir_path / "error.log"
+    
+    @property
+    def selfcheck_dir(self) -> Path:
+        """自检报告目录"""
+        return self.project_root / "data" / "selfcheck"
 
 
 # 全局配置实例

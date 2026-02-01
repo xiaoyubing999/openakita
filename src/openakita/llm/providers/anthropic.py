@@ -16,6 +16,7 @@ from ..types import (
     LLMResponse,
     EndpointConfig,
     TextBlock,
+    ThinkingBlock,
     ToolUseBlock,
     Usage,
     StopReason,
@@ -40,7 +41,7 @@ class AnthropicProvider(LLMProvider):
     @property
     def api_key(self) -> str:
         """获取 API Key"""
-        return os.environ.get(self.config.api_key_env, "")
+        return self.config.get_api_key() or ""
     
     @property
     def base_url(self) -> str:
@@ -188,13 +189,24 @@ class AnthropicProvider(LLMProvider):
         return body
     
     def _parse_response(self, data: dict) -> LLMResponse:
-        """解析响应"""
+        """解析响应
+        
+        支持 MiniMax M2.1 的 Interleaved Thinking：
+        - 解析 thinking 块并保留在 content 中
+        - 确保多轮工具调用时思维链的连续性
+        """
         content_blocks = []
         
         for block in data.get("content", []):
             block_type = block.get("type")
             
-            if block_type == "text":
+            if block_type == "thinking":
+                # MiniMax M2.1 Interleaved Thinking 支持
+                # 必须完整保留 thinking 块以保持思维链连续性
+                content_blocks.append(ThinkingBlock(
+                    thinking=block.get("thinking", "")
+                ))
+            elif block_type == "text":
                 content_blocks.append(TextBlock(text=block.get("text", "")))
             elif block_type == "tool_use":
                 content_blocks.append(ToolUseBlock(

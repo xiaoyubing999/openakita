@@ -31,13 +31,13 @@ class MediaHandler:
     def __init__(
         self,
         brain: Optional[Any] = None,
-        whisper_model: str = "base",
+        whisper_model: str = "medium",
         enable_ocr: bool = True,
     ):
         """
         Args:
             brain: Brain 实例（用于图片理解）
-            whisper_model: Whisper 模型大小
+            whisper_model: Whisper 模型大小 (tiny, base, small, medium, large)
             enable_ocr: 是否启用 OCR
         """
         self.brain = brain
@@ -46,7 +46,47 @@ class MediaHandler:
         
         # 延迟加载的模型
         self._whisper = None
+        self._whisper_loaded = False
         self._ocr = None
+    
+    async def preload_whisper(self) -> bool:
+        """
+        预加载 Whisper 模型
+        
+        在系统启动时调用，避免第一次使用时的延迟
+        
+        Returns:
+            是否成功加载
+        """
+        if self._whisper_loaded:
+            return True
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._load_whisper_sync)
+            return self._whisper is not None
+        except Exception as e:
+            logger.error(f"Failed to preload Whisper: {e}")
+            return False
+    
+    def _load_whisper_sync(self) -> None:
+        """同步加载 Whisper 模型"""
+        if self._whisper_loaded:
+            return
+        
+        try:
+            import whisper
+            logger.info(f"Loading Whisper model '{self.whisper_model}'...")
+            self._whisper = whisper.load_model(self.whisper_model)
+            self._whisper_loaded = True
+            logger.info(f"Whisper model '{self.whisper_model}' loaded successfully")
+        except ImportError:
+            logger.warning(
+                "Whisper not installed. Voice transcription will not be available. "
+                "Run: pip install openai-whisper"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {e}")
     
     async def process(self, media: MediaFile) -> MediaFile:
         """
@@ -109,16 +149,16 @@ class MediaHandler:
     
     async def _transcribe_with_whisper(self, audio_path: str) -> str:
         """使用本地 Whisper 转写"""
-        # 延迟加载 Whisper
+        # 确保模型已加载
+        if not self._whisper_loaded:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._load_whisper_sync)
+        
         if self._whisper is None:
-            try:
-                import whisper
-                self._whisper = whisper.load_model(self.whisper_model)
-            except ImportError:
-                raise ImportError(
-                    "whisper not installed. "
-                    "Run: pip install openai-whisper"
-                )
+            raise RuntimeError(
+                "Whisper model not available. "
+                "Make sure openai-whisper is installed: pip install openai-whisper"
+            )
         
         # 在线程池中执行（避免阻塞）
         loop = asyncio.get_event_loop()

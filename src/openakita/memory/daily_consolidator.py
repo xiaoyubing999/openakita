@@ -302,7 +302,8 @@ class DailyConsolidator:
     # ==================== 去重清理 ====================
     
     # 向量相似度阈值（用于初筛可能的重复）
-    DUPLICATE_DISTANCE_THRESHOLD = 0.3
+    # 0.3 太宽松，改为 0.15，配合 LLM 二次判断
+    DUPLICATE_DISTANCE_THRESHOLD = 0.15
     
     async def _cleanup_duplicate_memories(self) -> int:
         """

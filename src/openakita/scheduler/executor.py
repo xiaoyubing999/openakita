@@ -28,13 +28,13 @@ class TaskExecutor:
         self,
         agent_factory: Optional[Callable[[], Any]] = None,
         gateway: Optional[Any] = None,
-        timeout_seconds: int = 300,
+        timeout_seconds: int = 600,  # 10 分钟超时
     ):
         """
         Args:
             agent_factory: Agent 工厂函数
             gateway: 消息网关（用于发送结果通知）
-            timeout_seconds: 执行超时（秒）
+            timeout_seconds: 执行超时（秒），默认 600 秒（10分钟）
         """
         self.agent_factory = agent_factory
         self.gateway = gateway
@@ -206,6 +206,10 @@ class TaskExecutor:
             task: 要执行的任务
             skip_end_notification: 是否跳过结束通知（用于从提醒升级的情况）
         """
+        # 检查是否是系统任务（需要特殊处理）
+        if task.action and task.action.startswith("system:"):
+            return await self._execute_system_task(task)
+        
         try:
             # 1. 创建 Agent
             agent = await self._create_agent()
@@ -392,6 +396,117 @@ class TaskExecutor:
         if hasattr(agent, "shutdown"):
             await agent.shutdown()
     
+    async def _execute_system_task(self, task: ScheduledTask) -> tuple[bool, str]:
+        """
+        执行系统内置任务
+        
+        直接调用相应的系统方法，不通过 LLM
+        
+        支持的系统任务:
+        - system:daily_memory - 每日记忆整理
+        - system:daily_selfcheck - 每日系统自检
+        """
+        action = task.action
+        logger.info(f"Executing system task: {action}")
+        
+        try:
+            if action == "system:daily_memory":
+                return await self._system_daily_memory()
+            
+            elif action == "system:daily_selfcheck":
+                return await self._system_daily_selfcheck()
+            
+            else:
+                return False, f"Unknown system action: {action}"
+                
+        except Exception as e:
+            logger.error(f"System task {action} failed: {e}")
+            return False, str(e)
+    
+    async def _system_daily_memory(self) -> tuple[bool, str]:
+        """
+        执行每日记忆整理
+        
+        调用 MemoryManager.consolidate_daily()
+        """
+        try:
+            from ..memory import MemoryManager
+            from ..core.brain import Brain
+            from ..config import settings
+            
+            # 创建 Brain（用于 LLM 摘要）
+            brain = Brain()
+            
+            # 创建 MemoryManager
+            memory_manager = MemoryManager(
+                data_dir=settings.project_root / "data" / "memory",
+                memory_md_path=settings.memory_path,
+                brain=brain,
+            )
+            
+            # 执行每日整理
+            result = await memory_manager.consolidate_daily()
+            
+            # 格式化结果
+            summary = (
+                f"记忆整理完成:\n"
+                f"- 处理会话: {result.get('sessions_processed', 0)}\n"
+                f"- 提取记忆: {result.get('memories_extracted', 0)}\n"
+                f"- 新增记忆: {result.get('memories_added', 0)}\n"
+                f"- 去重: {result.get('duplicates_removed', 0)}\n"
+                f"- MEMORY.md: {'已刷新' if result.get('memory_md_refreshed') else '未刷新'}"
+            )
+            
+            logger.info(f"Daily memory consolidation completed: {result}")
+            return True, summary
+            
+        except Exception as e:
+            logger.error(f"Daily memory consolidation failed: {e}")
+            return False, str(e)
+    
+    async def _system_daily_selfcheck(self) -> tuple[bool, str]:
+        """
+        执行每日系统自检
+        
+        调用 SelfChecker.run_daily_check()
+        """
+        try:
+            from ..evolution import SelfChecker
+            from ..core.brain import Brain
+            from ..logging import LogCleaner
+            from ..config import settings
+            
+            # 1. 清理旧日志
+            log_cleaner = LogCleaner(
+                log_dir=settings.log_dir_path,
+                retention_days=settings.log_retention_days,
+            )
+            cleanup_result = log_cleaner.cleanup()
+            
+            # 2. 执行自检
+            brain = Brain()
+            checker = SelfChecker(brain=brain)
+            report = await checker.run_daily_check()
+            
+            # 3. 格式化结果
+            summary = (
+                f"系统自检完成:\n"
+                f"- 总错误数: {report.total_errors}\n"
+                f"- 核心组件错误: {report.core_errors} (需人工处理)\n"
+                f"- 工具错误: {report.tool_errors}\n"
+                f"- 尝试修复: {report.fix_attempted}\n"
+                f"- 修复成功: {report.fix_success}\n"
+                f"- 修复失败: {report.fix_failed}\n"
+                f"- 日志清理: 删除 {cleanup_result.get('by_age', 0) + cleanup_result.get('by_size', 0)} 个旧文件"
+            )
+            
+            logger.info(f"Daily selfcheck completed: {report.total_errors} errors, {report.fix_success} fixed")
+            return True, summary
+            
+        except Exception as e:
+            logger.error(f"Daily selfcheck failed: {e}")
+            return False, str(e)
+    
     def _build_prompt(self, task: ScheduledTask, suppress_send_to_chat: bool = False) -> str:
         """
         构建执行 prompt
@@ -447,10 +562,14 @@ class TaskExecutor:
 # 便捷函数：创建默认执行器
 def create_default_executor(
     gateway: Optional[Any] = None,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 600,  # 10 分钟超时
 ) -> Callable[[ScheduledTask], Awaitable[tuple[bool, str]]]:
     """
     创建默认执行器函数
+    
+    Args:
+        gateway: 消息网关
+        timeout_seconds: 超时时间（秒），默认 600 秒（10分钟）
     
     Returns:
         可用于 TaskScheduler 的执行器函数

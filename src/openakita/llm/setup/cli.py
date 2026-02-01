@@ -151,16 +151,31 @@ def _add_endpoint_from_provider(endpoints: list[EndpointConfig], provider_info: 
     default_name = f"{provider_info.slug}-{model_id.split('/')[-1]}"
     name = input(f"端点名称 (默认 {default_name}): ").strip() or default_name
     
-    # 获取能力
+    # 自定义 Base URL (可选)
+    print(f"\nAPI Base URL (默认 {provider_info.default_base_url}):")
+    custom_url = input("> ").strip()
+    base_url = custom_url if custom_url else provider_info.default_base_url
+    
+    # 获取能力（自动推断 + 用户确认）
     caps = infer_capabilities(model_id, provider_slug=provider_info.slug)
-    capabilities = [k for k, v in caps.items() if v and k != "thinking_only"]
+    auto_capabilities = [k for k, v in caps.items() if v and k != "thinking_only"]
+    
+    print(f"\n自动检测到的能力: {', '.join(auto_capabilities) if auto_capabilities else '无'}")
+    print("可用能力: text, vision, video, tools")
+    print("是否修改? 输入新的能力列表 (用逗号分隔) 或直接回车保留:")
+    caps_input = input("> ").strip()
+    
+    if caps_input:
+        capabilities = [c.strip() for c in caps_input.split(",") if c.strip()]
+    else:
+        capabilities = auto_capabilities if auto_capabilities else ["text"]
     
     # 创建端点配置
     endpoint = EndpointConfig(
         name=name,
         provider=provider_info.slug,
         api_type=provider_info.api_type,
-        base_url=provider_info.default_base_url,
+        base_url=base_url,
         api_key_env=env_key,
         model=model_id,
         priority=priority,
@@ -175,39 +190,84 @@ def _add_endpoint_from_provider(endpoints: list[EndpointConfig], provider_info: 
 
 def _add_custom_endpoint(endpoints: list[EndpointConfig]):
     """添加自定义端点"""
-    print("\n添加自定义端点")
+    print("\n" + "="*50)
+    print("  添加自定义 LLM 端点")
+    print("="*50)
     
-    name = input("端点名称: ").strip()
-    base_url = input("API Base URL: ").strip()
-    api_key_env = input("API Key 环境变量名: ").strip()
-    model = input("模型名称: ").strip()
+    # 基本信息
+    name = input("\n端点名称 (如 my-gpt4): ").strip()
+    if not name:
+        print("❌ 名称不能为空")
+        return
     
+    base_url = input("API Base URL (如 https://api.openai.com/v1): ").strip()
+    if not base_url:
+        print("❌ URL 不能为空")
+        return
+    
+    print("\nAPI Key 配置方式:")
+    print("  [1] 使用环境变量 (推荐)")
+    print("  [2] 直接输入 Key (会保存到配置文件)")
+    key_choice = input("> ").strip()
+    
+    if key_choice == "2":
+        api_key = input("API Key: ").strip()
+        api_key_env = None
+    else:
+        api_key_env = input("环境变量名 (如 MY_API_KEY): ").strip()
+        api_key = None
+        if api_key_env:
+            existing = os.environ.get(api_key_env)
+            if existing:
+                print(f"  ✓ 已检测到环境变量 {api_key_env}")
+            else:
+                print(f"  ⚠️ 请稍后设置: export {api_key_env}=your_key")
+    
+    model = input("模型名称 (如 gpt-4, qwen-max): ").strip()
+    if not model:
+        print("❌ 模型名称不能为空")
+        return
+    
+    # API 类型
     print("\nAPI 类型:")
-    print("  [1] OpenAI 兼容")
-    print("  [2] Anthropic")
+    print("  [1] OpenAI 兼容 (适用于大多数服务商)")
+    print("  [2] Anthropic 原生")
     api_type_choice = input("> ").strip()
     api_type = "anthropic" if api_type_choice == "2" else "openai"
     
-    priority = input(f"优先级 (默认 {len(endpoints) + 1}): ").strip()
+    # 优先级
+    priority = input(f"\n优先级 (数字越小越优先, 默认 {len(endpoints) + 1}): ").strip()
     try:
         priority = int(priority) if priority else len(endpoints) + 1
     except ValueError:
         priority = len(endpoints) + 1
     
     # 能力配置
-    print("\n选择支持的能力 (用逗号分隔):")
-    print("  text, vision, video, tools, thinking")
+    print("\n" + "-"*50)
+    print("  配置端点能力")
+    print("-"*50)
+    print("可用能力:")
+    print("  text   - 文本对话 (基础能力)")
+    print("  vision - 图片理解")
+    print("  video  - 视频理解")
+    print("  tools  - 工具调用 (Function Calling)")
+    print()
+    print("请选择支持的能力 (用逗号分隔, 默认 text,tools):")
     caps_input = input("> ").strip()
-    capabilities = [c.strip() for c in caps_input.split(",") if c.strip()]
-    if not capabilities:
-        capabilities = ["text"]
     
+    if caps_input:
+        capabilities = [c.strip() for c in caps_input.split(",") if c.strip()]
+    else:
+        capabilities = ["text", "tools"]
+    
+    # 创建端点配置
     endpoint = EndpointConfig(
         name=name,
         provider="custom",
         api_type=api_type,
         base_url=base_url,
         api_key_env=api_key_env,
+        api_key=api_key,
         model=model,
         priority=priority,
         capabilities=capabilities,
@@ -217,6 +277,9 @@ def _add_custom_endpoint(endpoints: list[EndpointConfig]):
     endpoints.sort(key=lambda x: x.priority)
     
     print(f"\n✅ 已添加端点: {name}")
+    print(f"   URL: {base_url}")
+    print(f"   模型: {model}")
+    print(f"   能力: {', '.join(capabilities)}")
 
 
 def _remove_endpoint_interactive(endpoints: list[EndpointConfig]):

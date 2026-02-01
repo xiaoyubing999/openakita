@@ -57,7 +57,12 @@ class SessionManager:
         
         # 清理任务
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._save_task: Optional[asyncio.Task] = None
         self._running = False
+        
+        # 脏标志和防抖保存
+        self._dirty = False
+        self._save_delay_seconds = 5  # 防抖延迟：5 秒内的多次修改只保存一次
         
         # 加载持久化的会话
         self._load_sessions()
@@ -66,11 +71,18 @@ class SessionManager:
         """启动会话管理器"""
         self._running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        self._save_task = asyncio.create_task(self._save_loop())
         logger.info("SessionManager started")
+    
+    def mark_dirty(self) -> None:
+        """标记会话数据已修改，需要保存"""
+        self._dirty = True
     
     async def stop(self) -> None:
         """停止会话管理器"""
         self._running = False
+        
+        # 取消清理任务
         if self._cleanup_task:
             self._cleanup_task.cancel()
             try:
@@ -78,7 +90,15 @@ class SessionManager:
             except asyncio.CancelledError:
                 pass
         
-        # 保存所有会话
+        # 取消保存任务
+        if self._save_task:
+            self._save_task.cancel()
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 最终保存所有会话
         self._save_sessions()
         logger.info("SessionManager stopped")
     
@@ -163,6 +183,7 @@ class SessionManager:
             session = self._sessions[session_key]
             session.close()
             del self._sessions[session_key]
+            self.mark_dirty()  # 标记需要保存
             logger.info(f"Closed session: {session_key}")
             return True
         return False
@@ -237,11 +258,33 @@ class SessionManager:
             try:
                 await asyncio.sleep(self.cleanup_interval)
                 await self.cleanup_expired()
-                self._save_sessions()  # 定期保存
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}")
+    
+    async def _save_loop(self) -> None:
+        """
+        防抖保存循环
+        
+        检测到 dirty 标志后，等待一小段时间再保存，
+        这样短时间内的多次修改只会触发一次保存。
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._save_delay_seconds)
+                
+                if self._dirty:
+                    self._dirty = False
+                    self._save_sessions()
+                    
+            except asyncio.CancelledError:
+                # 退出前最后保存一次
+                if self._dirty:
+                    self._save_sessions()
+                break
+            except Exception as e:
+                logger.error(f"Error in save loop: {e}")
     
     def _load_sessions(self) -> None:
         """从文件加载会话"""
@@ -269,19 +312,48 @@ class SessionManager:
             logger.error(f"Failed to load sessions: {e}")
     
     def _save_sessions(self) -> None:
-        """保存会话到文件"""
+        """
+        保存会话到文件（原子写入）
+        
+        使用临时文件 + 重命名的方式，确保写入过程中断不会损坏原文件
+        """
         sessions_file = self.storage_path / "sessions.json"
+        temp_file = self.storage_path / "sessions.json.tmp"
+        backup_file = self.storage_path / "sessions.json.bak"
         
         try:
             data = [session.to_dict() for session in self._sessions.values()]
             
-            with open(sessions_file, "w", encoding="utf-8") as f:
+            # 1. 先写入临时文件
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             
-            logger.debug(f"Saved {len(data)} sessions to storage")
+            # 2. 验证临时文件可以正确解析
+            with open(temp_file, "r", encoding="utf-8") as f:
+                json.load(f)  # 验证 JSON 格式正确
+            
+            # 3. 备份旧文件（如果存在）
+            if sessions_file.exists():
+                try:
+                    if backup_file.exists():
+                        backup_file.unlink()
+                    sessions_file.rename(backup_file)
+                except Exception as e:
+                    logger.warning(f"Failed to backup sessions file: {e}")
+            
+            # 4. 原子重命名临时文件为正式文件
+            temp_file.rename(sessions_file)
+            
+            logger.debug(f"Saved {len(data)} sessions to storage (atomic)")
             
         except Exception as e:
             logger.error(f"Failed to save sessions: {e}")
+            # 清理临时文件
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
     
     # ==================== 会话操作快捷方法 ====================
     
@@ -297,6 +369,7 @@ class SessionManager:
         """添加消息到会话"""
         session = self.get_session(channel, chat_id, user_id)
         session.add_message(role, content, **metadata)
+        self.mark_dirty()  # 标记需要保存
         return session
     
     def get_history(
@@ -322,6 +395,7 @@ class SessionManager:
         session = self.get_session(channel, chat_id, user_id, create_if_missing=False)
         if session:
             session.context.clear_messages()
+            self.mark_dirty()  # 标记需要保存
             return True
         return False
     
@@ -337,6 +411,7 @@ class SessionManager:
         session = self.get_session(channel, chat_id, user_id, create_if_missing=False)
         if session:
             session.context.set_variable(key, value)
+            self.mark_dirty()  # 标记需要保存
             return True
         return False
     

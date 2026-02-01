@@ -53,7 +53,7 @@ class OpenAIProvider(LLMProvider):
     @property
     def api_key(self) -> str:
         """获取 API Key"""
-        return os.environ.get(self.config.api_key_env, "")
+        return self.config.get_api_key() or ""
     
     @property
     def base_url(self) -> str:

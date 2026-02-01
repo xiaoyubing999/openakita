@@ -18,7 +18,7 @@ from ..llm.client import LLMClient, get_default_client
 from ..llm.config import load_endpoints_config, get_default_config_path
 from ..llm.types import (
     Message, Tool, LLMResponse, 
-    TextBlock, ToolUseBlock, ToolResultBlock, ImageBlock, VideoBlock,
+    TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, ImageBlock, VideoBlock,
     ImageContent, VideoContent, StopReason,
 )
 
@@ -198,7 +198,12 @@ class Brain:
     # ========================================================================
     
     def _convert_messages_to_llm(self, messages: list[MessageParam]) -> list[Message]:
-        """将 Anthropic MessageParam 转换为 LLMClient Message"""
+        """将 Anthropic MessageParam 转换为 LLMClient Message
+        
+        支持 MiniMax M2.1 的 Interleaved Thinking：
+        - 解析并保留 thinking 块
+        - 确保多轮工具调用时思维链的连续性
+        """
         result = []
         
         for msg in messages:
@@ -216,6 +221,13 @@ class Brain:
                         
                         if part_type == "text":
                             blocks.append(TextBlock(text=part.get("text", "")))
+                        
+                        elif part_type == "thinking":
+                            # MiniMax M2.1 Interleaved Thinking 支持
+                            # 必须完整保留 thinking 块以保持思维链连续性
+                            blocks.append(ThinkingBlock(
+                                thinking=part.get("thinking", "")
+                            ))
                         
                         elif part_type == "tool_use":
                             blocks.append(ToolUseBlock(
@@ -283,12 +295,23 @@ class Brain:
         ]
     
     def _convert_response_to_anthropic(self, response: LLMResponse) -> AnthropicMessage:
-        """将 LLMClient Response 转换为 Anthropic Message"""
+        """将 LLMClient Response 转换为 Anthropic Message
+        
+        支持 MiniMax M2.1 的 Interleaved Thinking：
+        - thinking 块转换为带 <thinking> 标签的文本
+        - Agent 层会保留完整内容用于消息历史回传
+        """
         # 转换内容块
         content_blocks = []
+        thinking_texts = []
         
         for block in response.content:
-            if isinstance(block, TextBlock):
+            if isinstance(block, ThinkingBlock):
+                # MiniMax M2.1 Interleaved Thinking 支持
+                # 转换为 <thinking> 标签包裹的文本，保持与其他模型一致的处理方式
+                # 在发送消息历史给 MiniMax 时会转换回 thinking 块格式
+                thinking_texts.append(f"<thinking>{block.thinking}</thinking>")
+            elif isinstance(block, TextBlock):
                 content_blocks.append(AnthropicTextBlock(type="text", text=block.text))
             elif isinstance(block, ToolUseBlock):
                 content_blocks.append(AnthropicToolUseBlock(
@@ -297,6 +320,19 @@ class Brain:
                     name=block.name,
                     input=block.input,
                 ))
+        
+        # 如果有 thinking 内容，添加到文本块前面
+        if thinking_texts:
+            thinking_content = "\n".join(thinking_texts)
+            if content_blocks and hasattr(content_blocks[0], 'text'):
+                # 合并到第一个文本块
+                content_blocks[0] = AnthropicTextBlock(
+                    type="text", 
+                    text=thinking_content + "\n" + content_blocks[0].text
+                )
+            else:
+                # 插入新的文本块
+                content_blocks.insert(0, AnthropicTextBlock(type="text", text=thinking_content))
         
         # 如果没有内容，添加空文本块
         if not content_blocks:

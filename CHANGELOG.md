@@ -5,9 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-02-02
 
 ### Added
+- **MiniMax Interleaved Thinking Support**
+  - New `ThinkingBlock` type in `llm/types.py` for model reasoning content
+  - Anthropic provider parses `thinking` blocks from MiniMax M2.1 responses
+  - Brain converts `ThinkingBlock` to tagged `TextBlock` for Pydantic compatibility
+  - Agent preserves thinking blocks in message history for MiniMax context requirements
+- **Enhanced Browser Automation Tools** (`tools/browser_mcp.py`)
+  - `browser_status`: Get browser state (open/closed, current URL, tab count)
+  - `browser_list_tabs`: List all open tabs with index, URL, title
+  - `browser_switch_tab`: Switch to a specific tab by index
+  - `browser_new_tab`: Open URL in new tab (without overwriting current page)
+  - Smart blank page reuse: First `browser_new_tab` reuses `about:blank` instead of creating extra tab
 - Project open source preparation
 - Comprehensive documentation suite
 - Contributing guidelines
@@ -38,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - README restructured for open source
+- **Browser MCP uses explicit context** for multi-tab support
+  - Changed from `browser.new_page()` to `browser.new_context()` + `context.new_page()`
+  - Enables creating multiple tabs in same browser window
+- **`browser_open` default `visible=True`** - Browser window visible by default for user observation
 - **Brain Refactored as Thin Wrapper**
   - Removed direct Anthropic/OpenAI client instances
   - All LLM calls now go through `LLMClient`
@@ -83,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `reasoning_content` field support in Message/LLMResponse types
   - Automatic extraction and injection for Kimi multi-turn tool calls
   - `thinking.type` set to `enabled` per official documentation
+
+### Fixed
+- **Session messages not persisting** - Added `session_manager.mark_dirty()` calls in gateway after `session.add_message()` to ensure voice transcriptions and user messages are saved
+- **Playwright multi-tab error** - Fixed "Please use browser.new_context()" error when opening multiple tabs
 
 ## [0.6.0] - 2026-01-31
 
@@ -234,7 +253,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 0.2.0 | 2025-12-01 | Multi-turn chat |
 | 0.1.0 | 2025-11-15 | Initial release |
 
-[Unreleased]: https://github.com/openakita/openakita/compare/v0.5.9...HEAD
+[Unreleased]: https://github.com/openakita/openakita/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/openakita/openakita/compare/v1.0.2...v1.1.0
 [0.5.9]: https://github.com/openakita/openakita/compare/v0.5.0...v0.5.9
 [0.5.0]: https://github.com/openakita/openakita/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/openakita/openakita/compare/v0.3.0...v0.4.0

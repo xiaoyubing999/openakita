@@ -6,6 +6,7 @@
 - 会话管理集成
 - 媒体预处理（图片、语音）
 - Agent 调用
+- 消息中断机制（支持在工具调用间隙插入新消息）
 """
 
 import asyncio
@@ -14,6 +15,9 @@ import base64
 import httpx
 from pathlib import Path
 from typing import Optional, Callable, Awaitable, Any
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 
 from .types import UnifiedMessage, OutgoingMessage, MessageContent, MediaFile
 from .base import ChannelAdapter
@@ -24,6 +28,27 @@ logger = logging.getLogger(__name__)
 
 # Agent 处理函数类型
 AgentHandler = Callable[[Session, str], Awaitable[str]]
+
+
+class InterruptPriority(Enum):
+    """中断优先级"""
+    NORMAL = 0       # 普通消息，排队等待
+    HIGH = 1         # 高优先级，在工具间隙插入
+    URGENT = 2       # 紧急，尝试立即中断
+
+
+@dataclass
+class InterruptMessage:
+    """中断消息封装"""
+    message: UnifiedMessage
+    priority: InterruptPriority = InterruptPriority.HIGH
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def __lt__(self, other: "InterruptMessage") -> bool:
+        """优先级队列比较：优先级高的先处理，同优先级按时间"""
+        if self.priority.value != other.priority.value:
+            return self.priority.value > other.priority.value
+        return self.timestamp < other.timestamp
 
 
 class MessageGateway:
@@ -41,11 +66,13 @@ class MessageGateway:
         self,
         session_manager: SessionManager,
         agent_handler: Optional[AgentHandler] = None,
+        whisper_model: str = "base",
     ):
         """
         Args:
             session_manager: 会话管理器
             agent_handler: Agent 处理函数 (session, message) -> response
+            whisper_model: Whisper 模型大小 (tiny, base, small, medium, large)，默认 base
         """
         self.session_manager = session_manager
         self.agent_handler = agent_handler
@@ -63,10 +90,31 @@ class MessageGateway:
         # 中间件
         self._pre_process_hooks: list[Callable[[UnifiedMessage], Awaitable[UnifiedMessage]]] = []
         self._post_process_hooks: list[Callable[[UnifiedMessage, str], Awaitable[str]]] = []
+        
+        # Whisper 语音识别模型（延迟加载或启动时预加载）
+        self._whisper_model_name = whisper_model
+        self._whisper = None
+        self._whisper_loaded = False
+        
+        # ==================== 消息中断机制 ====================
+        # 会话级中断队列 {session_key: asyncio.PriorityQueue[InterruptMessage]}
+        self._interrupt_queues: dict[str, asyncio.PriorityQueue] = {}
+        
+        # 正在处理的会话 {session_key: bool}
+        self._processing_sessions: dict[str, bool] = {}
+        
+        # 中断锁（防止并发修改）
+        self._interrupt_lock = asyncio.Lock()
+        
+        # 中断处理回调（由 Agent 设置）
+        self._interrupt_callbacks: dict[str, Callable[[], Awaitable[Optional[str]]]] = {}
     
     async def start(self) -> None:
         """启动网关"""
         self._running = True
+        
+        # 预加载 Whisper 语音识别模型（在后台线程中执行，不阻塞启动）
+        asyncio.create_task(self._preload_whisper_async())
         
         # 启动所有适配器
         for name, adapter in self._adapters.items():
@@ -80,6 +128,65 @@ class MessageGateway:
         self._processing_task = asyncio.create_task(self._process_loop())
         
         logger.info(f"MessageGateway started with {len(self._adapters)} adapters")
+    
+    async def _preload_whisper_async(self) -> None:
+        """异步预加载 Whisper 模型"""
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._load_whisper_model)
+        except Exception as e:
+            logger.warning(f"Failed to preload Whisper model: {e}")
+    
+    def _load_whisper_model(self) -> None:
+        """加载 Whisper 模型（在线程池中执行）"""
+        if self._whisper_loaded:
+            return
+        
+        try:
+            import whisper
+            from whisper import _MODELS
+            import hashlib
+            import os
+            
+            model_name = self._whisper_model_name
+            
+            # 获取模型缓存路径
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+            model_file = os.path.join(cache_dir, f"{model_name}.pt")
+            
+            # 检查本地模型 hash（仅提醒，不阻塞）
+            if os.path.exists(model_file) and os.path.getsize(model_file) > 1000000:
+                model_url = _MODELS.get(model_name, "")
+                if model_url:
+                    url_parts = model_url.split("/")
+                    expected_hash = url_parts[-2] if len(url_parts) >= 2 else ""
+                    
+                    if expected_hash and len(expected_hash) > 5:
+                        sha256 = hashlib.sha256()
+                        with open(model_file, "rb") as f:
+                            for chunk in iter(lambda: f.read(65536), b""):
+                                sha256.update(chunk)
+                        local_hash = sha256.hexdigest()
+                        
+                        if not local_hash.startswith(expected_hash):
+                            logger.info(
+                                f"Whisper model '{model_name}' may have updates available. "
+                                f"Delete {model_file} to re-download if needed."
+                            )
+            
+            # 正常加载
+            logger.info(f"Loading Whisper model '{model_name}'...")
+            self._whisper = whisper.load_model(model_name)
+            self._whisper_loaded = True
+            logger.info(f"Whisper model '{model_name}' loaded successfully")
+            
+        except ImportError:
+            logger.warning(
+                "Whisper not installed. Voice transcription will not be available. "
+                "Run: pip install openai-whisper"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {e}")
     
     async def stop(self) -> None:
         """停止网关"""
@@ -141,8 +248,118 @@ class MessageGateway:
     async def _on_message(self, message: UnifiedMessage) -> None:
         """
         消息回调（由适配器调用）
+        
+        如果该会话正在处理中，将消息放入中断队列
         """
+        session_key = f"{message.channel}:{message.chat_id}:{message.user_id}"
+        
+        async with self._interrupt_lock:
+            if self._processing_sessions.get(session_key, False):
+                # 会话正在处理中，放入中断队列
+                await self._add_interrupt_message(session_key, message)
+                logger.info(f"[Interrupt] Message queued for session {session_key}: {message.plain_text[:50]}...")
+                return
+        
+        # 正常入队
         await self._message_queue.put(message)
+    
+    # ==================== 中断机制 ====================
+    
+    async def _add_interrupt_message(
+        self, 
+        session_key: str, 
+        message: UnifiedMessage,
+        priority: InterruptPriority = InterruptPriority.HIGH,
+    ) -> None:
+        """
+        添加中断消息到会话队列
+        
+        Args:
+            session_key: 会话标识
+            message: 消息
+            priority: 优先级
+        """
+        if session_key not in self._interrupt_queues:
+            self._interrupt_queues[session_key] = asyncio.PriorityQueue()
+        
+        interrupt_msg = InterruptMessage(message=message, priority=priority)
+        await self._interrupt_queues[session_key].put(interrupt_msg)
+        
+        logger.debug(f"[Interrupt] Added to queue: {session_key}, priority={priority.name}")
+    
+    def _get_session_key(self, message: UnifiedMessage) -> str:
+        """获取会话标识"""
+        return f"{message.channel}:{message.chat_id}:{message.user_id}"
+    
+    def _mark_session_processing(self, session_key: str, processing: bool) -> None:
+        """标记会话处理状态"""
+        self._processing_sessions[session_key] = processing
+        if not processing and session_key in self._interrupt_callbacks:
+            del self._interrupt_callbacks[session_key]
+    
+    async def check_interrupt(self, session_key: str) -> Optional[UnifiedMessage]:
+        """
+        检查会话是否有待处理的中断消息
+        
+        Args:
+            session_key: 会话标识
+            
+        Returns:
+            待处理的消息，如果没有则返回 None
+        """
+        queue = self._interrupt_queues.get(session_key)
+        if not queue or queue.empty():
+            return None
+        
+        try:
+            interrupt_msg = queue.get_nowait()
+            logger.info(f"[Interrupt] Retrieved message for {session_key}: {interrupt_msg.message.plain_text[:50]}...")
+            return interrupt_msg.message
+        except asyncio.QueueEmpty:
+            return None
+    
+    def has_pending_interrupt(self, session_key: str) -> bool:
+        """
+        检查会话是否有待处理的中断消息
+        
+        Args:
+            session_key: 会话标识
+            
+        Returns:
+            是否有待处理消息
+        """
+        queue = self._interrupt_queues.get(session_key)
+        return queue is not None and not queue.empty()
+    
+    def get_interrupt_count(self, session_key: str) -> int:
+        """
+        获取待处理的中断消息数量
+        
+        Args:
+            session_key: 会话标识
+            
+        Returns:
+            待处理消息数量
+        """
+        queue = self._interrupt_queues.get(session_key)
+        return queue.qsize() if queue else 0
+    
+    def register_interrupt_callback(
+        self, 
+        session_key: str, 
+        callback: Callable[[], Awaitable[Optional[str]]],
+    ) -> None:
+        """
+        注册中断检查回调（由 Agent 调用）
+        
+        当工具调用间隙，Agent 会调用此回调检查是否需要处理新消息
+        
+        Args:
+            session_key: 会话标识
+            callback: 回调函数，返回需要插入的消息文本或 None
+        """
+        self._interrupt_callbacks[session_key] = callback
+        logger.debug(f"[Interrupt] Registered callback for {session_key}")
     
     async def _process_loop(self) -> None:
         """消息处理循环"""
@@ -168,7 +385,13 @@ class MessageGateway:
         """
         处理单条消息
         """
+        session_key = self._get_session_key(message)
+        
         try:
+            # 标记会话开始处理
+            async with self._interrupt_lock:
+                self._mark_session_processing(session_key, True)
+            
             # 1. 发送"正在输入"状态
             await self._send_typing(message)
             
@@ -193,8 +416,9 @@ class MessageGateway:
                 message_id=message.id,
                 channel_message_id=message.channel_message_id,
             )
+            self.session_manager.mark_dirty()  # 触发保存
             
-            # 6. 调用 Agent 处理（Agent 会自己决定是否需要先回复确认）
+            # 6. 调用 Agent 处理（支持中断检查）
             response_text = await self._call_agent_with_typing(session, message)
             
             # 7. 后处理钩子
@@ -206,14 +430,70 @@ class MessageGateway:
                 role="assistant",
                 content=response_text,
             )
+            self.session_manager.mark_dirty()  # 触发保存
             
             # 9. 发送响应
             await self._send_response(message, response_text)
+            
+            # 10. 处理剩余的中断消息
+            await self._process_pending_interrupts(session_key, session)
             
         except Exception as e:
             logger.error(f"Error handling message {message.id}: {e}")
             # 发送错误提示
             await self._send_error(message, str(e))
+        finally:
+            # 标记会话处理完成
+            async with self._interrupt_lock:
+                self._mark_session_processing(session_key, False)
+    
+    async def _process_pending_interrupts(self, session_key: str, session: Session) -> None:
+        """
+        处理会话中剩余的中断消息
+        
+        在当前消息处理完成后，继续处理排队的中断消息
+        """
+        while self.has_pending_interrupt(session_key):
+            interrupt_msg = await self.check_interrupt(session_key)
+            if not interrupt_msg:
+                break
+            
+            logger.info(f"[Interrupt] Processing pending message for {session_key}")
+            
+            try:
+                # 预处理媒体
+                await self._preprocess_media(interrupt_msg)
+                
+                # 记录到会话
+                session.add_message(
+                    role="user",
+                    content=interrupt_msg.plain_text,
+                    message_id=interrupt_msg.id,
+                    channel_message_id=interrupt_msg.channel_message_id,
+                    is_interrupt=True,  # 标记为中断消息
+                )
+                self.session_manager.mark_dirty()  # 触发保存
+                
+                # 调用 Agent 处理
+                response_text = await self._call_agent_with_typing(session, interrupt_msg)
+                
+                # 后处理钩子
+                for hook in self._post_process_hooks:
+                    response_text = await hook(interrupt_msg, response_text)
+                
+                # 记录响应
+                session.add_message(
+                    role="assistant",
+                    content=response_text,
+                )
+                self.session_manager.mark_dirty()  # 触发保存
+                
+                # 发送响应
+                await self._send_response(interrupt_msg, response_text)
+                
+            except Exception as e:
+                logger.error(f"Error processing interrupt message: {e}")
+                await self._send_error(interrupt_msg, str(e))
     
     async def _preprocess_media(self, message: UnifiedMessage) -> None:
         """
@@ -256,6 +536,8 @@ class MessageGateway:
     async def _transcribe_voice_local(self, audio_path: str) -> Optional[str]:
         """
         使用本地 Whisper 进行语音转文字
+        
+        使用预加载的模型，避免每次都重新加载
         """
         import asyncio
         
@@ -265,19 +547,20 @@ class MessageGateway:
                 logger.error(f"Audio file not found: {audio_path}")
                 return None
             
-            # 尝试导入 whisper
-            try:
-                import whisper
-            except ImportError:
-                logger.warning("Whisper not installed, trying to install...")
-                import subprocess
-                subprocess.check_call(["pip", "install", "openai-whisper", "-q"])
-                import whisper
+            # 确保模型已加载
+            if not self._whisper_loaded:
+                # 同步加载模型（如果还没加载）
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._load_whisper_model)
             
-            # 在线程池中运行（避免阻塞事件循环）
+            # 检查模型是否可用
+            if self._whisper is None:
+                logger.error("Whisper model not available")
+                return None
+            
+            # 在线程池中运行转写（避免阻塞事件循环）
             def transcribe():
-                model = whisper.load_model("base")  # 使用 base 模型，平衡速度和质量
-                result = model.transcribe(audio_path, language="zh")  # 默认中文
+                result = self._whisper.transcribe(audio_path, language="zh")  # 默认中文
                 return result["text"].strip()
             
             # 异步执行
@@ -330,6 +613,8 @@ class MessageGateway:
     async def _call_agent(self, session: Session, message: UnifiedMessage) -> str:
         """
         调用 Agent 处理消息（支持多模态：图片、语音）
+        
+        支持中断机制：将 gateway 引用存入 session.metadata，供 Agent 检查中断
         """
         if not self.agent_handler:
             return "Agent handler not configured"
@@ -385,12 +670,21 @@ class MessageGateway:
                     input_text = "[用户发送了图片]"
                 logger.info(f"Processing multimodal message with {len(images_data)} images")
             
+            # === 中断机制：传递 gateway 引用和会话标识 ===
+            session_key = self._get_session_key(message)
+            session.set_metadata("_gateway", self)
+            session.set_metadata("_session_key", session_key)
+            session.set_metadata("_current_message", message)
+            
             # 调用 Agent
             response = await self.agent_handler(session, input_text)
             
             # 清除临时数据
             session.set_metadata("pending_images", None)
             session.set_metadata("pending_voices", None)
+            session.set_metadata("_gateway", None)
+            session.set_metadata("_session_key", None)
+            session.set_metadata("_current_message", None)
             
             return response
             
@@ -551,6 +845,7 @@ class MessageGateway:
                     content=text[:500] if len(text) > 500 else text,
                     source="send_to_session"
                 )
+                self.session_manager.mark_dirty()  # 触发保存
             except Exception as e:
                 logger.warning(f"Failed to record message to session: {e}")
         

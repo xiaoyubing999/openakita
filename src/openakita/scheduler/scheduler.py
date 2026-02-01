@@ -83,10 +83,19 @@ class TaskScheduler:
         self._running = True
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         
-        # 更新所有任务的下一次运行时间
+        # 更新任务的下一次运行时间
+        # 注意：只有 next_run 为空或已严重过期的任务才重新计算
+        # 避免程序重启导致任务立即执行
+        now = datetime.now()
         for task in self._tasks.values():
             if task.is_active:
-                self._update_next_run(task)
+                if task.next_run is None:
+                    # 没有 next_run，需要计算
+                    self._update_next_run(task)
+                elif task.next_run < now:
+                    # next_run 已过期，重新计算（但不设为立即执行）
+                    self._recalculate_missed_run(task, now)
+                # 如果 next_run 在未来，保持不变
         
         # 启动调度循环
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
@@ -140,10 +149,25 @@ class TaskScheduler:
         logger.info(f"Added task: {task.id} ({task.name}), next run: {task.next_run}")
         return task.id
     
-    async def remove_task(self, task_id: str) -> bool:
-        """删除任务"""
+    async def remove_task(self, task_id: str, force: bool = False) -> bool:
+        """
+        删除任务
+        
+        Args:
+            task_id: 任务 ID
+            force: 强制删除（即使是系统任务）
+            
+        Returns:
+            是否删除成功
+        """
         if task_id in self._tasks:
             task = self._tasks[task_id]
+            
+            # 检查是否允许删除
+            if not task.deletable and not force:
+                logger.warning(f"Task {task_id} is a system task and cannot be deleted. Use disable instead.")
+                return False
+            
             task.cancel()
             
             del self._tasks[task_id]
@@ -319,6 +343,42 @@ class TaskScheduler:
             self._triggers[task.id] = trigger
         
         task.next_run = trigger.get_next_run_time(task.last_run)
+    
+    def _recalculate_missed_run(self, task: ScheduledTask, now: datetime) -> None:
+        """
+        重新计算错过执行时间的任务的下一次运行时间
+        
+        与 _update_next_run 的区别：
+        - 不会设置为立即执行（即使 last_run 为 None）
+        - 用于程序重启后恢复任务
+        
+        Args:
+            task: 任务
+            now: 当前时间
+        """
+        trigger = self._triggers.get(task.id)
+        if not trigger:
+            trigger = Trigger.from_config(task.trigger_type.value, task.trigger_config)
+            self._triggers[task.id] = trigger
+        
+        # 对于一次性任务，如果已经过期，标记为完成
+        if task.trigger_type == TriggerType.ONCE:
+            logger.info(f"One-time task {task.id} missed, marking as completed")
+            task.status = TaskStatus.COMPLETED
+            task.enabled = False
+            return
+        
+        # 对于间隔任务和 cron 任务，计算下一次运行时间
+        # 使用当前时间作为基准（而不是 last_run），避免立即执行
+        next_run = trigger.get_next_run_time(now)
+        
+        # 确保 next_run 在未来（至少 1 分钟后），避免启动时立即执行
+        min_next_run = now + timedelta(seconds=60)
+        if next_run and next_run < min_next_run:
+            next_run = trigger.get_next_run_time(min_next_run)
+        
+        task.next_run = next_run
+        logger.info(f"Recalculated next_run for task {task.id}: {next_run}")
     
     # ==================== 持久化 ====================
     

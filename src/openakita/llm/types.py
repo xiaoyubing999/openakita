@@ -108,6 +108,16 @@ class TextBlock(ContentBlock):
 
 
 @dataclass
+class ThinkingBlock(ContentBlock):
+    """思考内容块 (MiniMax M2.1 Interleaved Thinking)"""
+    thinking: str
+    type: str = field(default="thinking", init=False)
+    
+    def to_dict(self) -> dict:
+        return {"type": "thinking", "thinking": self.thinking}
+
+
+@dataclass
 class ToolUseBlock(ContentBlock):
     """工具调用内容块"""
     id: str
@@ -178,7 +188,7 @@ class VideoBlock(ContentBlock):
 
 
 # 内容块联合类型
-ContentBlockType = Union[TextBlock, ToolUseBlock, ToolResultBlock, ImageBlock, VideoBlock]
+ContentBlockType = Union[TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, ImageBlock, VideoBlock]
 
 
 @dataclass
@@ -288,8 +298,9 @@ class EndpointConfig:
     provider: str  # 服务商标识 (anthropic, dashscope, openrouter, ...)
     api_type: str  # API 类型 ("anthropic" | "openai")
     base_url: str  # API 地址
-    api_key_env: str  # API Key 环境变量名
-    model: str  # 模型名称
+    api_key_env: Optional[str] = None  # API Key 环境变量名
+    api_key: Optional[str] = None  # 直接存储的 API Key (不推荐，但支持)
+    model: str = ""  # 模型名称
     priority: int = 1  # 优先级 (越小越优先)
     max_tokens: int = 4096  # 最大输出 tokens
     timeout: int = 60  # 超时时间 (秒)
@@ -305,6 +316,15 @@ class EndpointConfig:
         """检查是否有某种能力"""
         return capability in (self.capabilities or [])
     
+    def get_api_key(self) -> Optional[str]:
+        """获取 API Key (优先使用直接存储的 key，然后从环境变量获取)"""
+        import os
+        if self.api_key:
+            return self.api_key
+        if self.api_key_env:
+            return os.environ.get(self.api_key_env)
+        return None
+    
     @classmethod
     def from_dict(cls, data: dict) -> "EndpointConfig":
         return cls(
@@ -312,8 +332,9 @@ class EndpointConfig:
             provider=data["provider"],
             api_type=data["api_type"],
             base_url=data["base_url"],
-            api_key_env=data["api_key_env"],
-            model=data["model"],
+            api_key_env=data.get("api_key_env"),
+            api_key=data.get("api_key"),
+            model=data.get("model", ""),
             priority=data.get("priority", 1),
             max_tokens=data.get("max_tokens", 4096),
             timeout=data.get("timeout", 60),
@@ -328,12 +349,16 @@ class EndpointConfig:
             "provider": self.provider,
             "api_type": self.api_type,
             "base_url": self.base_url,
-            "api_key_env": self.api_key_env,
             "model": self.model,
             "priority": self.priority,
             "max_tokens": self.max_tokens,
             "timeout": self.timeout,
         }
+        # API Key: 优先使用环境变量名，不保存明文 key 到配置
+        if self.api_key_env:
+            result["api_key_env"] = self.api_key_env
+        elif self.api_key:
+            result["api_key"] = self.api_key
         if self.capabilities:
             result["capabilities"] = self.capabilities
         if self.extra_params:

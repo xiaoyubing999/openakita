@@ -272,6 +272,12 @@ class Session:
     
     def to_dict(self) -> dict:
         """序列化"""
+        # 过滤掉以 _ 开头的私有 metadata（如 _gateway, _session_key 等运行时数据）
+        serializable_metadata = {
+            k: v for k, v in self.metadata.items()
+            if not k.startswith("_") and self._is_json_serializable(v)
+        }
+        
         return {
             "id": self.id,
             "channel": self.channel,
@@ -289,8 +295,17 @@ class Session:
                 "custom_prompt": self.config.custom_prompt,
                 "auto_summarize": self.config.auto_summarize,
             },
-            "metadata": self.metadata,
+            "metadata": serializable_metadata,
         }
+    
+    def _is_json_serializable(self, value: Any) -> bool:
+        """检查值是否可以 JSON 序列化"""
+        import json
+        try:
+            json.dumps(value)
+            return True
+        except (TypeError, ValueError):
+            return False
     
     @classmethod
     def from_dict(cls, data: dict) -> "Session":

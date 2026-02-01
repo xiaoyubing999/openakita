@@ -15,6 +15,7 @@ MCP 系统遵循 Model Context Protocol 规范 (modelcontextprotocol.io)
 
 import asyncio
 import logging
+import os
 import uuid
 import json
 from datetime import datetime
@@ -25,6 +26,7 @@ from .brain import Brain, Context, Response
 from .identity import Identity
 from .ralph import RalphLoop, Task, TaskResult, TaskStatus
 from .user_profile import UserProfileManager, get_profile_manager
+from .task_monitor import TaskMonitor, TaskMetrics, RETROSPECT_PROMPT
 
 from ..config import settings
 from ..tools.shell import ShellTool
@@ -195,12 +197,13 @@ class Agent:
         # === 文件系统工具 ===
         {
             "name": "run_shell",
-            "description": "执行Shell命令，用于运行系统命令、创建目录、执行脚本等",
+            "description": "执行Shell命令，用于运行系统命令、创建目录、执行脚本等。注意：如果命令连续失败，请尝试不同的命令或放弃该方法。",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "要执行的Shell命令"},
-                    "cwd": {"type": "string", "description": "工作目录(可选)"}
+                    "cwd": {"type": "string", "description": "工作目录(可选)"},
+                    "timeout": {"type": "integer", "description": "超时时间(秒)，默认60秒。简单命令用30-60秒，安装/下载类命令用300秒，长时间任务可设更长"}
                 },
                 "required": ["command"]
             }
@@ -373,14 +376,14 @@ class Agent:
         # === 浏览器工具 (browser-use MCP) ===
         {
             "name": "browser_open",
-            "description": "启动浏览器。参数说明：visible=True 显示浏览器窗口(用户可见)，visible=False 后台运行(不可见)。默认不传参数时为后台模式。",
+            "description": "启动浏览器。参数说明：visible=True 显示浏览器窗口(用户可见)，visible=False 后台运行(不可见)。默认显示浏览器窗口。",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "visible": {
                         "type": "boolean", 
-                        "description": "True=显示浏览器窗口(用户可见), False=后台运行(不可见)。默认False",
-                        "default": False
+                        "description": "True=显示浏览器窗口(用户可见), False=后台运行(不可见)。默认True",
+                        "default": True
                     },
                     "ask_user": {
                         "type": "boolean",
@@ -442,6 +445,44 @@ class Agent:
                 "properties": {
                     "path": {"type": "string", "description": "保存路径 (可选)"}
                 }
+            }
+        },
+        {
+            "name": "browser_status",
+            "description": "获取浏览器当前状态：是否打开、当前页面 URL 和标题、打开的 tab 数量。**在操作浏览器前建议先调用此工具了解当前状态**。",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "browser_list_tabs",
+            "description": "列出所有打开的标签页(tabs)，返回每个 tab 的索引、URL 和标题。",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "browser_switch_tab",
+            "description": "切换到指定的标签页",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "number", "description": "标签页索引 (从 0 开始，可通过 browser_list_tabs 获取)"}
+                },
+                "required": ["index"]
+            }
+        },
+        {
+            "name": "browser_new_tab",
+            "description": "打开新标签页并导航到指定 URL（不会覆盖当前页面）",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "要访问的 URL"}
+                },
+                "required": ["url"]
             }
         },
         # === 定时任务工具 ===
@@ -658,6 +699,28 @@ class Agent:
                 "properties": {}
             }
         },
+        # === 日志查询工具 ===
+        {
+            "name": "get_session_logs",
+            "description": "获取当前会话的系统日志。**重要**: 当命令执行失败、遇到错误、或需要了解之前的操作结果时，应该调用此工具查看日志。"
+                           "日志包含: 命令执行详情、错误信息、系统状态等。"
+                           "使用场景: 1) 命令返回错误码 2) 操作没有预期效果 3) 需要了解之前发生了什么。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "返回的日志条数（默认 20，最大 200）",
+                        "default": 20
+                    },
+                    "level": {
+                        "type": "string",
+                        "enum": ["DEBUG", "INFO", "WARNING", "ERROR"],
+                        "description": "过滤日志级别（可选，ERROR 可快速定位问题）"
+                    }
+                }
+            }
+        },
     ]
     
     # 当前 IM 会话信息（由 chat_with_session 设置）
@@ -719,10 +782,15 @@ class Agent:
         
         # 动态工具列表（基础工具 + 技能工具）
         self._tools = list(self.BASE_TOOLS)
+        self._update_shell_tool_description()
         
         # 对话上下文
         self._context = Context()
         self._conversation_history: list[dict] = []
+        
+        # 消息中断机制
+        self._current_session = None  # 当前会话引用
+        self._interrupt_enabled = True  # 是否启用中断检查
         
         # 状态
         self._initialized = False
@@ -787,6 +855,28 @@ class Agent:
         
         # 更新工具列表，添加技能工具
         self._update_skill_tools()
+    
+    def _update_shell_tool_description(self) -> None:
+        """动态更新 shell 工具描述，包含当前操作系统信息"""
+        import platform
+        
+        # 获取操作系统信息
+        if os.name == 'nt':
+            os_info = f"Windows {platform.release()} (使用 PowerShell/cmd 命令，如: dir, type, tasklist, Get-Process, findstr)"
+        else:
+            os_info = f"{platform.system()} (使用 bash 命令，如: ls, cat, ps aux, grep)"
+        
+        # 更新 run_shell 工具的描述
+        for tool in self._tools:
+            if tool.get("name") == "run_shell":
+                tool["description"] = (
+                    f"执行Shell命令。当前操作系统: {os_info}。"
+                    "注意：请使用当前操作系统支持的命令；如果命令连续失败，请尝试不同的命令或放弃该方法。"
+                )
+                tool["input_schema"]["properties"]["command"]["description"] = (
+                    f"要执行的Shell命令（当前系统: {os.name}）"
+                )
+                break
     
     def _update_skill_tools(self) -> None:
         """更新工具列表，添加技能相关工具"""
@@ -1180,12 +1270,79 @@ class Agent:
             # 启动调度器
             await self.task_scheduler.start()
             
+            # 注册内置系统任务（每日记忆整理 + 每日自检）
+            await self._register_system_tasks()
+            
             stats = self.task_scheduler.get_stats()
             logger.info(f"TaskScheduler started with {stats['total_tasks']} tasks")
             
         except Exception as e:
             logger.warning(f"Failed to start scheduler: {e}")
             self.task_scheduler = None
+    
+    async def _register_system_tasks(self) -> None:
+        """
+        注册内置系统任务
+        
+        包括:
+        - 每日记忆整理（凌晨 3:00）
+        - 每日系统自检（凌晨 4:00）
+        """
+        from ..scheduler import ScheduledTask, TriggerType
+        from ..scheduler.task import TaskType
+        
+        if not self.task_scheduler:
+            return
+        
+        # 检查是否已存在（避免重复注册）
+        existing_tasks = self.task_scheduler.list_tasks()
+        existing_ids = {t.id for t in existing_tasks}
+        
+        # 任务 1: 每日记忆整理（凌晨 3:00）
+        if "system_daily_memory" not in existing_ids:
+            memory_task = ScheduledTask(
+                id="system_daily_memory",
+                name="每日记忆整理",
+                trigger_type=TriggerType.CRON,
+                trigger_config={"cron": "0 3 * * *"},
+                action="system:daily_memory",
+                prompt="执行每日记忆整理：整理当天对话历史，提取精华记忆，刷新 MEMORY.md",
+                description="整理当天对话，提取记忆，刷新 MEMORY.md",
+                task_type=TaskType.TASK,
+                enabled=True,
+                deletable=False,  # 系统任务不允许删除
+            )
+            await self.task_scheduler.add_task(memory_task)
+            logger.info("Registered system task: daily_memory (03:00)")
+        else:
+            # 确保已存在的系统任务也设置为不可删除
+            existing_task = self.task_scheduler.get_task("system_daily_memory")
+            if existing_task and existing_task.deletable:
+                existing_task.deletable = False
+                self.task_scheduler._save_tasks()
+        
+        # 任务 2: 每日系统自检（凌晨 4:00）
+        if "system_daily_selfcheck" not in existing_ids:
+            selfcheck_task = ScheduledTask(
+                id="system_daily_selfcheck",
+                name="每日系统自检",
+                trigger_type=TriggerType.CRON,
+                trigger_config={"cron": "0 4 * * *"},
+                action="system:daily_selfcheck",
+                prompt="执行每日系统自检：分析 ERROR 日志，尝试修复工具问题，生成报告",
+                description="分析 ERROR 日志、尝试修复工具问题、生成报告",
+                task_type=TaskType.TASK,
+                enabled=True,
+                deletable=False,  # 系统任务不允许删除
+            )
+            await self.task_scheduler.add_task(selfcheck_task)
+            logger.info("Registered system task: daily_selfcheck (04:00)")
+        else:
+            # 确保已存在的系统任务也设置为不可删除
+            existing_task = self.task_scheduler.get_task("system_daily_selfcheck")
+            if existing_task and existing_task.deletable:
+                existing_task.deletable = False
+                self.task_scheduler._save_tasks()
     
     def _build_system_prompt(self, base_prompt: str, task_description: str = "") -> str:
         """
@@ -1396,9 +1553,12 @@ generate_skill → 保存 → 使用
 
 以下功能**系统已经内置**，当用户提到时，不要尝试"开发"或"实现"，而是直接使用：
 
-1. **语音转文字** - 用户发送的语音消息会自动转写为文字（通过 OpenAI Whisper API）
-   - 你收到的消息中，语音内容已经被转写为文字
-   - 如果看到 `[语音: X秒]` 但没有文字内容，说明 API Key 未配置或转写失败
+1. **语音转文字** - 系统**已自动处理**语音识别！
+   - 用户发送的语音消息会被系统**自动**转写为文字（通过本地 Whisper medium 模型）
+   - 你收到的消息中，语音内容已经被转写为文字了
+   - 如果看到 `[语音: X秒]` 但没有文字内容，说明自动识别失败
+   - **只有**在自动识别失败时（如看到"语音识别失败"提示），才需要手动处理语音文件
+   - ⚠️ **重要**：不要每次收到语音消息都调用语音识别工具！系统已经自动处理了！
    
 2. **图片理解** - 用户发送的图片会自动传递给你进行多模态理解
    - 你可以直接"看到"用户发送的图片并描述或分析
@@ -1407,7 +1567,12 @@ generate_skill → 保存 → 使用
 
 **当用户说"帮我实现语音转文字"时**：
 - ❌ 不要开始写代码、安装 whisper、配置 ffmpeg
-- ✅ 检查系统是否正常工作，告诉用户"语音转文字已内置，请发送语音测试"
+- ❌ 不要调用语音识别技能或工具去处理
+- ✅ 告诉用户"语音转文字已内置并自动运行，请发送语音测试"
+
+**语音消息处理流程**：
+1. 用户发送语音 → 2. 系统自动下载并用 Whisper 转文字 → 3. 你收到的是转写后的文字
+4. 只有当你看到"[语音识别失败]"或"自动识别失败"时，才需要用 get_voice_file 工具获取文件路径并手动处理
 
 ### 记忆管理 (非常重要!)
 **主动使用记忆功能**，在以下情况必须调用 add_memory:
@@ -1464,7 +1629,7 @@ generate_skill → 保存 → 使用
             "File System": ["run_shell", "write_file", "read_file", "list_directory"],
             "Skills Management": ["list_skills", "get_skill_info", "run_skill_script", "get_skill_reference", "generate_skill", "improve_skill"],
             "Memory Management": ["add_memory", "search_memory", "get_memory_stats"],
-            "Browser Automation": ["browser_open", "browser_navigate", "browser_click", "browser_type", "browser_get_content", "browser_screenshot"],
+            "Browser Automation": ["browser_open", "browser_status", "browser_list_tabs", "browser_navigate", "browser_new_tab", "browser_switch_tab", "browser_click", "browser_type", "browser_get_content", "browser_screenshot"],
             "Scheduled Tasks": ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task", "trigger_scheduled_task"],
         }
         
@@ -1799,6 +1964,13 @@ generate_skill → 保存 → 使用
         Agent._current_im_session = session
         Agent._current_im_gateway = gateway
         
+        # === 设置当前会话（供中断检查使用）===
+        self._current_session = session
+        
+        # 设置当前会话到日志缓存（供 get_session_logs 工具使用）
+        from ..logging import get_session_log_buffer
+        get_session_log_buffer().set_current_session(session_id)
+        
         try:
             logger.info(f"[Session:{session_id}] User: {message}")
             
@@ -1859,8 +2031,36 @@ generate_skill → 保存 → 使用
             # 压缩上下文（如果需要）
             messages = await self._compress_context(messages)
             
+            # === 创建任务监控器 ===
+            task_monitor = TaskMonitor(
+                task_id=f"{session_id}_{datetime.now().strftime('%H%M%S')}",
+                description=message[:100],
+                session_id=session_id,
+                timeout_seconds=300,  # 超时阈值：300秒
+                retrospect_threshold=60,  # 复盘阈值：60秒
+                fallback_model="gpt-4o",  # 超时后切换的备用模型
+            )
+            task_monitor.start(self.brain.model)
+            
             # === 两段式 Prompt 第二阶段：主模型处理 ===
-            response_text = await self._chat_with_tools_and_context(messages)
+            response_text = await self._chat_with_tools_and_context(
+                messages, 
+                task_monitor=task_monitor
+            )
+            
+            # === 完成任务监控 ===
+            metrics = task_monitor.complete(
+                success=True,
+                response=response_text[:200],
+            )
+            
+            # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===
+            if metrics.retrospect_needed:
+                # 创建后台任务执行复盘，不等待结果
+                asyncio.create_task(
+                    self._do_task_retrospect_background(task_monitor, session_id)
+                )
+                logger.info(f"[Session:{session_id}] Task retrospect scheduled (background)")
             
             # 记录 Agent 响应到 conversation_history（用于凌晨归纳）
             self.memory_manager.record_turn("assistant", response_text)
@@ -1872,6 +2072,8 @@ generate_skill → 保存 → 使用
             # 清除 IM 会话信息
             Agent._current_im_session = None
             Agent._current_im_gateway = None
+            # 清除当前会话引用
+            self._current_session = None
     
     async def _compile_prompt(self, user_message: str) -> tuple[str, str]:
         """
@@ -1916,6 +2118,99 @@ generate_skill → 保存 → 使用
             # 编译失败时直接使用原始消息
             return user_message, ""
     
+    async def _do_task_retrospect(self, task_monitor: TaskMonitor) -> str:
+        """
+        执行任务复盘分析
+        
+        当任务耗时过长时，让 LLM 分析原因，找出可以改进的地方。
+        
+        Args:
+            task_monitor: 任务监控器
+        
+        Returns:
+            复盘分析结果
+        """
+        try:
+            context = task_monitor.get_retrospect_context()
+            prompt = RETROSPECT_PROMPT.format(context=context)
+            
+            # 使用 Brain 进行复盘分析（独立上下文）
+            response = await self.brain.think(
+                prompt=prompt,
+                system="你是一个任务执行分析专家。请简洁地分析任务执行情况，找出耗时原因和改进建议。",
+            )
+            
+            result = strip_thinking_tags(response.content).strip() if response.content else ""
+            
+            # 保存复盘结果到监控器
+            task_monitor.metrics.retrospect_result = result
+            
+            # 如果发现明显的重复错误模式，记录到记忆中
+            if "重复" in result or "无效" in result or "弯路" in result:
+                try:
+                    from ..memory.types import Memory, MemoryType, MemoryPriority
+                    memory = Memory(
+                        type=MemoryType.ERROR,
+                        priority=MemoryPriority.LONG_TERM,
+                        content=f"任务执行复盘发现问题：{result[:200]}",
+                        source="retrospect",
+                        importance_score=0.7,
+                    )
+                    self.memory_manager.add_memory(memory)
+                except Exception as e:
+                    logger.warning(f"Failed to save retrospect to memory: {e}")
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Task retrospect failed: {e}")
+            return ""
+    
+    async def _do_task_retrospect_background(
+        self, 
+        task_monitor: TaskMonitor, 
+        session_id: str
+    ) -> None:
+        """
+        后台执行任务复盘分析
+        
+        这个方法在后台异步执行，不阻塞主响应。
+        复盘结果会保存到文件，供每日自检系统读取汇总。
+        
+        Args:
+            task_monitor: 任务监控器
+            session_id: 会话 ID
+        """
+        try:
+            # 执行复盘分析
+            retrospect_result = await self._do_task_retrospect(task_monitor)
+            
+            if not retrospect_result:
+                return
+            
+            # 保存到复盘存储
+            from .task_monitor import RetrospectRecord, get_retrospect_storage
+            
+            record = RetrospectRecord(
+                task_id=task_monitor.metrics.task_id,
+                session_id=session_id,
+                description=task_monitor.metrics.description,
+                duration_seconds=task_monitor.metrics.total_duration_seconds,
+                iterations=task_monitor.metrics.total_iterations,
+                model_switched=task_monitor.metrics.model_switched,
+                initial_model=task_monitor.metrics.initial_model,
+                final_model=task_monitor.metrics.final_model,
+                retrospect_result=retrospect_result,
+            )
+            
+            storage = get_retrospect_storage()
+            storage.save(record)
+            
+            logger.info(f"[Session:{session_id}] Retrospect saved: {task_monitor.metrics.task_id}")
+            
+        except Exception as e:
+            logger.error(f"[Session:{session_id}] Background retrospect failed: {e}")
+    
     def _should_compile_prompt(self, message: str) -> bool:
         """
         判断是否需要进行 Prompt 编译
@@ -1947,7 +2242,12 @@ generate_skill → 保存 → 使用
         # 其他情况都进行编译
         return True
     
-    async def _chat_with_tools_and_context(self, messages: list[dict], use_session_prompt: bool = True) -> str:
+    async def _chat_with_tools_and_context(
+        self, 
+        messages: list[dict], 
+        use_session_prompt: bool = True,
+        task_monitor: Optional[TaskMonitor] = None,
+    ) -> str:
         """
         使用指定的消息上下文进行对话（支持工具调用）
         
@@ -1956,6 +2256,7 @@ generate_skill → 保存 → 使用
         Args:
             messages: 对话消息列表
             use_session_prompt: 是否使用 Session 专用的 System Prompt（不包含全局 Active Task）
+            task_monitor: 任务监控器（可选，用于跟踪执行时间和超时切换模型）
         
         Returns:
             最终响应文本
@@ -1972,7 +2273,21 @@ generate_skill → 保存 → 使用
         else:
             system_prompt = self._context.system
         
+        # 获取当前模型
+        current_model = self.brain.model
+        
         for iteration in range(max_iterations):
+            # 任务监控：开始迭代
+            if task_monitor:
+                task_monitor.begin_iteration(iteration + 1, current_model)
+                
+                # 检查是否需要切换模型（超时）
+                if task_monitor.should_switch_model:
+                    new_model = task_monitor.fallback_model
+                    task_monitor.switch_model(new_model, f"任务执行超过 {task_monitor.timeout_seconds} 秒")
+                    current_model = new_model
+                    logger.warning(f"[TaskMonitor] Switching model to {new_model} due to timeout")
+            
             # 每次迭代前检查上下文大小
             if iteration > 0:
                 working_messages = await self._compress_context(working_messages)
@@ -1980,7 +2295,7 @@ generate_skill → 保存 → 使用
             # 调用 Brain，传递工具列表（在线程池中执行同步调用，避免事件循环冲突）
             response = await asyncio.to_thread(
                 self.brain.messages_create,
-                model=self.brain.model,
+                model=current_model,
                 max_tokens=self.brain.max_tokens,
                 system=system_prompt,
                 tools=self._tools,
@@ -2001,30 +2316,74 @@ generate_skill → 保存 → 使用
                         "input": block.input,
                     })
             
+            # 任务监控：结束迭代
+            if task_monitor:
+                task_monitor.end_iteration(text_content[:200] if text_content else "")
+            
             # 如果没有工具调用，返回文本响应（过滤 thinking 标签）
             if not tool_calls:
                 return strip_thinking_tags(text_content) or "我理解了您的请求。"
             
             # 有工具调用，添加助手消息
+            # MiniMax M2.1 Interleaved Thinking 支持：
+            # 必须完整保留 thinking 块以保持思维链连续性
             assistant_content = []
-            if text_content:
-                assistant_content.append({"type": "text", "text": text_content})
-            for tc in tool_calls:
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "input": tc["input"],
-                })
+            for block in response.content:
+                if block.type == "thinking":
+                    # 保留 thinking 块（MiniMax M2.1 要求）
+                    assistant_content.append({
+                        "type": "thinking",
+                        "thinking": block.thinking if hasattr(block, 'thinking') else str(block),
+                    })
+                elif block.type == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
             
             working_messages.append({
                 "role": "assistant",
                 "content": assistant_content,
             })
             
-            # 执行工具调用
+            # 执行工具调用（支持中断检查）
             tool_results = []
-            for tc in tool_calls:
+            interrupt_detected = False
+            
+            for i, tc in enumerate(tool_calls):
+                # === 中断检查点 ===
+                # 在每个工具调用之前检查是否有新消息（第一个工具除外）
+                if i > 0:
+                    interrupt_hint = await self._check_interrupt()
+                    if interrupt_hint:
+                        logger.info(f"[Interrupt] Detected during tool execution in context mode, tool {i+1}/{len(tool_calls)}")
+                        interrupt_detected = True
+                        # 将中断提示添加到结果中
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": f"{interrupt_hint}\n\n注意：由于用户发送了新消息，请尽快完成当前任务或询问用户是否需要处理新消息。",
+                        })
+                        # 跳过剩余的工具调用
+                        for remaining_tc in tool_calls[i+1:]:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": remaining_tc["id"],
+                                "content": "[工具调用已跳过: 用户发送了新消息]",
+                            })
+                        # 任务监控：记录中断
+                        if task_monitor:
+                            task_monitor.end_tool_call("用户中断", success=False)
+                        break
+                
+                # 任务监控：开始工具调用
+                if task_monitor:
+                    task_monitor.begin_tool_call(tc["name"], tc["input"])
+                
                 try:
                     result = await self._execute_tool(tc["name"], tc["input"])
                     tool_results.append({
@@ -2032,6 +2391,9 @@ generate_skill → 保存 → 使用
                         "tool_use_id": tc["id"],
                         "content": str(result) if result else "操作已完成",
                     })
+                    # 任务监控：结束工具调用（成功）
+                    if task_monitor:
+                        task_monitor.end_tool_call(str(result)[:200] if result else "", success=True)
                 except Exception as e:
                     logger.error(f"Tool {tc['name']} error: {e}")
                     tool_results.append({
@@ -2040,6 +2402,9 @@ generate_skill → 保存 → 使用
                         "content": f"工具执行错误: {str(e)}",
                         "is_error": True,
                     })
+                    # 任务监控：结束工具调用（失败）
+                    if task_monitor:
+                        task_monitor.end_tool_call(str(e), success=False)
             
             # 添加工具结果
             working_messages.append({
@@ -2048,6 +2413,68 @@ generate_skill → 保存 → 使用
             })
         
         return "已达到最大工具调用次数，请重新描述您的需求。"
+    
+    # ==================== 消息中断机制 ====================
+    
+    async def _check_interrupt(self) -> Optional[str]:
+        """
+        检查是否有需要插入的中断消息
+        
+        在工具调用间隙调用此方法，检查是否有新消息需要处理
+        
+        Returns:
+            如果有中断消息，返回消息文本；否则返回 None
+        """
+        if not self._interrupt_enabled or not self._current_session:
+            return None
+        
+        # 从 session metadata 获取 gateway 引用
+        gateway = self._current_session.get_metadata("_gateway")
+        session_key = self._current_session.get_metadata("_session_key")
+        
+        if not gateway or not session_key:
+            return None
+        
+        # 检查是否有待处理的中断消息
+        if gateway.has_pending_interrupt(session_key):
+            interrupt_count = gateway.get_interrupt_count(session_key)
+            logger.info(f"[Interrupt] Detected {interrupt_count} pending message(s) for session {session_key}")
+            return f"[系统提示: 用户发送了 {interrupt_count} 条新消息，请在完成当前工具调用后处理]"
+        
+        return None
+    
+    async def _get_interrupt_message(self) -> Optional[str]:
+        """
+        获取并返回中断消息的内容
+        
+        Returns:
+            中断消息文本，如果没有则返回 None
+        """
+        if not self._current_session:
+            return None
+        
+        gateway = self._current_session.get_metadata("_gateway")
+        session_key = self._current_session.get_metadata("_session_key")
+        
+        if not gateway or not session_key:
+            return None
+        
+        # 获取中断消息
+        interrupt_msg = await gateway.check_interrupt(session_key)
+        if interrupt_msg:
+            return interrupt_msg.plain_text
+        
+        return None
+    
+    def set_interrupt_enabled(self, enabled: bool) -> None:
+        """
+        设置是否启用中断检查
+        
+        Args:
+            enabled: 是否启用
+        """
+        self._interrupt_enabled = enabled
+        logger.info(f"Interrupt check {'enabled' if enabled else 'disabled'}")
     
     async def _chat_with_tools(self, message: str) -> str:
         """
@@ -2069,6 +2496,10 @@ generate_skill → 保存 → 使用
         messages = await self._compress_context(messages)
         
         max_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
+        
+        # 防止循环检测
+        recent_tool_calls: list[str] = []
+        max_repeated_calls = 3
         
         for iteration in range(max_iterations):
             # 每次迭代前检查上下文大小（工具调用可能产生大量输出）
@@ -2103,13 +2534,31 @@ generate_skill → 保存 → 使用
             if not tool_calls:
                 return strip_thinking_tags(text_content)
             
+            # 循环检测
+            call_signature = "|".join([f"{tc['name']}:{sorted(tc['input'].items())}" for tc in tool_calls])
+            recent_tool_calls.append(call_signature)
+            if len(recent_tool_calls) > max_repeated_calls:
+                recent_tool_calls = recent_tool_calls[-max_repeated_calls:]
+            
+            if len(recent_tool_calls) >= max_repeated_calls and len(set(recent_tool_calls)) == 1:
+                logger.warning(f"[Loop Detection] Same tool call repeated {max_repeated_calls} times, ending chat")
+                return "检测到重复操作，已自动结束。"
+            
             # 有工具调用，需要执行
             logger.info(f"Chat iteration {iteration + 1}, {len(tool_calls)} tool calls")
             
             # 构建 assistant 消息
+            # MiniMax M2.1 Interleaved Thinking 支持：
+            # 必须完整保留 thinking 块以保持思维链连续性
             assistant_content = []
             for block in response.content:
-                if block.type == "text":
+                if block.type == "thinking":
+                    # 保留 thinking 块（MiniMax M2.1 要求）
+                    assistant_content.append({
+                        "type": "thinking",
+                        "thinking": block.thinking if hasattr(block, 'thinking') else str(block),
+                    })
+                elif block.type == "text":
                     assistant_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
                     assistant_content.append({
@@ -2121,18 +2570,45 @@ generate_skill → 保存 → 使用
             
             messages.append({"role": "assistant", "content": assistant_content})
             
-            # 执行工具并收集结果
+            # 执行工具并收集结果（支持中断检查）
             tool_results = []
-            for tool_call in tool_calls:
+            interrupt_detected = False
+            
+            for i, tool_call in enumerate(tool_calls):
+                # === 中断检查点 ===
+                # 在每个工具调用之前检查是否有新消息
+                if i > 0:  # 第一个工具不检查，避免过早中断
+                    interrupt_hint = await self._check_interrupt()
+                    if interrupt_hint:
+                        logger.info(f"[Interrupt] Detected during tool execution, tool {i+1}/{len(tool_calls)}")
+                        interrupt_detected = True
+                        # 将中断提示添加到结果中
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_call["id"],
+                            "content": f"{interrupt_hint}\n\n注意：由于用户发送了新消息，请尽快完成当前任务或询问用户是否需要处理新消息。",
+                        })
+                        # 跳过剩余的工具调用
+                        for remaining_call in tool_calls[i+1:]:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": remaining_call["id"],
+                                "content": "[工具调用已跳过: 用户发送了新消息]",
+                            })
+                        break
+                
+                # 正常执行工具
                 result = await self._execute_tool(tool_call["name"], tool_call["input"])
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call["id"],
                     "content": result,
                 })
-                logger.info(f"Tool {tool_call['name']} result: {result}")
+                logger.info(f"Tool {tool_call['name']} result: {result[:200]}..." if len(result) > 200 else f"Tool {tool_call['name']} result: {result}")
             
             messages.append({"role": "user", "content": tool_results})
+            
+            # 如果检测到中断，在下一轮迭代中 LLM 会看到中断提示
             
             # 检查是否结束
             if response.stop_reason == "end_turn":
@@ -2167,14 +2643,58 @@ generate_skill → 保存 → 使用
         try:
             # === 基础文件系统工具 ===
             if tool_name == "run_shell":
+                command = tool_input["command"]
+                # 使用 LLM 指定的超时时间，默认 60 秒
+                timeout = tool_input.get("timeout", 60)
+                # 限制范围：最小 10 秒，最大 600 秒
+                timeout = max(10, min(timeout, 600))
+                
                 result = await self.shell_tool.run(
-                    tool_input["command"],
-                    cwd=tool_input.get("cwd")
+                    command,
+                    cwd=tool_input.get("cwd"),
+                    timeout=timeout,
                 )
+                
+                # 记录命令输出到会话日志缓存（供 AI 回顾）
+                from ..logging import get_session_log_buffer
+                log_buffer = get_session_log_buffer()
+                
+                command_preview = tool_input["command"][:100]
+                if len(tool_input["command"]) > 100:
+                    command_preview += "..."
+                
+                # 记录命令和输出
+                output_preview = result.stdout[:500] if result.stdout else ""
+                if len(result.stdout or "") > 500:
+                    output_preview += f"\n... (共 {len(result.stdout)} 字符)"
+                
                 if result.success:
-                    return f"命令执行成功:\n{result.stdout}"
+                    log_buffer.add_log(
+                        level="INFO",
+                        module="shell",
+                        message=f"$ {command_preview}\n[exit: 0]\n{output_preview}",
+                    )
+                    return f"命令执行成功 (exit code: 0):\n{result.stdout}"
                 else:
-                    return f"命令执行失败:\n{result.stderr}"
+                    # 记录失败的命令
+                    error_output = result.stderr[:500] if result.stderr else ""
+                    log_buffer.add_log(
+                        level="ERROR",
+                        module="shell",
+                        message=f"$ {command_preview}\n[exit: {result.returncode}]\nstdout: {output_preview}\nstderr: {error_output}",
+                    )
+                    
+                    # 返回完整信息帮助AI理解错误
+                    output_parts = [f"命令执行失败 (exit code: {result.returncode})"]
+                    if result.stdout:
+                        output_parts.append(f"[stdout]:\n{result.stdout}")
+                    if result.stderr:
+                        output_parts.append(f"[stderr]:\n{result.stderr}")
+                    if not result.stdout and not result.stderr:
+                        output_parts.append("(无输出，可能命令不存在或语法错误)")
+                    # 提示 AI 查看日志或尝试其他方法
+                    output_parts.append("\n提示: 如果不确定原因，可以调用 get_session_logs 查看详细日志，或尝试其他命令。")
+                    return "\n".join(output_parts)
             
             elif tool_name == "write_file":
                 await self.file_tool.write(
@@ -2328,7 +2848,7 @@ generate_skill → 保存 → 使用
                 if memory_id:
                     return f"✅ 已记住: [{mem_type_str}] {content}\nID: {memory_id}"
                 else:
-                    return "⚠️ 记忆已存在或记录失败"
+                    return "✅ 记忆已存在（语义相似），无需重复记录。请继续执行其他任务或结束。"
             
             elif tool_name == "search_memory":
                 from ..memory.types import MemoryType
@@ -2541,6 +3061,28 @@ generate_skill → 保存 → 使用
             elif tool_name == "get_user_profile":
                 summary = self.profile_manager.get_profile_summary()
                 return summary
+            
+            # === 日志查询工具 ===
+            elif tool_name == "get_session_logs":
+                from ..logging import get_session_log_buffer
+                
+                count = tool_input.get("count", 20)
+                level_filter = tool_input.get("level")
+                
+                # 限制最大条数
+                count = min(max(1, count), 200)
+                
+                buffer = get_session_log_buffer()
+                logs_text = buffer.get_logs_formatted(
+                    count=count,
+                    level_filter=level_filter,
+                )
+                
+                stats = buffer.get_stats()
+                session_id = stats.get("current_session", "_global")
+                total_logs = stats.get("sessions", {}).get(session_id, 0)
+                
+                return f"📋 会话日志（最近 {count} 条，共 {total_logs} 条）:\n\n{logs_text}"
             
             # === IM 通道工具 ===
             elif tool_name == "send_to_chat":
@@ -2765,10 +3307,24 @@ generate_skill → 保存 → 使用
         Returns:
             TaskResult
         """
+        import time
+        start_time = time.time()
+        
         if not self._initialized:
             await self.initialize()
         
         logger.info(f"Executing task: {task.description}")
+        
+        # === 创建任务监控器 ===
+        task_monitor = TaskMonitor(
+            task_id=task.id,
+            description=task.description,
+            session_id=task.session_id,
+            timeout_seconds=300,  # 超时阈值：300秒
+            retrospect_threshold=60,  # 复盘阈值：60秒
+            fallback_model="gpt-4o",  # 超时后切换的备用模型
+        )
+        task_monitor.start(self.brain.model)
         
         # 使用已构建的系统提示词 (包含技能清单)
         # 技能清单已在初始化时注入到 _context.system 中
@@ -2789,10 +3345,25 @@ generate_skill → 保存 → 使用
         max_tool_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
         iteration = 0
         final_response = ""
+        current_model = self.brain.model
+        
+        # 防止循环检测
+        recent_tool_calls: list[str] = []  # 记录最近的工具调用
+        max_repeated_calls = 3  # 连续相同调用超过此次数则强制结束
         
         while iteration < max_tool_iterations:
             iteration += 1
             logger.info(f"Task iteration {iteration}")
+            
+            # 任务监控：开始迭代
+            task_monitor.begin_iteration(iteration, current_model)
+            
+            # 检查是否需要切换模型（超时）
+            if task_monitor.should_switch_model:
+                new_model = task_monitor.fallback_model
+                task_monitor.switch_model(new_model, f"任务执行超过 {task_monitor.timeout_seconds} 秒")
+                current_model = new_model
+                logger.warning(f"[TaskMonitor] Switching model to {new_model} due to timeout")
             
             # 检查并压缩上下文（任务执行可能产生大量工具输出）
             if iteration > 1:
@@ -2801,7 +3372,7 @@ generate_skill → 保存 → 使用
             # 调用 Brain（在线程池中执行同步调用）
             response = await asyncio.to_thread(
                 self.brain.messages_create,
-                model=self.brain.model,
+                model=current_model,
                 max_tokens=self.brain.max_tokens,
                 system=system_prompt,
                 tools=self._tools,
@@ -2822,6 +3393,9 @@ generate_skill → 保存 → 使用
                         "input": block.input,
                     })
             
+            # 任务监控：结束迭代
+            task_monitor.end_iteration(text_content[:200] if text_content else "")
+            
             # 如果有文本响应，保存（过滤 thinking 标签和工具调用模拟文本）
             if text_content:
                 cleaned_text = clean_llm_response(text_content)
@@ -2834,10 +3408,33 @@ generate_skill → 保存 → 使用
             if not tool_calls:
                 break
             
+            # 循环检测：记录工具调用签名
+            call_signature = "|".join([f"{tc['name']}:{sorted(tc['input'].items())}" for tc in tool_calls])
+            recent_tool_calls.append(call_signature)
+            
+            # 只保留最近的调用记录
+            if len(recent_tool_calls) > max_repeated_calls:
+                recent_tool_calls = recent_tool_calls[-max_repeated_calls:]
+            
+            # 检测连续重复调用
+            if len(recent_tool_calls) >= max_repeated_calls:
+                if len(set(recent_tool_calls)) == 1:
+                    logger.warning(f"[Loop Detection] Same tool call repeated {max_repeated_calls} times, forcing task end")
+                    final_response = "任务执行中检测到重复操作，已自动结束。如需继续，请重新描述任务。"
+                    break
+            
             # 执行工具调用
+            # MiniMax M2.1 Interleaved Thinking 支持：
+            # 必须完整保留 thinking 块以保持思维链连续性
             assistant_content = []
             for block in response.content:
-                if block.type == "text":
+                if block.type == "thinking":
+                    # 保留 thinking 块（MiniMax M2.1 要求）
+                    assistant_content.append({
+                        "type": "thinking",
+                        "thinking": block.thinking if hasattr(block, 'thinking') else str(block),
+                    })
+                elif block.type == "text":
                     assistant_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
                     assistant_content.append({
@@ -2853,17 +3450,34 @@ generate_skill → 保存 → 使用
             tool_results = []
             executed_tools = []  # 记录执行的工具，用于生成摘要
             for tool_call in tool_calls:
-                result = await self._execute_tool(tool_call["name"], tool_call["input"])
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call["id"],
-                    "content": result,
-                })
-                executed_tools.append({
-                    "name": tool_call["name"],
-                    "result_preview": result if result else ""
-                })
-                logger.info(f"Tool {tool_call['name']} result: {result}")
+                # 任务监控：开始工具调用
+                task_monitor.begin_tool_call(tool_call["name"], tool_call["input"])
+                
+                try:
+                    result = await self._execute_tool(tool_call["name"], tool_call["input"])
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call["id"],
+                        "content": result,
+                    })
+                    executed_tools.append({
+                        "name": tool_call["name"],
+                        "result_preview": result if result else ""
+                    })
+                    logger.info(f"Tool {tool_call['name']} result: {result}")
+                    
+                    # 任务监控：结束工具调用（成功）
+                    task_monitor.end_tool_call(str(result)[:200] if result else "", success=True)
+                except Exception as e:
+                    logger.error(f"Tool {tool_call['name']} error: {e}")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call["id"],
+                        "content": f"工具执行错误: {str(e)}",
+                        "is_error": True,
+                    })
+                    # 任务监控：结束工具调用（失败）
+                    task_monitor.end_tool_call(str(e), success=False)
             
             messages.append({"role": "user", "content": tool_results})
             
@@ -2880,7 +3494,7 @@ generate_skill → 保存 → 使用
                 })
                 summary_response = await asyncio.to_thread(
                     self.brain.messages_create,
-                    model=self.brain.model,
+                    model=current_model,
                     max_tokens=1000,
                     system=system_prompt,
                     messages=messages,
@@ -2893,12 +3507,29 @@ generate_skill → 保存 → 使用
                 logger.warning(f"Failed to get summary: {e}")
                 final_response = "任务已执行完成。"
         
+        # === 完成任务监控 ===
+        metrics = task_monitor.complete(
+            success=True,
+            response=final_response[:200],
+        )
+        
+        # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===
+        if metrics.retrospect_needed:
+            # 创建后台任务执行复盘，不等待结果
+            asyncio.create_task(
+                self._do_task_retrospect_background(task_monitor, task.session_id or task.id)
+            )
+            logger.info(f"[Task:{task.id}] Retrospect scheduled (background)")
+        
         task.mark_completed(final_response)
+        
+        duration = time.time() - start_time
         
         return TaskResult(
             success=True,
             data=final_response,
             iterations=iteration,
+            duration_seconds=duration,
         )
     
     def _format_task_result(self, result: TaskResult) -> str:

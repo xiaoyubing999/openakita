@@ -274,38 +274,112 @@ function Install-Playwright {
     }
 }
 
+function Install-WhisperModel {
+    param([string]$PythonPath)
+    
+    Write-Step "预下载 Whisper 语音模型"
+    
+    # 检查是否已安装 whisper
+    $whisperCheck = & $PythonPath -c "import whisper; print('ok')" 2>$null
+    if ($whisperCheck -ne "ok") {
+        Write-Warning "Whisper 未安装，跳过模型下载"
+        return
+    }
+    
+    # 模型选项
+    Write-Info "Whisper 语音识别模型选项:"
+    Write-Info "  1. tiny   - 最小 (~39MB)  - 速度最快，准确度较低"
+    Write-Info "  2. base   - 基础 (~74MB)  - 推荐，平衡速度和准确度"
+    Write-Info "  3. small  - 小型 (~244MB) - 较高准确度"
+    Write-Info "  4. medium - 中型 (~769MB) - 高准确度"
+    Write-Info "  5. large  - 大型 (~1.5GB) - 最高准确度，需要较多资源"
+    Write-Info "  0. 跳过   - 不下载，首次使用时再下载"
+    Write-Host ""
+    
+    $choice = Read-Host "请选择模型 (默认 2-base)"
+    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "2" }
+    
+    $modelName = switch ($choice) {
+        "1" { "tiny" }
+        "2" { "base" }
+        "3" { "small" }
+        "4" { "medium" }
+        "5" { "large" }
+        "0" { $null }
+        default { "base" }
+    }
+    
+    if ($null -eq $modelName) {
+        Write-Info "跳过 Whisper 模型下载"
+        return
+    }
+    
+    # 检查模型是否已存在
+    $cacheDir = Join-Path $env:USERPROFILE ".cache\whisper"
+    $modelFile = Join-Path $cacheDir "$modelName.pt"
+    
+    if ((Test-Path $modelFile) -and (Get-Item $modelFile).Length -gt 1000000) {
+        Write-Info "Whisper $modelName 模型已存在，跳过下载"
+        return
+    }
+    
+    Write-Info "下载 Whisper $modelName 模型..."
+    
+    # 使用 Python 下载模型
+    $downloadScript = "import whisper; print('正在下载...'); whisper.load_model('$modelName'); print('完成!')"
+    
+    & $PythonPath -c $downloadScript
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Whisper $modelName 模型下载成功"
+    } else {
+        Write-Warning "Whisper 模型下载失败，语音识别功能将在首次使用时下载"
+    }
+}
+
 function Initialize-Config {
     Write-Step "初始化配置"
     
     $envExample = Join-Path (Get-Location) ".env.example"
     $envFile = Join-Path (Get-Location) ".env"
     
+    # 1. 基础环境配置 (.env)
     if (Test-Path $envFile) {
         Write-Info ".env 配置文件已存在"
         $answer = Read-Host "是否覆盖? (y/N)"
         if ($answer -ne "y" -and $answer -ne "Y") {
-            Write-Info "保留现有配置"
-            return
+            Write-Info "保留现有 .env 配置"
+        } else {
+            New-EnvFile -EnvFile $envFile -EnvExample $envExample
         }
+    } else {
+        New-EnvFile -EnvFile $envFile -EnvExample $envExample
     }
     
-    if (Test-Path $envExample) {
-        Copy-Item $envExample $envFile -Force
+    # 2. LLM 端点配置 (data/llm_endpoints.json)
+    Initialize-LLMEndpoints
+    
+    Write-Warning "请编辑配置文件:"
+    Write-Info "  - .env: 基础设置 (Telegram Token 等)"
+    Write-Info "  - data\llm_endpoints.json: LLM 端点配置 (API Key, 模型等)"
+}
+
+function New-EnvFile {
+    param(
+        [string]$EnvFile,
+        [string]$EnvExample
+    )
+    
+    if (Test-Path $EnvExample) {
+        Copy-Item $EnvExample $EnvFile -Force
         Write-Success "配置文件已创建: .env"
     } else {
-        # 创建基础配置
         $config = @"
-# Anthropic API Key (必需)
-ANTHROPIC_API_KEY=sk-your-api-key-here
+# =====================================================
+# OpenAkita 基础配置
+# =====================================================
 
-# API Base URL
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-
-# 模型配置
-DEFAULT_MODEL=claude-opus-4-5-20251101-thinking
-MAX_TOKENS=8192
-
-# Agent配置
+# Agent 配置
 AGENT_NAME=OpenAkita
 MAX_ITERATIONS=100
 AUTO_CONFIRM=false
@@ -316,15 +390,66 @@ DATABASE_PATH=data/agent.db
 # 日志级别
 LOG_LEVEL=INFO
 
-# Telegram (可选)
+# =====================================================
+# Telegram 配置 (可选)
+# =====================================================
 TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=your-bot-token
+
+# =====================================================
+# LLM 端点配置
+# =====================================================
+# 注意: LLM 相关配置已迁移到 data/llm_endpoints.json
+# 支持多端点、自动故障切换、能力路由
+# 运行 openakita llm-config 进行交互式配置
 "@
-        Set-Content -Path $envFile -Value $config
+        Set-Content -Path $EnvFile -Value $config
         Write-Success "配置文件已创建: .env"
     }
+}
+
+function Initialize-LLMEndpoints {
+    $llmConfig = Join-Path (Get-Location) "data\llm_endpoints.json"
     
-    Write-Warning "请编辑 .env 文件，填入你的 API Key"
+    if (Test-Path $llmConfig) {
+        Write-Info "LLM 端点配置已存在: $llmConfig"
+        return
+    }
+    
+    Write-Info "创建 LLM 端点配置..."
+    
+    # 确保 data 目录存在
+    $dataDir = Join-Path (Get-Location) "data"
+    if (-not (Test-Path $dataDir)) {
+        New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    }
+    
+    $llmConfigContent = @"
+{
+  "version": "1.0",
+  "description": "LLM 端点配置 - 支持多端点、故障切换、能力路由",
+  "endpoints": [
+    {
+      "name": "anthropic",
+      "provider": "anthropic",
+      "model": "claude-opus-4-5-20251101",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "base_url": "https://api.anthropic.com",
+      "capabilities": ["text", "vision", "tools"],
+      "priority": 1,
+      "extra_params": {}
+    }
+  ],
+  "settings": {
+    "retry_count": 2,
+    "retry_delay_seconds": 2,
+    "timeout_seconds": 120
+  }
+}
+"@
+    Set-Content -Path $llmConfig -Value $llmConfigContent -Encoding UTF8
+    Write-Success "LLM 端点配置已创建: $llmConfig"
+    Write-Info "提示: 运行 'openakita llm-config' 进行交互式配置"
 }
 
 function Initialize-DataDirs {
@@ -334,6 +459,9 @@ function Initialize-DataDirs {
         "data",
         "data\sessions",
         "data\media",
+        "data\scheduler",
+        "data\temp",
+        "data\telegram\pairing",
         "skills",
         "plugins"
     )
@@ -390,17 +518,29 @@ function Show-Completion {
     Write-Host ""
     Write-Host "后续步骤:" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  1. 编辑配置文件，填入 API Key:" -ForegroundColor White
-    Write-Host "     notepad .env" -ForegroundColor Cyan
+    Write-Host "  1. 配置 LLM 端点 (二选一):" -ForegroundColor White
+    Write-Host "     openakita llm-config" -ForegroundColor Cyan -NoNewline
+    Write-Host "  # 交互式配置向导" -ForegroundColor Gray
+    Write-Host "     notepad data\llm_endpoints.json" -ForegroundColor Cyan -NoNewline
+    Write-Host "  # 直接编辑" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  2. 激活虚拟环境:" -ForegroundColor White
+    Write-Host "  2. (可选) 配置 Telegram:" -ForegroundColor White
+    Write-Host "     notepad .env" -ForegroundColor Cyan -NoNewline
+    Write-Host "  # 填入 TELEGRAM_BOT_TOKEN" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  3. 激活虚拟环境:" -ForegroundColor White
     Write-Host "     .\venv\Scripts\Activate.ps1" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  3. 启动 Agent:" -ForegroundColor White
-    Write-Host "     openakita" -ForegroundColor Cyan
+    Write-Host "  4. 启动 Agent:" -ForegroundColor White
+    Write-Host "     openakita" -ForegroundColor Cyan -NoNewline
+    Write-Host "        # 交互模式" -ForegroundColor Gray
+    Write-Host "     openakita serve" -ForegroundColor Cyan -NoNewline
+    Write-Host "  # 服务模式 (Telegram/IM)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  4. 启动 Telegram Bot (可选):" -ForegroundColor White
-    Write-Host "     python scripts/run_telegram_bot.py" -ForegroundColor Cyan
+    Write-Host "新特性:" -ForegroundColor Blue
+    Write-Host "  - 多 LLM 端点支持，自动故障切换" -ForegroundColor Gray
+    Write-Host "  - 端点 3 分钟冷静期机制" -ForegroundColor Gray
+    Write-Host "  - 能力路由 (text/vision/video/tools)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
 }
@@ -442,7 +582,10 @@ function Main {
     # 步骤 5: 安装 Playwright (可选)
     Install-Playwright -PythonPath $venvPython
     
-    # 步骤 6: 初始化配置
+    # 步骤 6: 下载 Whisper 语音模型 (可选)
+    Install-WhisperModel -PythonPath $venvPython
+    
+    # 步骤 7: 初始化配置
     Initialize-Config
     
     # 步骤 7: 初始化数据目录

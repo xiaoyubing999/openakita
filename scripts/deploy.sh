@@ -301,36 +301,95 @@ install_playwright() {
     print_success "Playwright 安装完成"
 }
 
+# 安装 Whisper 语音模型
+install_whisper_model() {
+    print_step "预下载 Whisper 语音模型"
+    
+    # 检查是否已安装 whisper
+    if ! $VENV_PYTHON -c "import whisper" 2>/dev/null; then
+        print_warning "Whisper 未安装，跳过模型下载"
+        return 0
+    fi
+    
+    # 模型选项
+    print_info "Whisper 语音识别模型选项:"
+    echo "  1. tiny   - 最小 (~39MB)  - 速度最快，准确度较低"
+    echo "  2. base   - 基础 (~74MB)  - 推荐，平衡速度和准确度"
+    echo "  3. small  - 小型 (~244MB) - 较高准确度"
+    echo "  4. medium - 中型 (~769MB) - 高准确度"
+    echo "  5. large  - 大型 (~1.5GB) - 最高准确度，需要较多资源"
+    echo "  0. 跳过   - 不下载，首次使用时再下载"
+    echo ""
+    
+    read -p "请选择模型 (默认 2-base): " choice
+    choice=${choice:-2}
+    
+    local model_name
+    case $choice in
+        1) model_name="tiny" ;;
+        2) model_name="base" ;;
+        3) model_name="small" ;;
+        4) model_name="medium" ;;
+        5) model_name="large" ;;
+        0) print_info "跳过 Whisper 模型下载"; return 0 ;;
+        *) model_name="base" ;;
+    esac
+    
+    # 检查模型是否已存在
+    local cache_dir="$HOME/.cache/whisper"
+    local model_file="$cache_dir/${model_name}.pt"
+    
+    if [[ -f "$model_file" ]] && [[ $(stat -f%z "$model_file" 2>/dev/null || stat -c%s "$model_file" 2>/dev/null) -gt 1000000 ]]; then
+        print_info "Whisper $model_name 模型已存在，跳过下载"
+        return 0
+    fi
+    
+    print_info "下载 Whisper $model_name 模型..."
+    
+    $VENV_PYTHON -c "
+import whisper
+print('正在下载...')
+whisper.load_model('$model_name')
+print('完成!')
+" && print_success "Whisper $model_name 模型下载成功" || print_warning "Whisper 模型下载失败，语音识别功能将在首次使用时下载"
+}
+
 # 初始化配置
 init_config() {
     print_step "初始化配置"
     
+    # 1. 基础环境配置 (.env)
     if [ -f ".env" ]; then
         print_info ".env 配置文件已存在"
         read -p "是否覆盖? (y/N): " answer
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            print_info "保留现有配置"
-            return 0
+            print_info "保留现有 .env 配置"
+        else
+            create_env_file
         fi
+    else
+        create_env_file
     fi
     
+    # 2. LLM 端点配置 (data/llm_endpoints.json)
+    init_llm_endpoints
+    
+    print_warning "请编辑配置文件:"
+    print_info "  - .env: 基础设置 (Telegram Token 等)"
+    print_info "  - data/llm_endpoints.json: LLM 端点配置 (API Key, 模型等)"
+}
+
+create_env_file() {
     if [ -f ".env.example" ]; then
         cp .env.example .env
         print_success "配置文件已创建: .env"
     else
-        # 创建基础配置
         cat > .env << 'EOF'
-# Anthropic API Key (必需)
-ANTHROPIC_API_KEY=sk-your-api-key-here
+# =====================================================
+# OpenAkita 基础配置
+# =====================================================
 
-# API Base URL
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-
-# 模型配置
-DEFAULT_MODEL=claude-opus-4-5-20251101-thinking
-MAX_TOKENS=8192
-
-# Agent配置
+# Agent 配置
 AGENT_NAME=OpenAkita
 MAX_ITERATIONS=100
 AUTO_CONFIRM=false
@@ -341,21 +400,75 @@ DATABASE_PATH=data/agent.db
 # 日志级别
 LOG_LEVEL=INFO
 
-# Telegram (可选)
+# =====================================================
+# Telegram 配置 (可选)
+# =====================================================
 TELEGRAM_ENABLED=false
 TELEGRAM_BOT_TOKEN=your-bot-token
+
+# =====================================================
+# LLM 端点配置
+# =====================================================
+# 注意: LLM 相关配置已迁移到 data/llm_endpoints.json
+# 支持多端点、自动故障切换、能力路由
+# 运行 openakita llm-config 进行交互式配置
 EOF
         print_success "配置文件已创建: .env"
     fi
+}
+
+init_llm_endpoints() {
+    local llm_config="data/llm_endpoints.json"
     
-    print_warning "请编辑 .env 文件，填入你的 API Key"
+    if [ -f "$llm_config" ]; then
+        print_info "LLM 端点配置已存在: $llm_config"
+        return 0
+    fi
+    
+    print_info "创建 LLM 端点配置..."
+    mkdir -p data
+    
+    cat > "$llm_config" << 'EOF'
+{
+  "version": "1.0",
+  "description": "LLM 端点配置 - 支持多端点、故障切换、能力路由",
+  "endpoints": [
+    {
+      "name": "anthropic",
+      "provider": "anthropic",
+      "model": "claude-opus-4-5-20251101",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "base_url": "https://api.anthropic.com",
+      "capabilities": ["text", "vision", "tools"],
+      "priority": 1,
+      "extra_params": {}
+    }
+  ],
+  "settings": {
+    "retry_count": 2,
+    "retry_delay_seconds": 2,
+    "timeout_seconds": 120
+  }
+}
+EOF
+    print_success "LLM 端点配置已创建: $llm_config"
+    print_info "提示: 运行 'openakita llm-config' 进行交互式配置"
 }
 
 # 初始化数据目录
 init_data_dirs() {
     print_step "初始化数据目录"
     
-    local dirs=("data" "data/sessions" "data/media" "skills" "plugins")
+    local dirs=(
+        "data"
+        "data/sessions"
+        "data/media"
+        "data/scheduler"
+        "data/temp"
+        "data/telegram/pairing"
+        "skills"
+        "plugins"
+    )
     
     for dir in "${dirs[@]}"; do
         if [ ! -d "$dir" ]; then
@@ -446,17 +559,24 @@ show_completion() {
     echo ""
     echo -e "${YELLOW}后续步骤:${NC}"
     echo ""
-    echo -e "  1. 编辑配置文件，填入 API Key:"
-    echo -e "     ${CYAN}nano .env${NC}  或  ${CYAN}vim .env${NC}"
+    echo -e "  1. 配置 LLM 端点 (二选一):"
+    echo -e "     ${CYAN}openakita llm-config${NC}  # 交互式配置向导"
+    echo -e "     ${CYAN}nano data/llm_endpoints.json${NC}  # 直接编辑"
     echo ""
-    echo -e "  2. 激活虚拟环境:"
+    echo -e "  2. (可选) 配置 Telegram:"
+    echo -e "     ${CYAN}nano .env${NC}  # 填入 TELEGRAM_BOT_TOKEN"
+    echo ""
+    echo -e "  3. 激活虚拟环境:"
     echo -e "     ${CYAN}source venv/bin/activate${NC}"
     echo ""
-    echo -e "  3. 启动 Agent:"
-    echo -e "     ${CYAN}openakita${NC}"
+    echo -e "  4. 启动 Agent:"
+    echo -e "     ${CYAN}openakita${NC}        # 交互模式"
+    echo -e "     ${CYAN}openakita serve${NC}  # 服务模式 (Telegram/IM)"
     echo ""
-    echo -e "  4. 启动 Telegram Bot (可选):"
-    echo -e "     ${CYAN}python scripts/run_telegram_bot.py${NC}"
+    echo -e "${BLUE}新特性:${NC}"
+    echo -e "  - 多 LLM 端点支持，自动故障切换"
+    echo -e "  - 端点 3 分钟冷静期机制"
+    echo -e "  - 能力路由 (text/vision/video/tools)"
     echo ""
     echo -e "${GREEN}========================================${NC}"
 }
@@ -500,7 +620,10 @@ main() {
     # 步骤 5: 安装 Playwright (可选)
     install_playwright
     
-    # 步骤 6: 初始化配置
+    # 步骤 6: 下载 Whisper 语音模型 (可选)
+    install_whisper_model
+    
+    # 步骤 7: 初始化配置
     init_config
     
     # 步骤 7: 初始化数据目录

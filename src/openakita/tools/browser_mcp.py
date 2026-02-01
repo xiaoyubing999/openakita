@@ -160,6 +160,44 @@ class BrowserMCP:
                 "properties": {}
             }
         ),
+        BrowserTool(
+            name="browser_status",
+            description="获取浏览器当前状态。返回: 是否打开、当前页面 URL 和标题、打开的 tab 数量。在操作浏览器前建议先调用此工具了解当前状态。",
+            arguments={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        BrowserTool(
+            name="browser_list_tabs",
+            description="列出所有打开的标签页(tabs)。返回每个 tab 的 URL 和标题。",
+            arguments={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        BrowserTool(
+            name="browser_switch_tab",
+            description="切换到指定的标签页",
+            arguments={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "number", "description": "标签页索引 (从 0 开始)"}
+                },
+                "required": ["index"]
+            }
+        ),
+        BrowserTool(
+            name="browser_new_tab",
+            description="打开新标签页并导航到指定 URL",
+            arguments={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "要访问的 URL"}
+                },
+                "required": ["url"]
+            }
+        ),
     ]
     
     def __init__(self, headless: bool = False):
@@ -170,6 +208,7 @@ class BrowserMCP:
         self.headless = headless
         self._playwright = None
         self._browser = None
+        self._context = None  # 显式管理 context
         self._page: Optional[Any] = None
         self._started = False
         self._visible = True  # 当前是否可见模式（默认可见）
@@ -207,7 +246,10 @@ class BrowserMCP:
                     '--no-sandbox',
                 ]
             )
-            self._page = await self._browser.new_page()
+            
+            # 显式创建 context（支持多 tab）
+            self._context = await self._browser.new_context()
+            self._page = await self._context.new_page()
             
             # 设置默认超时
             self._page.set_default_timeout(30000)
@@ -228,11 +270,17 @@ class BrowserMCP:
         """停止浏览器"""
         if self._page:
             await self._page.close()
+        if self._context:
+            await self._context.close()
         if self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
         
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
         self._started = False
         logger.info("Browser MCP stopped")
     
@@ -320,6 +368,18 @@ class BrowserMCP:
             elif tool_name == "browser_close":
                 await self.stop()
                 return {"success": True, "result": "Browser closed"}
+            
+            elif tool_name == "browser_status":
+                return await self._get_status()
+            
+            elif tool_name == "browser_list_tabs":
+                return await self._list_tabs()
+            
+            elif tool_name == "browser_switch_tab":
+                return await self._switch_tab(arguments.get("index", 0))
+            
+            elif tool_name == "browser_new_tab":
+                return await self._new_tab(arguments.get("url"))
             
             else:
                 return {"success": False, "error": f"Unknown tool: {tool_name}"}
@@ -529,6 +589,187 @@ class BrowserMCP:
             "success": True,
             "result": result
         }
+    
+    async def _get_status(self) -> dict:
+        """获取浏览器状态"""
+        if not self._started or not self._browser:
+            return {
+                "success": True,
+                "result": {
+                    "is_open": False,
+                    "message": "浏览器未启动。使用 browser_open 启动浏览器。"
+                }
+            }
+        
+        try:
+            # 获取所有页面
+            all_pages = self._context.pages if self._context else []
+            
+            # 当前页面信息
+            current_url = self._page.url if self._page else None
+            current_title = await self._page.title() if self._page else None
+            
+            return {
+                "success": True,
+                "result": {
+                    "is_open": True,
+                    "visible": self._visible,
+                    "tab_count": len(all_pages),
+                    "current_tab": {
+                        "url": current_url,
+                        "title": current_title
+                    },
+                    "message": f"浏览器{'可见' if self._visible else '后台'}运行中，共 {len(all_pages)} 个标签页"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to get browser status: {e}")
+            return {
+                "success": True,
+                "result": {
+                    "is_open": True,
+                    "visible": self._visible,
+                    "error": str(e)
+                }
+            }
+    
+    async def _list_tabs(self) -> dict:
+        """列出所有标签页"""
+        if not self._started or not self._browser:
+            return {
+                "success": False,
+                "error": "浏览器未启动"
+            }
+        
+        try:
+            # 使用显式管理的 context
+            all_pages = self._context.pages if self._context else []
+            
+            tabs = []
+            for i, page in enumerate(all_pages):
+                try:
+                    title = await page.title()
+                    tabs.append({
+                        "index": i,
+                        "url": page.url,
+                        "title": title,
+                        "is_current": page == self._page
+                    })
+                except Exception:
+                    tabs.append({
+                        "index": i,
+                        "url": page.url,
+                        "title": "(无法获取)",
+                        "is_current": page == self._page
+                    })
+            
+            return {
+                "success": True,
+                "result": {
+                    "tabs": tabs,
+                    "count": len(tabs),
+                    "message": f"共 {len(tabs)} 个标签页"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to list tabs: {e}")
+            return {
+                "success": False,
+                "error": f"获取标签页列表失败: {str(e)}"
+            }
+    
+    async def _switch_tab(self, index: int) -> dict:
+        """切换到指定标签页"""
+        if not self._started or not self._browser:
+            return {
+                "success": False,
+                "error": "浏览器未启动"
+            }
+        
+        try:
+            # 使用显式管理的 context
+            all_pages = self._context.pages if self._context else []
+            
+            if index < 0 or index >= len(all_pages):
+                return {
+                    "success": False,
+                    "error": f"标签页索引 {index} 无效。有效范围: 0-{len(all_pages)-1}"
+                }
+            
+            self._page = all_pages[index]
+            await self._page.bring_to_front()
+            
+            title = await self._page.title()
+            return {
+                "success": True,
+                "result": {
+                    "switched_to": {
+                        "index": index,
+                        "url": self._page.url,
+                        "title": title
+                    },
+                    "message": f"已切换到标签页 {index}: {title}"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to switch tab: {e}")
+            return {
+                "success": False,
+                "error": f"切换标签页失败: {str(e)}"
+            }
+    
+    async def _new_tab(self, url: str) -> dict:
+        """在新标签页打开 URL"""
+        if not self._started or not self._browser:
+            success = await self.start()
+            if not success:
+                return {
+                    "success": False,
+                    "error": "浏览器启动失败"
+                }
+        
+        try:
+            # 使用显式管理的 context
+            if not self._context:
+                self._context = await self._browser.new_context()
+            
+            # 检查是否可以复用空白页
+            reused_blank = False
+            if self._page and self._page.url in ("about:blank", ""):
+                # 复用空白页，直接导航
+                new_page = self._page
+                reused_blank = True
+            else:
+                # 创建新页面
+                new_page = await self._context.new_page()
+            
+            await new_page.goto(url, wait_until="domcontentloaded")
+            
+            # 切换到新页面
+            self._page = new_page
+            
+            title = await new_page.title()
+            
+            # 统计当前 tab 数量
+            all_pages = self._context.pages
+            
+            return {
+                "success": True,
+                "result": {
+                    "url": url,
+                    "title": title,
+                    "tab_index": len(all_pages) - 1,
+                    "total_tabs": len(all_pages),
+                    "reused_blank": reused_blank,
+                    "message": f"已在{'空白' if reused_blank else '新'}标签页打开: {title}"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to open new tab: {e}")
+            return {
+                "success": False,
+                "error": f"打开新标签页失败: {str(e)}"
+            }
     
     @property
     def is_started(self) -> bool:

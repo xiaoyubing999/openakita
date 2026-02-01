@@ -142,17 +142,25 @@ class IntervalTrigger(Trigger):
         self.start_time = start_time or datetime.now()
     
     def get_next_run_time(self, last_run: Optional[datetime] = None) -> datetime:
+        now = datetime.now()
+        
         if last_run is None:
-            # 首次运行：从 start_time 开始
-            if datetime.now() >= self.start_time:
-                return datetime.now()
-            return self.start_time
+            # 首次运行：计算从 start_time 开始的下一个间隔时间点
+            # 注意：不立即执行，而是等到下一个间隔
+            if now < self.start_time:
+                # start_time 还没到，返回 start_time
+                return self.start_time
+            
+            # start_time 已过，计算下一个对齐的时间点
+            elapsed = now - self.start_time
+            intervals_passed = int(elapsed.total_seconds() / self.interval.total_seconds())
+            next_run = self.start_time + self.interval * (intervals_passed + 1)
+            return next_run
         
         # 计算下一次运行时间
         next_run = last_run + self.interval
         
         # 如果下一次运行时间已过，计算最近的下一次
-        now = datetime.now()
         while next_run < now:
             next_run += self.interval
         
@@ -264,10 +272,12 @@ class CronTrigger(Trigger):
     def get_next_run_time(self, last_run: Optional[datetime] = None) -> datetime:
         """计算下一次运行时间"""
         # 从当前时间或上次运行后开始搜索
+        # 注意：总是从下一分钟开始，避免立即执行
         if last_run:
             start = last_run + timedelta(minutes=1)
         else:
-            start = datetime.now()
+            # 首次运行：从下一分钟开始搜索，不立即执行
+            start = datetime.now() + timedelta(minutes=1)
         
         # 向上取整到分钟
         start = start.replace(second=0, microsecond=0)

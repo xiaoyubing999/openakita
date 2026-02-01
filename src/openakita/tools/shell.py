@@ -35,7 +35,7 @@ class ShellTool:
     def __init__(
         self,
         default_cwd: Optional[str] = None,
-        timeout: int = 300,
+        timeout: int = 60,  # 默认 60 秒，简单命令足够
         shell: bool = True,
     ):
         self.default_cwd = default_cwd or os.getcwd()

@@ -24,18 +24,20 @@ from rich.text import Text
 
 from .core.agent import Agent
 from .config import settings
+from .logging import setup_logging
 
-# 配置日志
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# 配置日志系统（使用新的日志模块）
+setup_logging(
+    log_dir=settings.log_dir_path,
+    log_level=settings.log_level,
+    log_format=settings.log_format,
+    log_file_prefix=settings.log_file_prefix,
+    log_max_size_mb=settings.log_max_size_mb,
+    log_backup_count=settings.log_backup_count,
+    log_to_console=settings.log_to_console,
+    log_to_file=settings.log_to_file,
 )
 logger = logging.getLogger(__name__)
-
-# 减少第三方库的日志输出
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # Typer 应用
 app = typer.Typer(
@@ -125,6 +127,7 @@ async def start_im_channels(agent_or_master):
     _message_gateway = MessageGateway(
         session_manager=_session_manager,
         agent_handler=None,  # 稍后设置
+        whisper_model=settings.whisper_model,  # 从配置读取 Whisper 模型
     )
     
     # 注册启用的适配器

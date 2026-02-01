@@ -186,7 +186,30 @@ class MemoryManager:
     # ==================== 记忆操作 ====================
     
     # 向量相似度阈值（余弦距离，越小越相似）
-    DUPLICATE_DISTANCE_THRESHOLD = 0.25
+    # 0.25 太宽松，容易把格式相似但内容不同的记录误判为重复
+    # 0.12 更严格，只有高度相似的内容才会被去重
+    DUPLICATE_DISTANCE_THRESHOLD = 0.12
+    
+    # 常见的通用前缀（这些前缀会导致向量相似度虚高）
+    COMMON_PREFIXES = [
+        "任务执行复盘发现问题：",
+        "任务执行复盘：",
+        "复盘发现：",
+        "系统自检发现：",
+        "自检发现的典型问题模式：",
+        "系统自检发现的典型问题模式：",
+        "用户偏好：",
+        "用户习惯：",
+        "学习到：",
+        "记住：",
+    ]
+    
+    def _strip_common_prefix(self, content: str) -> str:
+        """去掉通用前缀，提取核心内容用于向量比较"""
+        for prefix in self.COMMON_PREFIXES:
+            if content.startswith(prefix):
+                return content[len(prefix):]
+        return content
     
     def add_memory(self, memory: Memory) -> str:
         """
@@ -212,11 +235,18 @@ class MemoryManager:
         
         # 2. 向量相似度检测（语义去重）
         if self.vector_store.enabled and len(self._memories) > 0:
-            similar = self.vector_store.search(memory.content, limit=3)
+            # 去掉通用前缀后再比较，避免格式相似但内容不同的被误判
+            core_content = self._strip_common_prefix(memory.content)
+            similar = self.vector_store.search(core_content, limit=3)
             for mid, distance in similar:
                 if distance < self.DUPLICATE_DISTANCE_THRESHOLD:
                     existing_mem = self._memories.get(mid)
                     if existing_mem:
+                        # 也去掉已存在记忆的前缀再比较
+                        existing_core = self._strip_common_prefix(existing_mem.content)
+                        # 如果核心内容的前30字符不同，跳过（不是真正的重复）
+                        if core_content[:30] != existing_core[:30]:
+                            continue
                         logger.info(f"Memory duplicate (semantic, dist={distance:.3f}): "
                                    f"'{memory.content[:30]}...' similar to '{existing_mem.content[:30]}...'")
                         return ""  # 语义重复，不存入
