@@ -376,7 +376,7 @@ class Agent:
         # === 浏览器工具 (browser-use MCP) ===
         {
             "name": "browser_open",
-            "description": "启动浏览器。参数说明：visible=True 显示浏览器窗口(用户可见)，visible=False 后台运行(不可见)。默认显示浏览器窗口。",
+            "description": "启动浏览器。⚠️ **重要：服务重启后浏览器会关闭，必须先用 browser_status 检查状态，不能依赖历史记录假设浏览器已打开**。参数说明：visible=True 显示浏览器窗口(用户可见)，visible=False 后台运行(不可见)。默认显示浏览器窗口。",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -449,7 +449,7 @@ class Agent:
         },
         {
             "name": "browser_status",
-            "description": "获取浏览器当前状态：是否打开、当前页面 URL 和标题、打开的 tab 数量。**在操作浏览器前建议先调用此工具了解当前状态**。",
+            "description": "获取浏览器当前状态：是否打开、当前页面 URL 和标题、打开的 tab 数量。⚠️ **重要：每次浏览器相关任务必须先调用此工具确认当前状态，不能假设浏览器已打开或依赖历史记录**。",
             "input_schema": {
                 "type": "object",
                 "properties": {}
@@ -476,7 +476,7 @@ class Agent:
         },
         {
             "name": "browser_new_tab",
-            "description": "打开新标签页并导航到指定 URL（不会覆盖当前页面）",
+            "description": "打开新标签页并导航到指定 URL（不会覆盖当前页面）。⚠️ **必须先确认浏览器已启动（用 browser_status 检查），不能假设浏览器状态**。",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -1392,6 +1392,19 @@ class Agent:
   - Windows: 使用当前目录下的 `data/temp/` 或 `%TEMP%`
   - Linux/macOS: 使用当前目录下的 `data/temp/` 或 `/tmp`
 - **建议**: 创建临时文件时优先使用 `data/temp/` 目录（相对于当前工作目录）
+
+## ⚠️ 重要：运行时状态不持久化
+
+**服务重启后以下状态会丢失，不能依赖会话历史记录判断当前状态：**
+
+| 状态 | 重启后 | 正确做法 |
+|------|--------|----------|
+| 浏览器 | **已关闭** | 必须先调用 `browser_status` 确认，不能假设已打开 |
+| 变量/内存数据 | **已清空** | 通过工具重新获取，不能依赖历史 |
+| 临时文件 | **可能清除** | 重新检查文件是否存在 |
+| 网络连接 | **已断开** | 需要重新建立连接 |
+
+**⚠️ 会话历史中的"成功打开浏览器"等记录只是历史，不代表当前状态！每次执行任务必须通过工具调用获取实时状态。**
 """
         
         return f"""{base_prompt}
