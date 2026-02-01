@@ -441,7 +441,7 @@ class BrowserMCP:
             }
     
     async def _navigate(self, url: str) -> dict:
-        """导航到 URL"""
+        """导航到 URL（增强版：等待页面完全加载）"""
         if not url:
             return {"success": False, "error": "URL is required"}
         
@@ -449,22 +449,36 @@ class BrowserMCP:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         
-        response = await self._page.goto(url, wait_until="domcontentloaded")
-        
-        # 等待页面网络空闲（最多 5 秒）
         try:
-            await self._page.wait_for_load_state("networkidle", timeout=5000)
-        except:
-            pass  # 超时也继续
-        
-        return {
-            "success": True,
-            "result": {
-                "url": self._page.url,
-                "title": await self._page.title(),
-                "status": response.status if response else None,
+            response = await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            
+            # 等待页面网络空闲（最多 10 秒）
+            try:
+                await self._page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass  # 超时也继续
+            
+            # 额外等待让 JS 渲染完成
+            await asyncio.sleep(1)
+            
+            title = await self._page.title()
+            
+            return {
+                "success": True,
+                "result": {
+                    "url": self._page.url,
+                    "title": title,
+                    "status": response.status if response else None,
+                    "message": f"已打开页面: {title}"
+                }
             }
-        }
+        except Exception as e:
+            logger.error(f"Navigation failed: {e}")
+            return {
+                "success": False,
+                "error": f"页面加载失败: {str(e)}\n"
+                         f"建议: 1) 检查 URL 是否正确 2) 该网站可能无法访问"
+            }
     
     async def _click(self, selector: Optional[str], text: Optional[str]) -> dict:
         """点击元素"""
@@ -483,18 +497,64 @@ class BrowserMCP:
         }
     
     async def _type(self, selector: str, text: str, clear: bool) -> dict:
-        """输入文本"""
+        """输入文本（带智能重试）"""
         if not selector or not text:
             return {"success": False, "error": "selector and text are required"}
         
-        if clear:
-            await self._page.fill(selector, text)
-        else:
-            await self._page.type(selector, text)
+        # 智能重试策略
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 等待元素可见
+                await self._page.wait_for_selector(selector, state="visible", timeout=10000)
+                
+                if clear:
+                    await self._page.fill(selector, text)
+                else:
+                    await self._page.type(selector, text)
+                
+                return {
+                    "success": True,
+                    "result": f"Typed into {selector}: {text[:50]}..."
+                }
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Type attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    # 尝试备用选择器（针对常见情况）
+                    if selector == 'input[name="q"]':
+                        # Google 搜索框的备用选择器
+                        alt_selectors = [
+                            'textarea[name="q"]',  # 新版 Google
+                            'input[type="text"]',
+                            'input.gLFyf',  # Google 特定 class
+                        ]
+                        for alt in alt_selectors:
+                            try:
+                                await self._page.wait_for_selector(alt, state="visible", timeout=3000)
+                                if clear:
+                                    await self._page.fill(alt, text)
+                                else:
+                                    await self._page.type(alt, text)
+                                return {
+                                    "success": True,
+                                    "result": f"Typed into {alt} (alt selector): {text[:50]}..."
+                                }
+                            except:
+                                continue
+                    
+                    # 等待后重试
+                    await asyncio.sleep(1)
         
         return {
-            "success": True,
-            "result": f"Typed into {selector}: {text[:50]}..."
+            "success": False,
+            "error": f"输入失败（重试 {max_retries} 次）: {last_error}\n"
+                     f"建议: 1) 先用 browser_screenshot 截图查看当前页面状态 "
+                     f"2) 使用 browser_get_content 获取页面内容确认元素选择器"
         }
     
     async def _screenshot(self, full_page: bool, path: Optional[str]) -> dict:
@@ -518,11 +578,20 @@ class BrowserMCP:
         
         screenshot_bytes = await self._page.screenshot(full_page=full_page)
         
+        # 获取当前页面信息
+        page_title = await self._page.title()
+        
         if path:
             Path(path).write_bytes(screenshot_bytes)
             return {
                 "success": True,
-                "result": f"Screenshot saved to: {path}"
+                "result": {
+                    "saved_to": path,
+                    "page_url": current_url,
+                    "page_title": page_title,
+                    "message": f"截图已保存到: {path}",
+                    "hint": "如需将截图发送给用户，请使用 send_im_message 工具，设置 file_path 参数为此路径"
+                }
             }
         else:
             # 返回 base64
@@ -532,6 +601,8 @@ class BrowserMCP:
                 "result": {
                     "base64": b64[:100] + "...",  # 截断显示
                     "length": len(b64),
+                    "page_url": current_url,
+                    "page_title": page_title,
                 }
             }
     

@@ -265,23 +265,34 @@ class LLMClient:
     ) -> LLMResponse:
         """尝试多个端点
         
-        策略：有备选端点时，一次失败就切换，不重试同一个端点
-        只有单一端点时才重试多次
+        策略可配置：
+        - retry_same_endpoint_first: True 时，即使有备选也先在当前端点重试
+        - retry_count: 重试次数
+        - retry_delay_seconds: 重试间隔
+        
+        默认策略：有备选端点时快速切换，不重试同一个端点（提高响应速度）
         """
         errors = []
         retry_count = self._settings.get("retry_count", 2)
         retry_delay = self._settings.get("retry_delay_seconds", 2)
+        retry_same_first = self._settings.get("retry_same_endpoint_first", False)
         
-        # 有备选时每个端点只尝试一次，无备选时重试多次
+        # 有备选时默认快速切换（除非配置了先重试）
         has_fallback = len(providers) > 1
-        max_attempts = 1 if has_fallback else (retry_count + 1)
+        if retry_same_first:
+            # 即使有备选也先重试当前端点
+            max_attempts = retry_count + 1
+        else:
+            # 有备选时每个端点只尝试一次，无备选时重试多次
+            max_attempts = 1 if has_fallback else (retry_count + 1)
         
         for i, provider in enumerate(providers):
             for attempt in range(max_attempts):
                 try:
+                    tools_count = len(request.tools) if request.tools else 0
                     logger.info(
                         f"[LLM] endpoint={provider.name} model={provider.model} "
-                        f"action=request"
+                        f"action=request tools={tools_count}"
                     )
                     
                     response = await provider.chat(request)

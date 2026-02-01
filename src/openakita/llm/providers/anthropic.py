@@ -24,6 +24,7 @@ from ..types import (
     RateLimitError,
     LLMError,
 )
+from ..converters.tools import parse_text_tool_calls, has_text_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +195,14 @@ class AnthropicProvider(LLMProvider):
         支持 MiniMax M2.1 的 Interleaved Thinking：
         - 解析 thinking 块并保留在 content 中
         - 确保多轮工具调用时思维链的连续性
+        
+        支持文本格式工具调用（MiniMax 兼容）：
+        - 检测并解析 <minimax:tool_call> 格式
+        - 转换为标准的 ToolUseBlock
         """
         content_blocks = []
+        has_tool_calls = False
+        text_content = ""  # 收集文本内容，用于检测文本格式工具调用
         
         for block in data.get("content", []):
             block_type = block.get("type")
@@ -207,23 +214,51 @@ class AnthropicProvider(LLMProvider):
                     thinking=block.get("thinking", "")
                 ))
             elif block_type == "text":
-                content_blocks.append(TextBlock(text=block.get("text", "")))
+                text = block.get("text", "")
+                text_content += text
+                content_blocks.append(TextBlock(text=text))
             elif block_type == "tool_use":
                 content_blocks.append(ToolUseBlock(
                     id=block.get("id", ""),
                     name=block.get("name", ""),
                     input=block.get("input", {}),
                 ))
+                has_tool_calls = True
+        
+        # === 文本格式工具调用解析（MiniMax 兼容） ===
+        # 当模型返回文本格式的工具调用（如 <minimax:tool_call>）时，解析并转换
+        if not has_tool_calls and text_content and has_text_tool_calls(text_content):
+            logger.info(f"[TEXT_TOOL_PARSE] Detected text-based tool calls from {self.name}")
+            clean_text, text_tool_calls = parse_text_tool_calls(text_content)
+            
+            if text_tool_calls:
+                # 移除包含工具调用的文本块，替换为清理后的文本
+                content_blocks = [
+                    b for b in content_blocks 
+                    if not (isinstance(b, TextBlock) and has_text_tool_calls(b.text))
+                ]
+                
+                # 添加清理后的文本（如果有）
+                if clean_text.strip():
+                    content_blocks.append(TextBlock(text=clean_text.strip()))
+                
+                # 添加解析出的工具调用
+                content_blocks.extend(text_tool_calls)
+                has_tool_calls = True
+                logger.info(f"[TEXT_TOOL_PARSE] Extracted {len(text_tool_calls)} tool calls from text")
         
         # 解析停止原因
         stop_reason_str = data.get("stop_reason", "end_turn")
-        stop_reason_map = {
-            "end_turn": StopReason.END_TURN,
-            "max_tokens": StopReason.MAX_TOKENS,
-            "tool_use": StopReason.TOOL_USE,
-            "stop_sequence": StopReason.STOP_SEQUENCE,
-        }
-        stop_reason = stop_reason_map.get(stop_reason_str, StopReason.END_TURN)
+        if has_tool_calls:
+            stop_reason = StopReason.TOOL_USE
+        else:
+            stop_reason_map = {
+                "end_turn": StopReason.END_TURN,
+                "max_tokens": StopReason.MAX_TOKENS,
+                "tool_use": StopReason.TOOL_USE,
+                "stop_sequence": StopReason.STOP_SEQUENCE,
+            }
+            stop_reason = stop_reason_map.get(stop_reason_str, StopReason.END_TURN)
         
         # 解析使用统计
         usage_data = data.get("usage", {})

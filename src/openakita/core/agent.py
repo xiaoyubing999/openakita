@@ -79,6 +79,7 @@ risks_or_ambiguities: [风险或歧义点列表，如果没有则为空]
 - 不要解决任务
 - 不要给建议
 - 不要输出最终答案
+- 不要假设执行能力的限制（如"AI无法操作浏览器"等）
 - 只输出 YAML 格式的结构化任务定义
 - 保持简洁，每项不超过一句话
 
@@ -111,18 +112,45 @@ import re
 
 def strip_thinking_tags(text: str) -> str:
     """
-    移除响应中的 <thinking>...</thinking> 标签内容
+    移除响应中的内部标签内容
     
-    某些模型（如 Claude extended thinking）会在响应中包含思考过程，
+    需要清理的标签包括：
+    - <thinking>...</thinking> - Claude extended thinking
+    - <think>...</think> - MiniMax/Qwen thinking 格式
+    - <minimax:tool_call>...</minimax:tool_call> - MiniMax 工具调用格式
+    - <<|tool_calls_section_begin|>>...<<|tool_calls_section_end|>> - Kimi K2 工具调用格式
+    - </thinking> - 残留的闭合标签
+    
     这些内容不应该展示给最终用户。
     """
     if not text:
         return text
     
+    cleaned = text
+    
     # 移除 <thinking>...</thinking> 标签及其内容
-    # 使用 DOTALL 标志让 . 匹配换行符
-    pattern = r'<thinking>.*?</thinking>\s*'
-    cleaned = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r'<thinking>.*?</thinking>\s*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除 <think>...</think> 标签及其内容 (MiniMax/Qwen 格式)
+    cleaned = re.sub(r'<think>.*?</think>\s*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除 <minimax:tool_call>...</minimax:tool_call> 标签及其内容
+    cleaned = re.sub(r'<minimax:tool_call>.*?</minimax:tool_call>\s*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除 Kimi K2 工具调用格式
+    cleaned = re.sub(r'<<\|tool_calls_section_begin\|>>.*?<<\|tool_calls_section_end\|>>\s*', '', cleaned, flags=re.DOTALL)
+    
+    # 移除 <invoke>...</invoke> 标签（可能单独出现）
+    cleaned = re.sub(r'<invoke\s+[^>]*>.*?</invoke>\s*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除残留的闭合标签
+    cleaned = re.sub(r'</thinking>\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'</think>\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'</minimax:tool_call>\s*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'<<\|tool_calls_section_begin\|>>.*$', '', cleaned, flags=re.DOTALL)  # 不完整的
+    
+    # 移除可能的 XML 声明残留
+    cleaned = re.sub(r'<\?xml[^>]*\?>\s*', '', cleaned)
     
     return cleaned.strip()
 
@@ -395,7 +423,7 @@ class Agent:
         },
         {
             "name": "browser_navigate",
-            "description": "导航到指定 URL (如果浏览器未启动，会自动以后台模式启动)",
+            "description": "导航到指定 URL。⚠️ **使用浏览器前必须先调用此工具打开目标页面**，然后才能使用 browser_type/browser_click 等操作。如果浏览器未启动会自动启动。",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -406,7 +434,7 @@ class Agent:
         },
         {
             "name": "browser_click",
-            "description": "点击页面上的元素",
+            "description": "点击页面上的元素。**前提：必须先用 browser_navigate 打开目标页面**",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -417,7 +445,7 @@ class Agent:
         },
         {
             "name": "browser_type",
-            "description": "在输入框中输入文本",
+            "description": "在输入框中输入文本。**前提：必须先用 browser_navigate 打开目标页面**",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -2266,6 +2294,11 @@ generate_skill → 保存 → 使用
         
         这是 _chat_with_tools 的变体，使用传入的 messages 而不是 self._context.messages
         
+        安全模型切换策略：
+        1. 超时或错误时先重试 3 次
+        2. 重试次数用尽后才切换到备用模型
+        3. 切换时废弃已有的工具调用历史，从用户原始请求开始重新处理
+        
         Args:
             messages: 对话消息列表
             use_session_prompt: 是否使用 Session 专用的 System Prompt（不包含全局 Active Task）
@@ -2275,6 +2308,13 @@ generate_skill → 保存 → 使用
             最终响应文本
         """
         max_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
+        
+        # === 关键：保存原始用户消息，用于模型切换时重置上下文 ===
+        # 只提取用户消息（不包含工具调用历史）
+        original_user_messages = [
+            msg for msg in messages 
+            if msg.get("role") == "user" and isinstance(msg.get("content"), str)
+        ]
         
         # 复制消息避免修改原始列表
         working_messages = list(messages)
@@ -2294,26 +2334,88 @@ generate_skill → 保存 → 使用
             if task_monitor:
                 task_monitor.begin_iteration(iteration + 1, current_model)
                 
-                # 检查是否需要切换模型（超时）
+                # === 安全模型切换检查 ===
+                # 检查是否超时且重试次数已用尽
                 if task_monitor.should_switch_model:
                     new_model = task_monitor.fallback_model
-                    task_monitor.switch_model(new_model, f"任务执行超过 {task_monitor.timeout_seconds} 秒")
+                    task_monitor.switch_model(
+                        new_model, 
+                        f"任务执行超过 {task_monitor.timeout_seconds} 秒，重试 {task_monitor.retry_count} 次后切换",
+                        reset_context=True
+                    )
                     current_model = new_model
-                    logger.warning(f"[TaskMonitor] Switching model to {new_model} due to timeout")
+                    
+                    # === 关键：重置上下文，废弃工具调用历史 ===
+                    logger.warning(
+                        f"[ModelSwitch] Switching to {new_model}, resetting context. "
+                        f"Discarding {len(working_messages) - len(original_user_messages)} tool-related messages"
+                    )
+                    working_messages = list(original_user_messages)
+                    
+                    # 添加模型切换说明，让新模型了解情况
+                    working_messages.append({
+                        "role": "user",
+                        "content": (
+                            "[系统提示] 之前的模型处理超时，现已切换到新模型。"
+                            "请从头开始处理上面的用户请求，不要依赖任何之前的上下文。"
+                        ),
+                    })
             
             # 每次迭代前检查上下文大小
             if iteration > 0:
                 working_messages = await self._compress_context(working_messages)
             
             # 调用 Brain，传递工具列表（在线程池中执行同步调用，避免事件循环冲突）
-            response = await asyncio.to_thread(
-                self.brain.messages_create,
-                model=current_model,
-                max_tokens=self.brain.max_tokens,
-                system=system_prompt,
-                tools=self._tools,
-                messages=working_messages,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    self.brain.messages_create,
+                    model=current_model,
+                    max_tokens=self.brain.max_tokens,
+                    system=system_prompt,
+                    tools=self._tools,
+                    messages=working_messages,
+                )
+                
+                # 成功调用，重置重试计数
+                if task_monitor:
+                    task_monitor.reset_retry_count()
+                    
+            except Exception as e:
+                logger.error(f"[LLM] Brain call failed: {e}")
+                
+                # 记录错误并判断是否应该重试
+                if task_monitor:
+                    should_retry = task_monitor.record_error(str(e))
+                    
+                    if should_retry:
+                        # 继续重试，跳过这次迭代
+                        logger.info(f"[LLM] Will retry (attempt {task_monitor.retry_count}/{task_monitor.retry_before_switch})")
+                        await asyncio.sleep(2)  # 等待 2 秒后重试
+                        continue
+                    else:
+                        # 重试次数用尽，切换模型
+                        new_model = task_monitor.fallback_model
+                        task_monitor.switch_model(
+                            new_model,
+                            f"LLM 调用失败，重试 {task_monitor.retry_count} 次后切换: {e}",
+                            reset_context=True
+                        )
+                        current_model = new_model
+                        
+                        # 重置上下文
+                        logger.warning(f"[ModelSwitch] Switching to {new_model} due to errors, resetting context")
+                        working_messages = list(original_user_messages)
+                        working_messages.append({
+                            "role": "user",
+                            "content": (
+                                "[系统提示] 之前的模型调用失败，现已切换到新模型。"
+                                "请从头开始处理上面的用户请求。"
+                            ),
+                        })
+                        continue
+                else:
+                    # 没有 task_monitor，直接抛出异常
+                    raise
             
             # 处理响应
             tool_calls = []
@@ -3314,6 +3416,11 @@ generate_skill → 保存 → 使用
         """
         执行任务（带工具调用）
         
+        安全模型切换策略：
+        1. 超时或错误时先重试 3 次
+        2. 重试次数用尽后才切换到备用模型
+        3. 切换时废弃已有的工具调用历史，从任务原始描述开始重新处理
+        
         Args:
             task: 任务对象
         
@@ -3336,6 +3443,7 @@ generate_skill → 保存 → 使用
             timeout_seconds=300,  # 超时阈值：300秒
             retrospect_threshold=60,  # 复盘阈值：60秒
             fallback_model="gpt-4o",  # 超时后切换的备用模型
+            retry_before_switch=3,  # 切换前重试 3 次
         )
         task_monitor.start(self.brain.model)
         
@@ -3354,7 +3462,10 @@ generate_skill → 保存 → 使用
 
 永不放弃，直到任务完成！"""
 
-        messages = [{"role": "user", "content": task.description}]
+        # === 关键：保存原始任务描述，用于模型切换时重置上下文 ===
+        original_task_message = {"role": "user", "content": task.description}
+        messages = [original_task_message.copy()]
+        
         max_tool_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
         iteration = 0
         final_response = ""
@@ -3371,26 +3482,87 @@ generate_skill → 保存 → 使用
             # 任务监控：开始迭代
             task_monitor.begin_iteration(iteration, current_model)
             
-            # 检查是否需要切换模型（超时）
+            # === 安全模型切换检查 ===
+            # 检查是否超时且重试次数已用尽
             if task_monitor.should_switch_model:
                 new_model = task_monitor.fallback_model
-                task_monitor.switch_model(new_model, f"任务执行超过 {task_monitor.timeout_seconds} 秒")
+                task_monitor.switch_model(
+                    new_model, 
+                    f"任务执行超过 {task_monitor.timeout_seconds} 秒，重试 {task_monitor.retry_count} 次后切换",
+                    reset_context=True
+                )
                 current_model = new_model
-                logger.warning(f"[TaskMonitor] Switching model to {new_model} due to timeout")
+                
+                # === 关键：重置上下文，废弃工具调用历史 ===
+                logger.warning(
+                    f"[ModelSwitch] Task {task.id}: Switching to {new_model}, resetting context. "
+                    f"Discarding {len(messages) - 1} tool-related messages"
+                )
+                messages = [original_task_message.copy()]
+                
+                # 添加模型切换说明
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[系统提示] 之前的模型处理超时，现已切换到新模型。"
+                        "请从头开始处理上面的任务请求，不要依赖任何之前的上下文。"
+                    ),
+                })
+                
+                # 重置循环检测
+                recent_tool_calls.clear()
             
             # 检查并压缩上下文（任务执行可能产生大量工具输出）
             if iteration > 1:
                 messages = await self._compress_context(messages)
             
             # 调用 Brain（在线程池中执行同步调用）
-            response = await asyncio.to_thread(
-                self.brain.messages_create,
-                model=current_model,
-                max_tokens=self.brain.max_tokens,
-                system=system_prompt,
-                tools=self._tools,
-                messages=messages,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    self.brain.messages_create,
+                    model=current_model,
+                    max_tokens=self.brain.max_tokens,
+                    system=system_prompt,
+                    tools=self._tools,
+                    messages=messages,
+                )
+                
+                # 成功调用，重置重试计数
+                task_monitor.reset_retry_count()
+                
+            except Exception as e:
+                logger.error(f"[LLM] Brain call failed in task {task.id}: {e}")
+                
+                # 记录错误并判断是否应该重试
+                should_retry = task_monitor.record_error(str(e))
+                
+                if should_retry:
+                    # 继续重试
+                    logger.info(f"[LLM] Will retry (attempt {task_monitor.retry_count}/{task_monitor.retry_before_switch})")
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    # 重试次数用尽，切换模型
+                    new_model = task_monitor.fallback_model
+                    task_monitor.switch_model(
+                        new_model,
+                        f"LLM 调用失败，重试 {task_monitor.retry_count} 次后切换: {e}",
+                        reset_context=True
+                    )
+                    current_model = new_model
+                    
+                    # 重置上下文
+                    logger.warning(f"[ModelSwitch] Task {task.id}: Switching to {new_model} due to errors, resetting context")
+                    messages = [original_task_message.copy()]
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[系统提示] 之前的模型调用失败，现已切换到新模型。"
+                            "请从头开始处理上面的任务请求。"
+                        ),
+                    })
+                    recent_tool_calls.clear()
+                    continue
             
             # 处理响应
             tool_calls = []
