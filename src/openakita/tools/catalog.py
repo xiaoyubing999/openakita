@@ -1,13 +1,20 @@
 """
 系统工具目录 (Tool Catalog)
 
-遵循渐进式披露原则（参考 Agent Skills 规范）:
-- Level 1: 工具清单 (name + short_description) - 在系统提示中提供
-- Level 2: 完整定义 (description + input_schema) - 通过 get_tool_info 获取
+遵循渐进式披露原则（与 Agent Skills 规范对齐）:
+- Level 1: 工具清单 (name + description) - 在系统提示中提供
+- Level 2: 详细说明 (detail + input_schema) - 通过 get_tool_info 获取 / 传给 LLM API
 - Level 3: 直接执行工具
 
-工具清单在 Agent 启动时生成，并注入到系统提示中，
-让大模型在首次对话时就知道有哪些工具可用。
+工具定义格式：
+{
+    "name": "tool_name",
+    "description": "清单披露的简短描述（完整显示在系统提示词清单中）",
+    "detail": "详细使用说明（传给 LLM API、get_tool_info 返回）",
+    "input_schema": {...}
+}
+
+如果没有 detail 字段，则 fallback 到 description。
 """
 
 import logging
@@ -181,7 +188,7 @@ The following system tools are available. Use `get_tool_info(tool_name)` to get 
     
     def get_tool_info_formatted(self, tool_name: str) -> str:
         """
-        获取工具的格式化完整信息
+        获取工具的格式化完整信息（Level 2 详细说明）
         
         Args:
             tool_name: 工具名称
@@ -194,7 +201,9 @@ The following system tools are available. Use `get_tool_info(tool_name)` to get 
             return f"❌ Tool not found: {tool_name}"
         
         output = f"# Tool: {tool['name']}\n\n"
-        output += f"{tool.get('description', 'No description')}\n\n"
+        # 优先使用 detail 字段（详细说明），否则 fallback 到 description
+        detail = tool.get('detail') or tool.get('description', 'No description')
+        output += f"{detail}\n\n"
         
         # 参数说明
         schema = tool.get("input_schema", {})

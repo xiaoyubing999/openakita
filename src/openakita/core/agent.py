@@ -419,7 +419,18 @@ class Agent:
         # === 浏览器工具 (browser-use MCP) ===
         {
             "name": "browser_open",
-            "description": "启动浏览器。⚠️ **重要：服务重启后浏览器会关闭，必须先用 browser_status 检查状态，不能依赖历史记录假设浏览器已打开**。参数说明：visible=True 显示浏览器窗口(用户可见)，visible=False 后台运行(不可见)。默认显示浏览器窗口。",
+            "description": "⚠️ 启动浏览器 - 必须先用 browser_status 检查状态",
+            "detail": """启动浏览器。
+
+⚠️ **重要警告**：
+- 服务重启后浏览器会关闭
+- 必须先用 browser_status 检查状态
+- 不能依赖历史记录假设浏览器已打开
+
+**参数说明**：
+- visible=True: 显示浏览器窗口（用户可见）
+- visible=False: 后台运行（不可见）
+- 默认显示浏览器窗口""",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -438,7 +449,13 @@ class Agent:
         },
         {
             "name": "browser_navigate",
-            "description": "导航到指定 URL。⚠️ **使用浏览器前必须先调用此工具打开目标页面**，然后才能使用 browser_type/browser_click 等操作。如果浏览器未启动会自动启动。",
+            "description": "⚠️ 导航到 URL - 使用浏览器前必须先调用此工具",
+            "detail": """导航到指定 URL。
+
+⚠️ **重要警告**：
+- 使用浏览器前必须先调用此工具打开目标页面
+- 然后才能使用 browser_type/browser_click 等操作
+- 如果浏览器未启动会自动启动""",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -492,7 +509,13 @@ class Agent:
         },
         {
             "name": "browser_status",
-            "description": "获取浏览器当前状态：是否打开、当前页面 URL 和标题、打开的 tab 数量。⚠️ **重要：每次浏览器相关任务必须先调用此工具确认当前状态，不能假设浏览器已打开或依赖历史记录**。",
+            "description": "⚠️ 获取浏览器状态 - 每次浏览器任务必须先调用此工具",
+            "detail": """获取浏览器当前状态：是否打开、当前页面 URL 和标题、打开的 tab 数量。
+
+⚠️ **重要警告**：
+- 每次浏览器相关任务必须先调用此工具确认当前状态
+- 不能假设浏览器已打开
+- 不能依赖历史记录""",
             "input_schema": {
                 "type": "object",
                 "properties": {}
@@ -646,9 +669,21 @@ class Agent:
         # === IM 通道工具 ===
         {
             "name": "send_to_chat",
-            "description": "发送消息到当前 IM 聊天（仅在 IM 会话中可用）。"
-                           "支持发送文本、图片、语音、文件。"
-                           "当你完成了生成文件（如截图、文档、语音）的任务时，使用此工具将文件发送给用户。",
+            "description": "发送消息/文件到 IM 聊天 - 截图后用此工具发送给用户",
+            "detail": """发送消息到当前 IM 聊天（仅在 IM 会话中可用）。
+
+**支持发送**：
+- 文本消息
+- 图片文件
+- 语音文件
+- 其他文件
+
+**使用场景**：
+当你完成了生成文件（如截图、文档、语音）的任务时，使用此工具将文件发送给用户。
+
+**示例**：
+- 截图后: send_to_chat(file_path="C:/Users/.../screenshot.png")
+- 发消息: send_to_chat(text="任务完成！")""",
             "input_schema": {
                 "type": "object",
                 "properties": {

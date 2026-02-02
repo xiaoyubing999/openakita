@@ -281,14 +281,20 @@ class Brain:
         return result
     
     def _convert_tools_to_llm(self, tools: Optional[list[ToolParam]]) -> Optional[list[Tool]]:
-        """将 Anthropic ToolParam 转换为 LLMClient Tool"""
+        """将 Anthropic ToolParam 转换为 LLMClient Tool
+        
+        支持渐进式披露：
+        - description: 简短清单描述
+        - detail: 详细使用说明（传给 LLM API）
+        """
         if not tools:
             return None
         
         return [
             Tool(
                 name=tool.get("name", ""),
-                description=tool.get("description", ""),
+                # 优先使用 detail 字段（详细说明），否则 fallback 到 description
+                description=tool.get("detail") or tool.get("description", ""),
                 input_schema=tool.get("input_schema", {}),
             )
             for tool in tools
