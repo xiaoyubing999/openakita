@@ -290,7 +290,7 @@ class Memory:
             tags=tags,
         )
         
-        logger.debug(f"Remembered: {content[:50]}...")
+        logger.debug(f"Remembered: {content}")
         return memory_id
     
     async def recall(

@@ -331,12 +331,12 @@ class LogAnalyzer:
             lines.append("")
             for p in core_errors:
                 sample = p.samples[0] if p.samples else None
-                lines.append(f"### [{p.count}次] {p.pattern[:60]}...")
+                lines.append(f"### [{p.count}次] {p.pattern}")
                 lines.append(f"- 模块: `{sample.logger_name if sample else 'unknown'}`")
                 lines.append(f"- 首次: {p.first_seen.strftime('%Y-%m-%d %H:%M:%S')}")
                 lines.append(f"- 最后: {p.last_seen.strftime('%Y-%m-%d %H:%M:%S')}")
                 if sample and sample.traceback:
-                    lines.append(f"- Traceback: `{sample.traceback[:200]}...`")
+                    lines.append(f"- Traceback: `{sample.traceback}`")
                 lines.append("")
         
         # 工具错误
@@ -345,12 +345,12 @@ class LogAnalyzer:
             lines.append("")
             for p in tool_errors:
                 sample = p.samples[0] if p.samples else None
-                lines.append(f"### [{p.count}次] {p.pattern[:60]}...")
+                lines.append(f"### [{p.count}次] {p.pattern}")
                 lines.append(f"- 模块: `{sample.logger_name if sample else 'unknown'}`")
                 lines.append(f"- 首次: {p.first_seen.strftime('%Y-%m-%d %H:%M:%S')}")
                 lines.append(f"- 最后: {p.last_seen.strftime('%Y-%m-%d %H:%M:%S')}")
                 if sample and sample.message:
-                    lines.append(f"- 消息: `{sample.message[:100]}`")
+                    lines.append(f"- 消息: `{sample.message}`")
                 lines.append("")
         
         return "\n".join(lines)
@@ -380,8 +380,8 @@ class LogAnalyzer:
     
     def _extract_pattern(self, error: LogEntry) -> str:
         """提取错误模式（用于分组）"""
-        # 组合模块名和消息前缀作为模式
-        message_prefix = error.message[:50] if error.message else ""
+        # 组合模块名和消息作为模式
+        message_prefix = error.message if error.message else ""
         
         # 移除动态内容（如 ID、时间戳等）
         message_prefix = re.sub(r'\d+', 'N', message_prefix)

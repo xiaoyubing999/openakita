@@ -62,7 +62,7 @@ class NeedAnalyzer:
         Returns:
             TaskAnalysis
         """
-        logger.info(f"Analyzing task: {task[:100]}...")
+        logger.info(f"Analyzing task: {task}")
         
         # 使用 LLM 分析任务
         analysis_prompt = f"""分析以下任务，识别完成它所需的能力：

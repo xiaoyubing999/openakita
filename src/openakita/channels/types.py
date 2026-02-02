@@ -255,7 +255,7 @@ class MessageContent:
         
         for file in self.files:
             if file.extracted_text:
-                parts.append(f"[文件内容: {file.extracted_text[:500]}...]")
+                parts.append(f"[文件内容: {file.extracted_text}]")
             else:
                 parts.append(f"[文件: {file.filename}]")
         

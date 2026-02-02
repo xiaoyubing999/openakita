@@ -213,7 +213,7 @@ class ChannelAdapter(ABC):
         """记录消息日志"""
         logger.info(
             f"{self.channel_name}: received message from {message.channel_user_id} "
-            f"in {message.chat_id}: {message.text[:50]}..."
+            f"in {message.chat_id}: {message.text}"
             if message.text else f"{self.channel_name}: received {message.message_type.value}"
         )
 

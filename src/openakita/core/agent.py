@@ -1744,7 +1744,7 @@ search_github → install_skill → 使用
             # === 创建任务监控器 ===
             task_monitor = TaskMonitor(
                 task_id=f"{session_id}_{datetime.now().strftime('%H%M%S')}",
-                description=message[:100],
+                description=message,
                 session_id=session_id,
                 timeout_seconds=300,  # 超时阈值：300秒
                 retrospect_threshold=60,  # 复盘阈值：60秒
@@ -1761,7 +1761,7 @@ search_github → install_skill → 使用
             # === 完成任务监控 ===
             metrics = task_monitor.complete(
                 success=True,
-                response=response_text[:200],
+                response=response_text,
             )
             
             # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===
@@ -1862,7 +1862,7 @@ search_github → install_skill → 使用
                     memory = Memory(
                         type=MemoryType.ERROR,
                         priority=MemoryPriority.LONG_TERM,
-                        content=f"任务执行复盘发现问题：{result[:200]}",
+                        content=f"任务执行复盘发现问题：{result}",
                         source="retrospect",
                         importance_score=0.7,
                     )
@@ -2106,7 +2106,7 @@ search_github → install_skill → 使用
             
             # 任务监控：结束迭代
             if task_monitor:
-                task_monitor.end_iteration(text_content[:200] if text_content else "")
+                task_monitor.end_iteration(text_content if text_content else "")
             
             # 如果没有工具调用，检查是否需要强制要求调用工具
             if not tool_calls:
@@ -2202,7 +2202,7 @@ search_github → install_skill → 使用
                     })
                     # 任务监控：结束工具调用（成功）
                     if task_monitor:
-                        task_monitor.end_tool_call(str(result)[:200] if result else "", success=True)
+                        task_monitor.end_tool_call(str(result) if result else "", success=True)
                 except Exception as e:
                     logger.error(f"Tool {tc['name']} error: {e}")
                     tool_results.append({
@@ -2413,7 +2413,7 @@ search_github → install_skill → 使用
                     "tool_use_id": tool_call["id"],
                     "content": result,
                 })
-                logger.info(f"Tool {tool_call['name']} result: {result[:200]}..." if len(result) > 200 else f"Tool {tool_call['name']} result: {result}")
+                logger.info(f"Tool {tool_call['name']} result: {result}")
             
             messages.append({"role": "user", "content": tool_results})
             
@@ -2634,7 +2634,7 @@ search_github → install_skill → 使用
                     })
             
             # 任务监控：结束迭代
-            task_monitor.end_iteration(text_content[:200] if text_content else "")
+            task_monitor.end_iteration(text_content if text_content else "")
             
             # 如果有文本响应，保存（过滤 thinking 标签和工具调用模拟文本）
             if text_content:
@@ -2728,7 +2728,7 @@ search_github → install_skill → 使用
                     logger.info(f"Tool {tool_call['name']} result: {result}")
                     
                     # 任务监控：结束工具调用（成功）
-                    task_monitor.end_tool_call(str(result)[:200] if result else "", success=True)
+                    task_monitor.end_tool_call(str(result) if result else "", success=True)
                 except Exception as e:
                     logger.error(f"Tool {tool_call['name']} error: {e}")
                     tool_results.append({
@@ -2771,7 +2771,7 @@ search_github → install_skill → 使用
         # === 完成任务监控 ===
         metrics = task_monitor.complete(
             success=True,
-            response=final_response[:200],
+            response=final_response,
         )
         
         # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===

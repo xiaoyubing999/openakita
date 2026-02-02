@@ -228,7 +228,7 @@ class MemoryManager:
         unique = self.extractor.deduplicate([memory], existing)
         
         if not unique:
-            logger.debug(f"Memory duplicate (string match): {memory.content[:50]}")
+            logger.debug(f"Memory duplicate (string match): {memory.content}")
             return ""
         
         memory = unique[0]
@@ -244,11 +244,11 @@ class MemoryManager:
                     if existing_mem:
                         # 也去掉已存在记忆的前缀再比较
                         existing_core = self._strip_common_prefix(existing_mem.content)
-                        # 如果核心内容的前30字符不同，跳过（不是真正的重复）
-                        if core_content[:30] != existing_core[:30]:
+                        # 如果核心内容不同，跳过（不是真正的重复）
+                        if core_content != existing_core:
                             continue
                         logger.info(f"Memory duplicate (semantic, dist={distance:.3f}): "
-                                   f"'{memory.content[:30]}...' similar to '{existing_mem.content[:30]}...'")
+                                   f"'{memory.content}' similar to '{existing_mem.content}'")
                         return ""  # 语义重复，不存入
         
         # 3. 存入 memories.json
@@ -265,7 +265,7 @@ class MemoryManager:
             tags=memory.tags,
         )
         
-        logger.debug(f"Added memory: {memory.id} - {memory.content[:50]}")
+        logger.debug(f"Added memory: {memory.id} - {memory.content}")
         return memory.id
     
     async def check_duplicate_with_llm(self, new_content: str, existing_content: str) -> bool:

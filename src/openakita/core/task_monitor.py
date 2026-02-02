@@ -97,7 +97,7 @@ class TaskMetrics:
     def to_summary(self) -> str:
         """生成摘要"""
         lines = [
-            f"任务: {self.description[:50]}...",
+            f"任务: {self.description}",
             f"耗时: {self.total_duration_seconds:.1f}秒",
             f"迭代: {self.total_iterations}次",
             f"结果: {'成功' if self.success else '失败'}",
@@ -193,7 +193,7 @@ class TaskMonitor:
     def end_iteration(self, llm_response_preview: str = "") -> None:
         """结束迭代"""
         if self._current_iteration:
-            self._current_iteration.llm_response_preview = llm_response_preview[:200]
+            self._current_iteration.llm_response_preview = llm_response_preview
             self._current_iteration.duration_ms = int(
                 (time.time() - self.metrics.start_time) * 1000
             )
@@ -206,7 +206,7 @@ class TaskMonitor:
         self._phase = TaskPhase.TOOL_CALLING
         self._current_tool_start = time.time()
         self._current_tool_name = tool_name
-        self._current_tool_input = str(tool_input)[:100]
+        self._current_tool_input = str(tool_input)
     
     def end_tool_call(self, result: str, success: bool = True) -> None:
         """结束工具调用"""
@@ -215,7 +215,7 @@ class TaskMonitor:
             record = ToolCallRecord(
                 name=self._current_tool_name,
                 input_summary=self._current_tool_input,
-                output_summary=result[:200] if result else "",
+                output_summary=result if result else "",
                 duration_ms=duration_ms,
                 success=success,
             )
@@ -439,9 +439,9 @@ class TaskMonitor:
                     status = "✅" if tc.success else "❌"
                     lines.append(f"  - {status} {tc.name} ({tc.duration_ms}ms)")
                     if tc.output_summary:
-                        lines.append(f"    输出: {tc.output_summary[:100]}...")
+                        lines.append(f"    输出: {tc.output_summary}")
                 if it.llm_response_preview:
-                    lines.append(f"- LLM 响应预览: {it.llm_response_preview[:100]}...")
+                    lines.append(f"- LLM 响应预览: {it.llm_response_preview}")
         
         if self.metrics.error:
             lines.extend([

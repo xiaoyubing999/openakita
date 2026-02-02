@@ -137,7 +137,7 @@ if __name__ == "__main__":
         Returns:
             GenerationResult
         """
-        logger.info(f"Generating skill: {description[:100]}...")
+        logger.info(f"Generating skill: {description}")
         
         # 1. 生成技能名称
         if not name:

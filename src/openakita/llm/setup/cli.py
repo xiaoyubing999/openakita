@@ -364,7 +364,7 @@ def _test_endpoint_interactive(endpoints: list[EndpointConfig]):
             success, result = asyncio.run(test())
             
             if success:
-                print(f"\n✅ 测试成功: {result[:50]}...")
+                print(f"\n✅ 测试成功: {result}")
             else:
                 print(f"\n❌ 测试失败: {result}")
         else:

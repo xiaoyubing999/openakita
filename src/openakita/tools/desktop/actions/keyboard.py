@@ -143,7 +143,7 @@ class KeyboardController:
                 result = ActionResult(
                     success=True,
                     action="type",
-                    target=text[:50] + "..." if len(text) > 50 else text,
+                    target=text,
                     message=f"Typed {len(text)} characters",
                     duration_ms=(time.time() - start_time) * 1000,
                 )
@@ -155,7 +155,7 @@ class KeyboardController:
             return ActionResult(
                 success=False,
                 action="type",
-                target=text[:50] + "..." if len(text) > 50 else text,
+                target=text,
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000,
             )
@@ -197,7 +197,7 @@ class KeyboardController:
             return ActionResult(
                 success=True,
                 action="type",
-                target=text[:50] + "..." if len(text) > 50 else text,
+                target=text,
                 message=f"Typed {len(text)} characters via clipboard",
                 duration_ms=(time.time() - start_time) * 1000,
             )
@@ -275,7 +275,7 @@ class KeyboardController:
             return ActionResult(
                 success=True,
                 action="type",
-                target=text[:50] + "..." if len(text) > 50 else text,
+                target=text,
                 message=f"Typed {len(text)} characters via Windows clipboard",
                 duration_ms=(time.time() - start_time) * 1000,
             )

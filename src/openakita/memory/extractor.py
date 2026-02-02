@@ -92,7 +92,7 @@ class MemoryExtractor:
             context_text = f"上下文: {context}" if context else ""
             prompt = self.EXTRACTION_PROMPT.format(
                 role=turn.role,
-                content=turn.content[:1000],  # 限制长度
+                content=turn.content,
                 context=context_text,
             )
             
@@ -166,7 +166,7 @@ class MemoryExtractor:
                 memory = Memory(
                     type=MemoryType.SKILL,
                     priority=MemoryPriority.LONG_TERM,
-                    content=f"成功完成: {task_description[:200]}",
+                    content=f"成功完成: {task_description}",
                     source="task_completion",
                     importance_score=0.7,
                     tags=["success", "task"],
@@ -180,7 +180,7 @@ class MemoryExtractor:
                     memory = Memory(
                         type=MemoryType.SKILL,
                         priority=MemoryPriority.SHORT_TERM,
-                        content=f"任务 '{task_description[:50]}' 使用工具组合: {', '.join(tools_used[:5])}",
+                        content=f"任务 '{task_description}' 使用工具组合: {', '.join(tools_used)}",
                         source="task_completion",
                         importance_score=0.5,
                         tags=["tools", "pattern"],
@@ -191,20 +191,20 @@ class MemoryExtractor:
             memory = Memory(
                 type=MemoryType.ERROR,
                 priority=MemoryPriority.LONG_TERM,
-                content=f"任务失败: {task_description[:200]}",
+                content=f"任务失败: {task_description}",
                 source="task_completion",
                 importance_score=0.7,
                 tags=["failure"],
             )
             memories.append(memory)
             
-            # 记录具体错误（只记录有意义的错误）
-            for error in errors[:2]:  # 最多 2 个
+            # 记录具体错误
+            for error in errors:
                 if len(error) > 20:  # 过滤太短的错误
                     memory = Memory(
                         type=MemoryType.ERROR,
                         priority=MemoryPriority.LONG_TERM,
-                        content=f"错误教训: {error[:150]}",
+                        content=f"错误教训: {error}",
                         source="task_completion",
                         importance_score=0.8,
                         tags=["error", "lesson"],
@@ -241,7 +241,7 @@ class MemoryExtractor:
         
         # 构建对话文本
         conv_text = "\n".join([
-            f"[{turn.role}]: {turn.content[:500]}"
+            f"[{turn.role}]: {turn.content}"
             for turn in conversation[-30:]  # 最近 30 轮
         ])
         
@@ -424,10 +424,10 @@ class MemoryExtractor:
             去重后的新记忆列表
         """
         unique = []
-        existing_contents = set(m.content.lower()[:50] for m in existing)
+        existing_contents = set(m.content.lower() for m in existing)
         
         for memory in memories:
-            content_key = memory.content.lower()[:50]
+            content_key = memory.content.lower()
             if content_key not in existing_contents:
                 unique.append(memory)
                 existing_contents.add(content_key)

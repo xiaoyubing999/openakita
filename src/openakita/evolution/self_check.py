@@ -162,11 +162,11 @@ class DailyReport:
             lines.append("## 核心组件错误（需人工处理）")
             lines.append("")
             for p in self.core_error_patterns:
-                lines.append(f"### [{p.get('count', 1)}次] {p.get('pattern', '')[:60]}")
+                lines.append(f"### [{p.get('count', 1)}次] {p.get('pattern', '')}")
                 lines.append(f"- 模块: `{p.get('logger', 'unknown')}`")
                 lines.append(f"- 时间: {p.get('last_seen', '')}")
                 if p.get('message'):
-                    lines.append(f"- 消息: `{p.get('message', '')[:100]}`")
+                    lines.append(f"- 消息: `{p.get('message', '')}`")
                 lines.append(f"- **建议: 检查日志并考虑重启服务**")
                 lines.append("")
         
@@ -176,7 +176,7 @@ class DailyReport:
             lines.append("")
             for r in self.fix_records:
                 status = "已修复" if r.success else "修复失败"
-                lines.append(f"### [{status}] {r.error_pattern[:50]}")
+                lines.append(f"### [{status}] {r.error_pattern}")
                 lines.append(f"- 组件: `{r.component}`")
                 lines.append(f"- 修复操作: {r.fix_action}")
                 lines.append(f"- 时间: {r.fix_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -215,18 +215,18 @@ class DailyReport:
                 for issue in common_issues:
                     lines.append(f"- {issue.get('issue', '')}: {issue.get('count', 0)}次")
             
-            # 复盘详情（最多显示 5 个）
-            records = rs.get('records', [])[:5]
+            # 复盘详情
+            records = rs.get('records', [])
             if records:
                 lines.append("")
-                lines.append("### 复盘详情（最近 5 个）")
+                lines.append("### 复盘详情")
                 for r in records:
                     duration = r.get('duration_seconds', 0)
-                    desc = r.get('description', '')[:40]
-                    result = r.get('retrospect_result', '')[:100]
-                    lines.append(f"- **{desc}...** ({duration:.0f}秒)")
+                    desc = r.get('description', '')
+                    result = r.get('retrospect_result', '')
+                    lines.append(f"- **{desc}** ({duration:.0f}秒)")
                     if result:
-                        lines.append(f"  - 分析: {result}...")
+                        lines.append(f"  - 分析: {result}")
             
             lines.append("")
         
@@ -240,25 +240,25 @@ class DailyReport:
             error_memories = mi.get('error_memories', [])
             if error_memories:
                 lines.append("### 错误教训（需关注）")
-                for m in error_memories[:10]:
+                for m in error_memories:
                     source = m.get('source', '')
                     source_label = f" [{source}]" if source else ""
-                    lines.append(f"- {m.get('content', '')[:100]}{source_label}")
+                    lines.append(f"- {m.get('content', '')}{source_label}")
                 lines.append("")
             
             # 规则约束
             rule_memories = mi.get('rule_memories', [])
             if rule_memories:
                 lines.append("### 规则约束（需遵守）")
-                for m in rule_memories[:10]:
-                    lines.append(f"- {m.get('content', '')[:100]}")
+                for m in rule_memories:
+                    lines.append(f"- {m.get('content', '')}")
                 lines.append("")
             
             # 优化建议汇总
             optimization_suggestions = mi.get('optimization_suggestions', [])
             if optimization_suggestions:
                 lines.append("### 优化建议汇总")
-                for s in optimization_suggestions[:5]:
+                for s in optimization_suggestions:
                     lines.append(f"- {s}")
                 lines.append("")
             
@@ -521,7 +521,7 @@ ID: {result.test_id}
 
         response = await self.brain.think(prompt)
         
-        logger.info(f"Fix suggestion: {response.content[:200]}...")
+        logger.info(f"Fix suggestion: {response.content}")
         
         # TODO: 实现自动修复逻辑
         # 这需要根据具体错误类型采取不同的修复策略
@@ -746,20 +746,20 @@ ID: {result.test_id}
         common_issues = retrospect_summary.get("common_issues", [])
         if common_issues:
             lines.append("### 复盘发现的常见问题")
-            for issue in common_issues[:5]:
+            for issue in common_issues:
                 lines.append(f"- [{issue.get('count', 0)}次] {issue.get('issue', '')}")
             lines.append("")
         
-        # 复盘详情（最多 3 个）
-        records = retrospect_summary.get("records", [])[:3]
+        # 复盘详情
+        records = retrospect_summary.get("records", [])
         if records:
-            lines.append("### 复盘详情（最近 3 个）")
+            lines.append("### 复盘详情")
             for r in records:
-                desc = r.get('description', '')[:50]
-                result = r.get('retrospect_result', '')[:150]
-                lines.append(f"- **{desc}...**")
+                desc = r.get('description', '')
+                result = r.get('retrospect_result', '')
+                lines.append(f"- **{desc}**")
                 if result:
-                    lines.append(f"  - 分析: {result}...")
+                    lines.append(f"  - 分析: {result}")
             lines.append("")
         
         return "\n".join(lines)
@@ -783,9 +783,9 @@ ID: {result.test_id}
         error_list = memory_insights.get("error_list", [])
         if error_list:
             lines.append("### 历史错误教训（最近记录）")
-            for err in error_list[:10]:
+            for err in error_list:
                 source = err.get('source', 'unknown')
-                content = err.get('content', '')[:100]
+                content = err.get('content', '')
                 lines.append(f"- [{source}] {content}")
             lines.append("")
         
@@ -793,8 +793,8 @@ ID: {result.test_id}
         rule_list = memory_insights.get("rule_list", [])
         if rule_list:
             lines.append("### 系统规则约束")
-            for rule in rule_list[:5]:
-                content = rule.get('content', '')[:80]
+            for rule in rule_list:
+                content = rule.get('content', '')
                 lines.append(f"- {content}")
             lines.append("")
         
@@ -934,13 +934,13 @@ ID: {result.test_id}
         """
         # 构建错误摘要
         error_summary = "\n".join([
-            f"- [{m.get('source', 'unknown')}] {m.get('content', '')[:150]}"
-            for m in error_memories[:20]
+            f"- [{m.get('source', 'unknown')}] {m.get('content', '')}"
+            for m in error_memories
         ])
         
         rule_summary = "\n".join([
-            f"- {m.get('content', '')[:100]}"
-            for m in rule_memories[:10]
+            f"- {m.get('content', '')}"
+            for m in rule_memories
         ])
         
         prompt = f"""请分析以下系统记录的错误教训和规则约束，提取出最重要的优化建议。
@@ -967,7 +967,7 @@ ID: {result.test_id}
             if json_match:
                 suggestions = json.loads(json_match.group())
                 if isinstance(suggestions, list):
-                    return [str(s) for s in suggestions[:5]]
+                    return [str(s) for s in suggestions]
             
             return []
             
@@ -1098,7 +1098,7 @@ ID: {result.test_id}
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
-            logger.debug(f"LLM response: {content[:500]}")
+            logger.debug(f"LLM response: {content}")
             return []
     
     def _analyze_errors_with_rules(self, patterns: dict) -> list[dict]:
@@ -1145,10 +1145,10 @@ ID: {result.test_id}
                     can_fix = False
             
             results.append({
-                "error_id": pattern_key[:50],
+                "error_id": pattern_key,
                 "module": module,
                 "error_type": "core" if is_core else "tool",
-                "analysis": message[:100],
+                "analysis": message,
                 "severity": "high" if is_core else "medium",
                 "can_fix": can_fix,
                 "fix_instruction": fix_instruction,
@@ -1187,7 +1187,7 @@ ID: {result.test_id}
             fix_record.success = False
             return fix_record
         
-        fix_record.fix_action = f"Agent 执行: {fix_instruction[:50]}..."
+        fix_record.fix_action = f"Agent 执行: {fix_instruction}"
         
         try:
             # 创建 Agent（不启动 scheduler 避免递归）
@@ -1236,7 +1236,7 @@ ID: {result.test_id}
             # 记录结果
             fix_record.success = success
             fix_record.verified = success
-            fix_record.verification_result = result_msg[:200] if result_msg else ""
+            fix_record.verification_result = result_msg if result_msg else ""
             
             logger.info(f"Agent fix completed: {analysis.get('error_id')} - {'success' if success else 'failed'}")
             

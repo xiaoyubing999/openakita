@@ -517,7 +517,7 @@ class BrowserMCP:
                 
                 return {
                     "success": True,
-                    "result": f"Typed into {selector}: {text[:50]}..."
+                    "result": f"Typed into {selector}: {text}"
                 }
                 
             except Exception as e:
@@ -542,7 +542,7 @@ class BrowserMCP:
                                     await self._page.type(alt, text)
                                 return {
                                     "success": True,
-                                    "result": f"Typed into {alt} (alt selector): {text[:50]}..."
+                                    "result": f"Typed into {alt} (alt selector): {text}"
                                 }
                             except:
                                 continue
@@ -599,7 +599,7 @@ class BrowserMCP:
             return {
                 "success": True,
                 "result": {
-                    "base64": b64[:100] + "...",  # 截断显示
+                    "base64": b64,
                     "length": len(b64),
                     "page_url": current_url,
                     "page_title": page_title,
@@ -625,7 +625,7 @@ class BrowserMCP:
         
         return {
             "success": True,
-            "result": content[:5000] + "..." if len(content) > 5000 else content
+            "result": content
         }
     
     async def _wait(self, selector: Optional[str], timeout: int) -> dict:

@@ -411,7 +411,7 @@ class DesktopController:
             return ActionResult(
                 success=False,
                 action="type",
-                target=text[:50] + "..." if len(text) > 50 else text,
+                target=text,
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000,
             )

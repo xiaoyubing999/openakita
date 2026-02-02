@@ -230,10 +230,9 @@ CallMcpTool(server="mysql-test", toolName="execute_query", arguments={{"sql": "S
             # 生成工具列表
             tool_entries = []
             for tool in server.tools:
-                desc = tool.description[:100] + "..." if len(tool.description) > 100 else tool.description
                 entry = self.TOOL_ENTRY_TEMPLATE.format(
                     name=tool.name,
-                    description=desc,
+                    description=tool.description,
                 )
                 tool_entries.append(entry)
             

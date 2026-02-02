@@ -63,11 +63,9 @@ When a user's request matches a skill's description, use `get_skill_info` to loa
         
         skill_entries = []
         for skill in skills:
-            # 获取简短描述 (第一行或前100字符)
+            # 获取描述第一行
             desc = skill.description
             first_line = desc.split('\n')[0].strip()
-            if len(first_line) > 120:
-                first_line = first_line[:117] + "..."
             
             entry = self.SKILL_ENTRY_TEMPLATE.format(
                 name=skill.name,

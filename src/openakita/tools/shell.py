@@ -116,9 +116,9 @@ class ShellTool:
         # Windows PowerShell 命令处理
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
-            logger.info(f"Windows PowerShell wrapped: {command[:80]}...")
+            logger.info(f"Windows PowerShell wrapped: {command}")
         
-        logger.info(f"Executing: {command[:100]}...")
+        logger.info(f"Executing: {command}")
         logger.debug(f"CWD: {work_dir}")
         
         try:
@@ -143,7 +143,7 @@ class ShellTool:
             
             logger.info(f"Command completed with code: {result.returncode}")
             if result.stderr:
-                logger.debug(f"Stderr: {result.stderr[:200]}")
+                logger.debug(f"Stderr: {result.stderr}")
             
             return result
             
@@ -174,7 +174,7 @@ class ShellTool:
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
         
-        logger.info(f"Executing interactively: {command[:100]}...")
+        logger.info(f"Executing interactively: {command}")
         
         process = await asyncio.create_subprocess_shell(
             command,

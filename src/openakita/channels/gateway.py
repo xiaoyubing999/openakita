@@ -661,7 +661,7 @@ class MessageGateway:
             if self._processing_sessions.get(session_key, False):
                 # 会话正在处理中，放入中断队列
                 await self._add_interrupt_message(session_key, message)
-                logger.info(f"[Interrupt] Message queued for session {session_key}: {message.plain_text[:50]}...")
+                logger.info(f"[Interrupt] Message queued for session {session_key}: {message.plain_text}")
                 return
         
         # 正常入队
@@ -717,7 +717,7 @@ class MessageGateway:
         
         try:
             interrupt_msg = queue.get_nowait()
-            logger.info(f"[Interrupt] Retrieved message for {session_key}: {interrupt_msg.message.plain_text[:50]}...")
+            logger.info(f"[Interrupt] Retrieved message for {session_key}: {interrupt_msg.message.plain_text}")
             return interrupt_msg.message
         except asyncio.QueueEmpty:
             return None
@@ -940,7 +940,7 @@ class MessageGateway:
                     transcription = await self._transcribe_voice_local(voice.local_path)
                     if transcription:
                         voice.transcription = transcription
-                        logger.info(f"Voice transcribed: {transcription[:50]}...")
+                        logger.info(f"Voice transcribed: {transcription}")
                     else:
                         voice.transcription = "[语音识别失败]"
                         
@@ -1053,7 +1053,7 @@ class MessageGateway:
                     # 语音已转写，用转写文字替换输入
                     if not input_text.strip() or "[语音:" in input_text:
                         input_text = voice.transcription
-                        logger.info(f"Using voice transcription as input: {input_text[:50]}...")
+                        logger.info(f"Using voice transcription as input: {input_text}")
                     else:
                         # 追加到输入
                         input_text = f"{input_text}\n\n[语音内容: {voice.transcription}]"
@@ -1232,7 +1232,7 @@ class MessageGateway:
                         chat_id=chat_id,
                         user_id=user_id,
                         role="system",  # 系统发送的消息
-                        content=text[:500] if len(text) > 500 else text,  # 截断过长内容
+                        content=text,
                         source="gateway.send"
                     )
                 except Exception as e:
@@ -1266,7 +1266,7 @@ class MessageGateway:
             try:
                 session.add_message(
                     role=role,
-                    content=text[:500] if len(text) > 500 else text,
+                    content=text,
                     source="send_to_session"
                 )
                 self.session_manager.mark_dirty()  # 触发保存

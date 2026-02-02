@@ -300,10 +300,6 @@ class MediaHandler:
             logger.warning(f"Text extraction failed: {e}")
             text = f"[文件: {media.filename}，提取失败]"
         
-        # 截断过长的文本
-        if len(text) > 10000:
-            text = text[:10000] + "\n... (内容已截断)"
-        
         media.extracted_text = text
         return text
     

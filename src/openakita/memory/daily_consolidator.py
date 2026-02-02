@@ -373,7 +373,7 @@ class DailyConsolidator:
                     # 规则: 保留更重要的，同等重要保留更新的
                     keep, remove = self._decide_which_to_keep(memory, other_memory)
                     
-                    logger.info(f"Duplicate found: '{remove.content[:30]}...' -> keeping '{keep.content[:30]}...'")
+                    logger.info(f"Duplicate found: '{remove.content}' -> keeping '{keep.content}'")
                     
                     # 删除重复的
                     self.memory_manager.delete_memory(remove.id)

@@ -466,8 +466,7 @@ class TelegramAdapter(ChannelAdapter):
             
             chat_id = str(message.chat.id)
             user_id = message.from_user.id if message.from_user else "unknown"
-            text_preview = (message.text[:30] + "...") if message.text and len(message.text) > 30 else message.text
-            logger.debug(f"Received message from user {user_id} in chat {chat_id}: {text_preview}")
+            logger.debug(f"Received message from user {user_id} in chat {chat_id}: {message.text}")
             
             # 配对验证
             if self.require_pairing:

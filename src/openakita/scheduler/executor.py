@@ -300,7 +300,7 @@ class TaskExecutor:
             notification = f"""{status}: {task.name}
 
 结果:
-{message[:1000]}{"..." if len(message) > 1000 else ""}
+{message}
 """
             
             # 不转义特殊字符，让 Telegram adapter 处理格式

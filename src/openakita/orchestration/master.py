@@ -317,7 +317,7 @@ class MasterAgent:
     ) -> str:
         """本地处理请求"""
         self._stats["tasks_local"] += 1
-        logger.info(f"Handling locally: {message[:50]}...")
+        logger.info(f"Handling locally: {message}")
         
         async with self._local_agent_lock:
             try:
@@ -368,7 +368,7 @@ class MasterAgent:
         task = TaskPayload(
             task_id=task_id,
             task_type="chat",
-            description=f"处理用户消息: {message[:50]}...",
+            description=f"处理用户消息: {message}",
             content=message,
             session_id=session_id,
             context={

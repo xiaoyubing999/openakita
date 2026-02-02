@@ -326,7 +326,7 @@ class AgentRegistry:
             self._record_event("task_assigned", {
                 "agent_id": agent_id,
                 "task_id": task_id,
-                "task_desc": task_desc[:100],
+                "task_desc": task_desc,
             })
             
             return True
