@@ -442,6 +442,104 @@ class Brain:
         """检查所有端点健康状态"""
         return await self._llm_client.health_check()
     
+    # ========================================================================
+    # 动态模型切换
+    # ========================================================================
+    
+    def switch_model(
+        self,
+        endpoint_name: str,
+        hours: float = 12,
+        reason: str = "",
+    ) -> tuple[bool, str]:
+        """
+        临时切换到指定模型
+        
+        Args:
+            endpoint_name: 端点名称
+            hours: 有效时间（小时），默认 12 小时
+            reason: 切换原因
+            
+        Returns:
+            (成功, 消息)
+        """
+        return self._llm_client.switch_model(endpoint_name, hours, reason)
+    
+    def restore_default_model(self) -> tuple[bool, str]:
+        """
+        恢复默认模型（清除临时覆盖）
+        
+        Returns:
+            (成功, 消息)
+        """
+        return self._llm_client.restore_default()
+    
+    def get_current_model_info(self) -> dict:
+        """
+        获取当前使用的模型信息
+        
+        Returns:
+            模型信息字典
+        """
+        from ..llm.client import ModelInfo
+        model = self._llm_client.get_current_model()
+        if not model:
+            return {"error": "无可用模型"}
+        
+        return {
+            "name": model.name,
+            "model": model.model,
+            "provider": model.provider,
+            "is_healthy": model.is_healthy,
+            "is_override": model.is_override,
+            "capabilities": model.capabilities,
+            "note": model.note,
+        }
+    
+    def list_available_models(self) -> list[dict]:
+        """
+        列出所有可用模型
+        
+        Returns:
+            模型信息列表
+        """
+        models = self._llm_client.list_available_models()
+        return [
+            {
+                "name": m.name,
+                "model": m.model,
+                "provider": m.provider,
+                "priority": m.priority,
+                "is_healthy": m.is_healthy,
+                "is_current": m.is_current,
+                "is_override": m.is_override,
+                "capabilities": m.capabilities,
+                "note": m.note,
+            }
+            for m in models
+        ]
+    
+    def get_override_status(self) -> Optional[dict]:
+        """
+        获取当前覆盖状态
+        
+        Returns:
+            覆盖状态信息，无覆盖时返回 None
+        """
+        return self._llm_client.get_override_status()
+    
+    def update_model_priority(self, priority_order: list[str]) -> tuple[bool, str]:
+        """
+        更新模型优先级顺序（永久生效）
+        
+        Args:
+            priority_order: 模型名称列表，按优先级从高到低排序
+            
+        Returns:
+            (成功, 消息)
+        """
+        return self._llm_client.update_priority(priority_order)
+    
     async def plan(self, task: str, context: Optional[Context] = None) -> str:
         """为任务生成执行计划"""
         prompt = f"""请为以下任务制定详细的执行计划:

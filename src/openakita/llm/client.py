@@ -6,10 +6,14 @@ LLM 统一客户端
 - 自动故障切换
 - 能力分流（根据请求自动选择合适的端点）
 - 健康检查
+- 动态模型切换（临时/永久）
 """
 
 import asyncio
+import json
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union, AsyncIterator
 
@@ -36,8 +40,68 @@ from .providers.openai import OpenAIProvider
 logger = logging.getLogger(__name__)
 
 
+# ==================== 动态切换相关数据结构 ====================
+
+@dataclass
+class EndpointOverride:
+    """端点临时覆盖配置"""
+    endpoint_name: str  # 覆盖到的端点名称
+    expires_at: datetime  # 过期时间
+    created_at: datetime = field(default_factory=datetime.now)
+    reason: str = ""  # 切换原因（可选）
+    
+    @property
+    def is_expired(self) -> bool:
+        """检查是否已过期"""
+        return datetime.now() >= self.expires_at
+    
+    @property
+    def remaining_hours(self) -> float:
+        """剩余有效时间（小时）"""
+        if self.is_expired:
+            return 0.0
+        delta = self.expires_at - datetime.now()
+        return delta.total_seconds() / 3600
+    
+    def to_dict(self) -> dict:
+        """转换为字典（用于序列化）"""
+        return {
+            "endpoint_name": self.endpoint_name,
+            "expires_at": self.expires_at.isoformat(),
+            "created_at": self.created_at.isoformat(),
+            "reason": self.reason,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "EndpointOverride":
+        """从字典创建（用于反序列化）"""
+        return cls(
+            endpoint_name=data["endpoint_name"],
+            expires_at=datetime.fromisoformat(data["expires_at"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            reason=data.get("reason", ""),
+        )
+
+
+@dataclass
+class ModelInfo:
+    """模型信息（用于列表展示）"""
+    name: str  # 端点名称
+    model: str  # 模型名称
+    provider: str  # 提供商
+    priority: int  # 优先级
+    is_healthy: bool  # 健康状态
+    is_current: bool  # 是否当前使用
+    is_override: bool  # 是否临时覆盖
+    capabilities: list[str]  # 支持的能力
+    note: str = ""  # 备注
+
+
 class LLMClient:
     """统一 LLM 客户端"""
+    
+    # 默认临时切换有效期（小时）
+    DEFAULT_OVERRIDE_HOURS = 12
     
     def __init__(
         self,
@@ -54,10 +118,15 @@ class LLMClient:
         self._endpoints: list[EndpointConfig] = []
         self._providers: dict[str, LLMProvider] = {}
         self._settings: dict = {}
+        self._config_path: Optional[Path] = config_path
+        
+        # 动态切换相关
+        self._endpoint_override: Optional[EndpointOverride] = None
         
         if endpoints:
             self._endpoints = sorted(endpoints, key=lambda x: x.priority)
         elif config_path or get_default_config_path().exists():
+            self._config_path = config_path or get_default_config_path()
             self._endpoints, self._settings = load_endpoints_config(config_path)
         
         # 创建 Provider 实例
@@ -144,6 +213,17 @@ class LLMClient:
         require_vision = self._has_images(messages)
         require_video = self._has_videos(messages)
         
+        # 检测工具上下文：有工具历史时禁止 failover
+        # 原因：不同模型对工具调用格式可能不兼容，切换后可能无法正确处理
+        has_tool_context = self._has_tool_context(messages)
+        allow_failover = not has_tool_context
+        
+        if has_tool_context:
+            logger.debug(
+                "[LLM] Tool context detected in messages, failover disabled. "
+                "Will retry same endpoint on failure."
+            )
+        
         # 筛选支持所需能力的端点
         eligible = self._filter_eligible_endpoints(
             require_tools=require_tools,
@@ -152,7 +232,7 @@ class LLMClient:
         )
         
         if eligible:
-            return await self._try_endpoints(eligible, request)
+            return await self._try_endpoints(eligible, request, allow_failover=allow_failover)
         elif require_video:
             # 视频能力是硬需求，无法降级
             raise UnsupportedMediaError(
@@ -165,7 +245,9 @@ class LLMClient:
                 f"tools={require_tools}, vision={require_vision}, "
                 f"video={require_video}. Falling back to primary endpoint."
             )
-            return await self._try_endpoints(list(self._providers.values()), request)
+            return await self._try_endpoints(
+                list(self._providers.values()), request, allow_failover=allow_failover
+            )
     
     async def chat_stream(
         self,
@@ -228,9 +310,38 @@ class LLMClient:
     ) -> list[LLMProvider]:
         """筛选支持所需能力的端点
         
-        注意：thinking 不作为筛选标准，只是传输参数
+        注意：
+        - thinking 不作为筛选标准，只是传输参数
+        - 如果有临时覆盖且覆盖端点支持所需能力，优先使用覆盖端点
         """
+        # 检查并清理过期的 override
+        if self._endpoint_override and self._endpoint_override.is_expired:
+            logger.info(f"[LLM] Override expired, restoring default")
+            self._endpoint_override = None
+        
         eligible = []
+        override_provider = None
+        
+        # 如果有临时覆盖，检查覆盖端点
+        if self._endpoint_override:
+            override_name = self._endpoint_override.endpoint_name
+            if override_name in self._providers:
+                provider = self._providers[override_name]
+                if provider.is_healthy:
+                    config = provider.config
+                    # 检查能力是否满足
+                    tools_ok = not require_tools or config.has_capability("tools")
+                    vision_ok = not require_vision or config.has_capability("vision")
+                    video_ok = not require_video or config.has_capability("video")
+                    
+                    if tools_ok and vision_ok and video_ok:
+                        override_provider = provider
+                        logger.debug(f"[LLM] Using override endpoint: {override_name}")
+                    else:
+                        logger.warning(
+                            f"[LLM] Override endpoint {override_name} doesn't support "
+                            f"required capabilities, falling back to default selection"
+                        )
         
         for name, provider in self._providers.items():
             # 检查健康状态（包括冷静期）
@@ -256,12 +367,18 @@ class LLMClient:
         # 按优先级排序
         eligible.sort(key=lambda p: p.config.priority)
         
+        # 如果有有效的 override，将其放到最前面
+        if override_provider and override_provider in eligible:
+            eligible.remove(override_provider)
+            eligible.insert(0, override_provider)
+        
         return eligible
     
     async def _try_endpoints(
         self,
         providers: list[LLMProvider],
         request: LLMRequest,
+        allow_failover: bool = True,
     ) -> LLMResponse:
         """尝试多个端点
         
@@ -270,6 +387,13 @@ class LLMClient:
         - retry_count: 重试次数
         - retry_delay_seconds: 重试间隔
         
+        Args:
+            providers: 端点列表（按优先级排序）
+            request: LLM 请求
+            allow_failover: 是否允许切换到其他端点
+                - True: 无工具上下文，可以安全切换（默认）
+                - False: 有工具上下文，禁止切换，失败后直接抛异常让上层处理
+        
         默认策略：有备选端点时快速切换，不重试同一个端点（提高响应速度）
         """
         errors = []
@@ -277,16 +401,19 @@ class LLMClient:
         retry_delay = self._settings.get("retry_delay_seconds", 2)
         retry_same_first = self._settings.get("retry_same_endpoint_first", False)
         
-        # 有备选时默认快速切换（除非配置了先重试）
-        has_fallback = len(providers) > 1
-        if retry_same_first:
-            # 即使有备选也先重试当前端点
+        # 有备选时默认快速切换（除非配置了先重试或禁止 failover）
+        has_fallback = len(providers) > 1 and allow_failover
+        if retry_same_first or not allow_failover:
+            # 先重试当前端点（有工具上下文时强制此模式）
             max_attempts = retry_count + 1
         else:
             # 有备选时每个端点只尝试一次，无备选时重试多次
             max_attempts = 1 if has_fallback else (retry_count + 1)
         
-        for i, provider in enumerate(providers):
+        # 如果禁止 failover，只尝试第一个端点
+        providers_to_try = providers if allow_failover else providers[:1]
+        
+        for i, provider in enumerate(providers_to_try):
             for attempt in range(max_attempts):
                 try:
                     tools_count = len(request.tools) if request.tools else 0
@@ -318,8 +445,12 @@ class LLMClient:
                     )
                     errors.append(f"{provider.name}: {e}")
                     
-                    # 无备选时才重试
-                    if not has_fallback and attempt < max_attempts - 1:
+                    # 无备选时才重试（或禁止 failover 时）
+                    if (not has_fallback or not allow_failover) and attempt < max_attempts - 1:
+                        logger.info(
+                            f"[LLM] endpoint={provider.name} retry={attempt + 1}/{max_attempts - 1}"
+                            + (" (tool_context, no_failover)" if not allow_failover else "")
+                        )
                         await asyncio.sleep(retry_delay)
                     else:
                         # 最后一次尝试也失败，设置冷静期
@@ -333,13 +464,20 @@ class LLMClient:
                     logger.warning(f"[LLM] endpoint={provider.name} cooldown=180s (unexpected error)")
                     break
             
-            # 切换到下一个端点
-            if i < len(providers) - 1:
-                next_provider = providers[i + 1]
+            # 切换到下一个端点（如果允许且有下一个）
+            if allow_failover and i < len(providers_to_try) - 1:
+                next_provider = providers_to_try[i + 1]
                 logger.warning(
                     f"[LLM] endpoint={provider.name} action=failover "
                     f"target={next_provider.name}"
                 )
+        
+        # 如果禁止 failover，给出明确的日志
+        if not allow_failover:
+            logger.warning(
+                f"[LLM] Tool context detected, failover disabled. "
+                f"Let upper layer (Agent/TaskMonitor) handle retry/switch."
+            )
         
         raise AllEndpointsFailedError(
             f"All endpoints failed: {'; '.join(errors)}"
@@ -361,6 +499,30 @@ class LLMClient:
                 for block in msg.content:
                     if isinstance(block, VideoBlock):
                         return True
+        return False
+    
+    def _has_tool_context(self, messages: list[Message]) -> bool:
+        """检查消息中是否包含工具调用上下文（tool_use 或 tool_result）
+        
+        用于判断是否允许 failover：
+        - 无工具上下文：可以安全 failover 到其他端点
+        - 有工具上下文：禁止 failover，因为不同模型对工具调用格式可能不兼容
+        
+        Returns:
+            True 表示包含工具上下文，应禁止 failover
+        """
+        from .types import ToolUseBlock, ToolResultBlock
+        
+        for msg in messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, (ToolUseBlock, ToolResultBlock)):
+                        return True
+                    # 兼容字典格式（某些转换后的消息可能是字典）
+                    if isinstance(block, dict):
+                        block_type = block.get("type", "")
+                        if block_type in ("tool_use", "tool_result"):
+                            return True
         return False
     
     async def health_check(self) -> dict[str, bool]:
@@ -403,6 +565,238 @@ class LLMClient:
         if name in self._providers:
             del self._providers[name]
         self._endpoints = [ep for ep in self._endpoints if ep.name != name]
+    
+    # ==================== 动态模型切换 ====================
+    
+    def switch_model(
+        self,
+        endpoint_name: str,
+        hours: float = DEFAULT_OVERRIDE_HOURS,
+        reason: str = "",
+    ) -> tuple[bool, str]:
+        """
+        临时切换到指定模型
+        
+        Args:
+            endpoint_name: 端点名称
+            hours: 有效时间（小时），默认 12 小时
+            reason: 切换原因
+            
+        Returns:
+            (成功, 消息)
+        """
+        # 检查端点是否存在
+        if endpoint_name not in self._providers:
+            available = list(self._providers.keys())
+            return False, f"端点 '{endpoint_name}' 不存在。可用端点: {', '.join(available)}"
+        
+        # 检查端点是否健康
+        provider = self._providers[endpoint_name]
+        if not provider.is_healthy:
+            cooldown = provider.cooldown_remaining
+            return False, f"端点 '{endpoint_name}' 当前不可用（冷静期剩余 {cooldown:.0f} 秒）"
+        
+        # 创建覆盖配置
+        expires_at = datetime.now() + timedelta(hours=hours)
+        self._endpoint_override = EndpointOverride(
+            endpoint_name=endpoint_name,
+            expires_at=expires_at,
+            reason=reason,
+        )
+        
+        model = provider.config.model
+        expires_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"[LLM] Model switched to {endpoint_name} ({model}), expires at {expires_str}")
+        
+        return True, f"已切换到模型: {model}\n有效期至: {expires_str}"
+    
+    def restore_default(self) -> tuple[bool, str]:
+        """
+        恢复默认模型（清除临时覆盖）
+        
+        Returns:
+            (成功, 消息)
+        """
+        if not self._endpoint_override:
+            return False, "当前没有临时切换，已在使用默认模型"
+        
+        old_endpoint = self._endpoint_override.endpoint_name
+        self._endpoint_override = None
+        
+        # 获取当前默认模型
+        default = self.get_current_model()
+        default_model = default.model if default else "未知"
+        
+        logger.info(f"[LLM] Restored to default model: {default_model}")
+        return True, f"已恢复默认模型: {default_model}"
+    
+    def get_current_model(self) -> Optional[ModelInfo]:
+        """
+        获取当前使用的模型信息
+        
+        Returns:
+            当前模型信息，无可用模型时返回 None
+        """
+        # 检查并清理过期的 override
+        if self._endpoint_override and self._endpoint_override.is_expired:
+            logger.info(f"[LLM] Override expired, restoring default")
+            self._endpoint_override = None
+        
+        # 如果有临时覆盖，返回覆盖的端点
+        if self._endpoint_override:
+            name = self._endpoint_override.endpoint_name
+            if name in self._providers:
+                provider = self._providers[name]
+                config = provider.config
+                return ModelInfo(
+                    name=name,
+                    model=config.model,
+                    provider=config.provider,
+                    priority=config.priority,
+                    is_healthy=provider.is_healthy,
+                    is_current=True,
+                    is_override=True,
+                    capabilities=config.capabilities,
+                    note=config.note,
+                )
+        
+        # 否则返回优先级最高的健康端点
+        for provider in sorted(self._providers.values(), key=lambda p: p.config.priority):
+            if provider.is_healthy:
+                config = provider.config
+                return ModelInfo(
+                    name=config.name,
+                    model=config.model,
+                    provider=config.provider,
+                    priority=config.priority,
+                    is_healthy=True,
+                    is_current=True,
+                    is_override=False,
+                    capabilities=config.capabilities,
+                    note=config.note,
+                )
+        
+        return None
+    
+    def list_available_models(self) -> list[ModelInfo]:
+        """
+        列出所有可用模型
+        
+        Returns:
+            模型信息列表（按优先级排序）
+        """
+        # 检查并清理过期的 override
+        if self._endpoint_override and self._endpoint_override.is_expired:
+            self._endpoint_override = None
+        
+        current_name = None
+        if self._endpoint_override:
+            current_name = self._endpoint_override.endpoint_name
+        
+        models = []
+        for provider in sorted(self._providers.values(), key=lambda p: p.config.priority):
+            config = provider.config
+            is_current = False
+            is_override = False
+            
+            if current_name:
+                is_current = config.name == current_name
+                is_override = is_current
+            elif provider.is_healthy and not models:
+                # 第一个健康的端点是当前默认
+                is_current = True
+            
+            models.append(ModelInfo(
+                name=config.name,
+                model=config.model,
+                provider=config.provider,
+                priority=config.priority,
+                is_healthy=provider.is_healthy,
+                is_current=is_current,
+                is_override=is_override,
+                capabilities=config.capabilities,
+                note=config.note,
+            ))
+        
+        return models
+    
+    def get_override_status(self) -> Optional[dict]:
+        """
+        获取当前覆盖状态
+        
+        Returns:
+            覆盖状态信息，无覆盖时返回 None
+        """
+        if not self._endpoint_override:
+            return None
+        
+        if self._endpoint_override.is_expired:
+            self._endpoint_override = None
+            return None
+        
+        return {
+            "endpoint_name": self._endpoint_override.endpoint_name,
+            "remaining_hours": round(self._endpoint_override.remaining_hours, 2),
+            "expires_at": self._endpoint_override.expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": self._endpoint_override.reason,
+        }
+    
+    def update_priority(self, priority_order: list[str]) -> tuple[bool, str]:
+        """
+        更新端点优先级顺序
+        
+        Args:
+            priority_order: 端点名称列表，按优先级从高到低排序
+            
+        Returns:
+            (成功, 消息)
+        """
+        # 验证所有端点都存在
+        unknown = [name for name in priority_order if name not in self._providers]
+        if unknown:
+            return False, f"未知端点: {', '.join(unknown)}"
+        
+        # 更新优先级
+        for i, name in enumerate(priority_order):
+            for ep in self._endpoints:
+                if ep.name == name:
+                    ep.priority = i
+                    break
+        
+        # 重新排序
+        self._endpoints.sort(key=lambda x: x.priority)
+        
+        # 保存到配置文件
+        if self._config_path and self._config_path.exists():
+            try:
+                self._save_config()
+                logger.info(f"[LLM] Priority updated and saved: {priority_order}")
+                return True, f"优先级已更新并保存: {' > '.join(priority_order)}"
+            except Exception as e:
+                logger.error(f"[LLM] Failed to save config: {e}")
+                return True, f"优先级已更新（内存），但保存配置文件失败: {e}"
+        
+        return True, f"优先级已更新: {' > '.join(priority_order)}"
+    
+    def _save_config(self):
+        """保存配置到文件"""
+        if not self._config_path:
+            return
+        
+        # 读取原配置
+        with open(self._config_path, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        
+        # 更新端点优先级
+        name_to_priority = {ep.name: ep.priority for ep in self._endpoints}
+        for ep_data in config_data.get("endpoints", []):
+            name = ep_data.get("name")
+            if name in name_to_priority:
+                ep_data["priority"] = name_to_priority[name]
+        
+        # 写回文件
+        with open(self._config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2, ensure_ascii=False)
     
     async def close(self):
         """关闭所有 Provider"""

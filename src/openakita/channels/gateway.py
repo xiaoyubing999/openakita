@@ -7,6 +7,7 @@
 - 媒体预处理（图片、语音）
 - Agent 调用
 - 消息中断机制（支持在工具调用间隙插入新消息）
+- 系统级命令拦截（模型切换等）
 """
 
 import asyncio
@@ -14,15 +15,18 @@ import logging
 import base64
 import httpx
 from pathlib import Path
-from typing import Optional, Callable, Awaitable, Any
+from typing import Optional, Callable, Awaitable, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from .types import UnifiedMessage, OutgoingMessage, MessageContent, MediaFile
 from .base import ChannelAdapter
 from ..sessions import SessionManager, Session
 from ..config import settings
+
+if TYPE_CHECKING:
+    from ..core.brain import Brain
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,393 @@ class InterruptMessage:
         if self.priority.value != other.priority.value:
             return self.priority.value > other.priority.value
         return self.timestamp < other.timestamp
+
+
+# ==================== 模型切换命令处理 ====================
+
+@dataclass
+class ModelSwitchSession:
+    """模型切换交互会话"""
+    session_key: str
+    mode: str  # "switch" | "priority" | "restore"
+    step: str  # "select" | "confirm"
+    selected_model: Optional[str] = None
+    selected_priority: Optional[list[str]] = None
+    started_at: datetime = field(default_factory=datetime.now)
+    timeout_minutes: int = 5
+    
+    @property
+    def is_expired(self) -> bool:
+        """检查会话是否已超时"""
+        return datetime.now() > self.started_at + timedelta(minutes=self.timeout_minutes)
+
+
+class ModelCommandHandler:
+    """
+    模型命令处理器
+    
+    系统级命令拦截，不经过大模型处理，确保即使模型崩溃也能切换。
+    
+    支持的命令:
+    - /model: 显示当前模型和可用列表
+    - /switch [模型名]: 临时切换模型（12小时）
+    - /priority: 调整模型优先级（永久）
+    - /restore: 恢复默认模型
+    - /cancel: 取消当前操作
+    """
+    
+    # 命令列表
+    MODEL_COMMANDS = {"/model", "/switch", "/priority", "/restore", "/cancel"}
+    
+    def __init__(self, brain: Optional["Brain"] = None):
+        self._brain: Optional["Brain"] = brain
+        # 进行中的切换会话 {session_key: ModelSwitchSession}
+        self._switch_sessions: dict[str, ModelSwitchSession] = {}
+    
+    def set_brain(self, brain: "Brain") -> None:
+        """设置 Brain 实例"""
+        self._brain = brain
+    
+    def is_model_command(self, text: str) -> bool:
+        """检查是否是模型相关命令"""
+        if not text:
+            return False
+        text_lower = text.lower().strip()
+        # 完整命令或带参数的命令
+        for cmd in self.MODEL_COMMANDS:
+            if text_lower == cmd or text_lower.startswith(cmd + " "):
+                return True
+        return False
+    
+    def is_in_session(self, session_key: str) -> bool:
+        """检查是否在交互会话中"""
+        if session_key not in self._switch_sessions:
+            return False
+        session = self._switch_sessions[session_key]
+        if session.is_expired:
+            del self._switch_sessions[session_key]
+            return False
+        return True
+    
+    async def handle_command(self, session_key: str, text: str) -> Optional[str]:
+        """
+        处理模型命令
+        
+        Args:
+            session_key: 会话标识
+            text: 用户输入
+            
+        Returns:
+            响应文本，如果不是命令返回 None
+        """
+        if not self._brain:
+            return "❌ 模型管理功能未初始化"
+        
+        text = text.strip()
+        text_lower = text.lower()
+        
+        # /model - 显示当前模型状态
+        if text_lower == "/model":
+            return self._format_model_status()
+        
+        # /switch - 切换模型
+        if text_lower == "/switch":
+            return self._start_switch_session(session_key)
+        
+        if text_lower.startswith("/switch "):
+            model_name = text[8:].strip()
+            return self._start_switch_session(session_key, model_name)
+        
+        # /priority - 调整优先级
+        if text_lower == "/priority":
+            return self._start_priority_session(session_key)
+        
+        # /restore - 恢复默认
+        if text_lower == "/restore":
+            return self._start_restore_session(session_key)
+        
+        # /cancel - 取消操作
+        if text_lower == "/cancel":
+            return self._cancel_session(session_key)
+        
+        return None
+    
+    async def handle_input(self, session_key: str, text: str) -> str:
+        """
+        处理交互会话中的用户输入
+        
+        Args:
+            session_key: 会话标识
+            text: 用户输入
+            
+        Returns:
+            响应文本
+        """
+        if not self._brain:
+            return "❌ 模型管理功能未初始化"
+        
+        # 检查是否取消
+        if text.lower().strip() == "/cancel":
+            return self._cancel_session(session_key)
+        
+        session = self._switch_sessions.get(session_key)
+        if not session:
+            return "会话已结束"
+        
+        if session.is_expired:
+            del self._switch_sessions[session_key]
+            return "⏰ 操作超时（5分钟），已自动取消"
+        
+        # 根据模式和步骤处理
+        if session.mode == "switch":
+            return self._handle_switch_input(session_key, session, text)
+        elif session.mode == "priority":
+            return self._handle_priority_input(session_key, session, text)
+        elif session.mode == "restore":
+            return self._handle_restore_input(session_key, session, text)
+        
+        return "未知操作"
+    
+    def _format_model_status(self) -> str:
+        """格式化模型状态信息"""
+        models = self._brain.list_available_models()
+        override = self._brain.get_override_status()
+        
+        lines = ["📋 **模型状态**\n"]
+        
+        for i, m in enumerate(models):
+            status = ""
+            if m["is_current"]:
+                if m["is_override"]:
+                    status = " ⬅️ 当前（临时）"
+                else:
+                    status = " ⬅️ 当前"
+            health = "✅" if m["is_healthy"] else "❌"
+            lines.append(f"{i+1}. {health} **{m['name']}** ({m['model']}){status}")
+        
+        if override:
+            lines.append(f"\n⏱️ 临时切换剩余: {override['remaining_hours']:.1f} 小时")
+            lines.append(f"   到期时间: {override['expires_at']}")
+        
+        lines.append("\n💡 命令: /switch 切换 | /priority 调整优先级 | /restore 恢复默认")
+        
+        return "\n".join(lines)
+    
+    def _start_switch_session(self, session_key: str, model_name: str = "") -> str:
+        """开始切换会话"""
+        models = self._brain.list_available_models()
+        
+        # 如果指定了模型名，跳到确认步骤
+        if model_name:
+            # 查找模型
+            target = None
+            for m in models:
+                if m["name"].lower() == model_name.lower() or m["model"].lower() == model_name.lower():
+                    target = m
+                    break
+            
+            if not target:
+                # 尝试数字索引
+                try:
+                    idx = int(model_name) - 1
+                    if 0 <= idx < len(models):
+                        target = models[idx]
+                except ValueError:
+                    pass
+            
+            if not target:
+                available = ", ".join(m["name"] for m in models)
+                return f"❌ 未找到模型 '{model_name}'\n可用模型: {available}"
+            
+            # 创建会话并进入确认步骤
+            self._switch_sessions[session_key] = ModelSwitchSession(
+                session_key=session_key,
+                mode="switch",
+                step="confirm",
+                selected_model=target["name"],
+            )
+            
+            return (
+                f"⚠️ 确认切换到 **{target['name']}** ({target['model']})?\n\n"
+                f"临时切换有效期: 12小时\n"
+                f"输入 **yes** 确认，其他任意内容取消"
+            )
+        
+        # 没有指定模型，显示选择列表
+        self._switch_sessions[session_key] = ModelSwitchSession(
+            session_key=session_key,
+            mode="switch",
+            step="select",
+        )
+        
+        lines = ["📋 **可用模型**\n"]
+        for i, m in enumerate(models):
+            status = " ⬅️ 当前" if m["is_current"] else ""
+            health = "✅" if m["is_healthy"] else "❌"
+            lines.append(f"{i+1}. {health} **{m['name']}** ({m['model']}){status}")
+        
+        lines.append("\n请输入数字或模型名称选择，/cancel 取消")
+        
+        return "\n".join(lines)
+    
+    def _start_priority_session(self, session_key: str) -> str:
+        """开始优先级调整会话"""
+        models = self._brain.list_available_models()
+        
+        self._switch_sessions[session_key] = ModelSwitchSession(
+            session_key=session_key,
+            mode="priority",
+            step="select",
+        )
+        
+        lines = ["📋 **当前优先级** (数字越小越优先)\n"]
+        for i, m in enumerate(models):
+            lines.append(f"{i}. {m['name']}")
+        
+        lines.append("\n请按顺序输入模型名称，用空格分隔")
+        lines.append("例如: claude kimi dashscope minimax")
+        lines.append("/cancel 取消")
+        
+        return "\n".join(lines)
+    
+    def _start_restore_session(self, session_key: str) -> str:
+        """开始恢复默认会话"""
+        override = self._brain.get_override_status()
+        
+        if not override:
+            return "当前没有临时切换，已在使用默认模型"
+        
+        self._switch_sessions[session_key] = ModelSwitchSession(
+            session_key=session_key,
+            mode="restore",
+            step="confirm",
+        )
+        
+        return (
+            f"⚠️ 确认恢复默认模型?\n\n"
+            f"当前临时使用: {override['endpoint_name']}\n"
+            f"剩余时间: {override['remaining_hours']:.1f} 小时\n\n"
+            f"输入 **yes** 确认，其他任意内容取消"
+        )
+    
+    def _cancel_session(self, session_key: str) -> str:
+        """取消当前会话"""
+        if session_key in self._switch_sessions:
+            del self._switch_sessions[session_key]
+            return "✅ 操作已取消"
+        return "没有进行中的操作"
+    
+    def _handle_switch_input(self, session_key: str, session: ModelSwitchSession, text: str) -> str:
+        """处理切换会话的输入"""
+        text = text.strip()
+        
+        if session.step == "select":
+            models = self._brain.list_available_models()
+            target = None
+            
+            # 尝试数字索引
+            try:
+                idx = int(text) - 1
+                if 0 <= idx < len(models):
+                    target = models[idx]
+            except ValueError:
+                # 尝试名称匹配
+                for m in models:
+                    if m["name"].lower() == text.lower() or m["model"].lower() == text.lower():
+                        target = m
+                        break
+            
+            if not target:
+                return f"❌ 未找到模型 '{text}'，请重新输入或 /cancel 取消"
+            
+            # 进入确认步骤
+            session.selected_model = target["name"]
+            session.step = "confirm"
+            
+            return (
+                f"⚠️ 确认切换到 **{target['name']}** ({target['model']})?\n\n"
+                f"临时切换有效期: 12小时\n"
+                f"输入 **yes** 确认，其他任意内容取消"
+            )
+        
+        elif session.step == "confirm":
+            if text.lower() == "yes":
+                # 执行切换
+                success, msg = self._brain.switch_model(session.selected_model)
+                del self._switch_sessions[session_key]
+                
+                if success:
+                    return f"✅ {msg}\n\n发送 /model 查看状态"
+                else:
+                    return f"❌ 切换失败: {msg}"
+            else:
+                del self._switch_sessions[session_key]
+                return "✅ 操作已取消"
+        
+        return "未知步骤"
+    
+    def _handle_priority_input(self, session_key: str, session: ModelSwitchSession, text: str) -> str:
+        """处理优先级调整的输入"""
+        text = text.strip()
+        
+        if session.step == "select":
+            models = self._brain.list_available_models()
+            model_names = {m["name"].lower(): m["name"] for m in models}
+            
+            # 解析用户输入
+            input_names = text.split()
+            priority_order = []
+            
+            for name in input_names:
+                name_lower = name.lower()
+                if name_lower in model_names:
+                    priority_order.append(model_names[name_lower])
+                else:
+                    return f"❌ 未找到模型 '{name}'，请重新输入或 /cancel 取消"
+            
+            if len(priority_order) != len(models):
+                return f"❌ 请输入所有 {len(models)} 个模型的顺序"
+            
+            # 进入确认步骤
+            session.selected_priority = priority_order
+            session.step = "confirm"
+            
+            lines = ["⚠️ 确认调整优先级为:\n"]
+            for i, name in enumerate(priority_order):
+                lines.append(f"{i}. {name}")
+            lines.append("\n**这是永久更改！** 输入 **yes** 确认")
+            
+            return "\n".join(lines)
+        
+        elif session.step == "confirm":
+            if text.lower() == "yes":
+                # 执行优先级更新
+                success, msg = self._brain.update_model_priority(session.selected_priority)
+                del self._switch_sessions[session_key]
+                
+                if success:
+                    return f"✅ {msg}"
+                else:
+                    return f"❌ 更新失败: {msg}"
+            else:
+                del self._switch_sessions[session_key]
+                return "✅ 操作已取消"
+        
+        return "未知步骤"
+    
+    def _handle_restore_input(self, session_key: str, session: ModelSwitchSession, text: str) -> str:
+        """处理恢复默认的输入"""
+        if text.lower() == "yes":
+            success, msg = self._brain.restore_default_model()
+            del self._switch_sessions[session_key]
+            
+            if success:
+                return f"✅ {msg}"
+            else:
+                return f"❌ {msg}"
+        else:
+            del self._switch_sessions[session_key]
+            return "✅ 操作已取消"
 
 
 class MessageGateway:
@@ -108,6 +499,9 @@ class MessageGateway:
         
         # 中断处理回调（由 Agent 设置）
         self._interrupt_callbacks: dict[str, Callable[[], Awaitable[Optional[str]]]] = {}
+        
+        # 模型命令处理器（系统级命令拦截）
+        self._model_cmd_handler: ModelCommandHandler = ModelCommandHandler()
     
     async def start(self) -> None:
         """启动网关"""
@@ -209,6 +603,16 @@ class MessageGateway:
                 logger.error(f"Failed to stop adapter {name}: {e}")
         
         logger.info("MessageGateway stopped")
+    
+    def set_brain(self, brain: "Brain") -> None:
+        """
+        设置 Brain 实例（用于模型切换命令）
+        
+        Args:
+            brain: Brain 实例
+        """
+        self._model_cmd_handler.set_brain(brain)
+        logger.info("ModelCommandHandler brain set")
     
     # ==================== 适配器管理 ====================
     
@@ -386,11 +790,31 @@ class MessageGateway:
         处理单条消息
         """
         session_key = self._get_session_key(message)
+        user_text = message.plain_text.strip() if message.plain_text else ""
         
         try:
             # 标记会话开始处理
             async with self._interrupt_lock:
                 self._mark_session_processing(session_key, True)
+            
+            # ==================== 系统级命令拦截 ====================
+            # 在处理 Agent 之前，检查是否是模型切换相关命令
+            # 这确保即使大模型崩溃也能执行切换操作
+            
+            # 检查是否在模型切换交互会话中
+            if self._model_cmd_handler.is_in_session(session_key):
+                response_text = await self._model_cmd_handler.handle_input(session_key, user_text)
+                await self._send_response(message, response_text)
+                return
+            
+            # 检查是否是模型相关命令
+            if self._model_cmd_handler.is_model_command(user_text):
+                response_text = await self._model_cmd_handler.handle_command(session_key, user_text)
+                if response_text:
+                    await self._send_response(message, response_text)
+                    return
+            
+            # ==================== 正常消息处理流程 ====================
             
             # 1. 发送"正在输入"状态
             await self._send_typing(message)

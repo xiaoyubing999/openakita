@@ -160,8 +160,14 @@ class TaskMonitor:
         self._current_iteration: Optional[IterationRecord] = None
         self._current_tool_start: float = 0
         self._timeout_triggered = False
-        self._retry_count = 0  # 当前重试计数
-        self._last_error: Optional[str] = None  # 最近的错误信息
+        
+        # 两个独立的重试计数器：
+        # 1. LLM 错误重试计数（LLM 调用失败时增加，成功时重置）
+        self._retry_count = 0
+        self._last_error: Optional[str] = None
+        
+        # 2. 超时重试计数（超时检测时增加，不受 LLM 成功影响）
+        self._timeout_retry_count = 0
     
     def start(self, model: str) -> None:
         """开始任务"""
@@ -282,19 +288,33 @@ class TaskMonitor:
             return False  # 应该切换模型
     
     def reset_retry_count(self) -> None:
-        """重置重试计数（在成功后调用）"""
+        """重置 LLM 错误重试计数（在 LLM 调用成功后调用）
+        
+        注意：这只重置 LLM 错误重试计数，不影响超时重试计数。
+        超时重试是独立的，不会因为 LLM 调用成功而重置。
+        """
         self._retry_count = 0
         self._last_error = None
     
     @property
     def retry_count(self) -> int:
-        """当前重试次数"""
+        """当前 LLM 错误重试次数"""
         return self._retry_count
     
     @property
+    def timeout_retry_count(self) -> int:
+        """当前超时重试次数（独立计数器）"""
+        return self._timeout_retry_count
+    
+    @property
     def should_retry(self) -> bool:
-        """是否应该重试（而不是切换模型）"""
+        """是否应该重试 LLM 错误（而不是切换模型）"""
         return self._retry_count < self.retry_before_switch
+    
+    @property
+    def should_retry_timeout(self) -> bool:
+        """是否应该重试超时（而不是切换模型）"""
+        return self._timeout_retry_count < self.retry_before_switch
     
     @property
     def last_error(self) -> Optional[str]:
@@ -305,23 +325,30 @@ class TaskMonitor:
         """
         处理超时
         
-        注意：超时处理现在会考虑重试次数。
-        只有在重试次数用尽后才会真正切换模型。
+        使用独立的超时重试计数器（不受 LLM 成功调用影响）。
+        只有在超时重试次数用尽后才会真正切换模型。
         """
         self._phase = TaskPhase.TIMEOUT
+        
+        # 增加超时重试计数（独立于 LLM 错误重试）
+        self._timeout_retry_count += 1
         
         logger.warning(
             f"[TaskMonitor] Task timeout: {self.metrics.task_id}, "
             f"elapsed={self.elapsed_seconds:.1f}s > {self.timeout_seconds}s, "
-            f"retry_count={self._retry_count}/{self.retry_before_switch}"
+            f"timeout_retry={self._timeout_retry_count}/{self.retry_before_switch}"
         )
         
-        # 记录超时错误
-        should_retry = self.record_error(f"任务执行超过 {self.timeout_seconds} 秒")
-        
-        if not should_retry:
-            # 重试次数用尽，切换到备用模型并重置上下文
+        if self._timeout_retry_count < self.retry_before_switch:
+            # 还有重试机会，记录日志但不切换
+            logger.info(
+                f"[TaskMonitor] Timeout retry {self._timeout_retry_count}/{self.retry_before_switch}, "
+                f"continuing with current model"
+            )
+        else:
+            # 超时重试次数用尽，切换到备用模型并重置上下文
             self._timeout_triggered = True
+            self.metrics.retry_count = self._timeout_retry_count
             self.switch_model(
                 self.fallback_model, 
                 f"任务执行超过 {self.timeout_seconds} 秒，已重试 {self.retry_before_switch} 次",
@@ -354,15 +381,15 @@ class TaskMonitor:
         
         只有在以下条件都满足时才切换：
         1. 已超时
-        2. 重试次数已用尽
+        2. 超时重试次数已用尽
         3. 尚未触发切换
         """
         if self._timeout_triggered:
             return False
         if self.elapsed_seconds <= self.timeout_seconds:
             return False
-        # 超时了，但检查是否应该先重试
-        return not self.should_retry
+        # 超时了，检查超时重试次数是否用尽
+        return self._timeout_retry_count >= self.retry_before_switch
     
     @property
     def needs_context_reset(self) -> bool:

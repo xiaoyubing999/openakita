@@ -285,18 +285,8 @@ class TelegramAdapter(ChannelAdapter):
         )
         self._bot = self._app.bot
         
-        # 注册消息处理器
-        from telegram.ext import MessageHandler, filters
-        
-        self._app.add_handler(
-            MessageHandler(
-                filters.ALL & ~filters.COMMAND,
-                self._handle_message
-            )
-        )
-        
-        # 注册命令处理器
-        from telegram.ext import CommandHandler
+        # 注册命令处理器（Telegram 内置命令，优先处理）
+        from telegram.ext import MessageHandler, CommandHandler, filters
         
         self._app.add_handler(
             CommandHandler("start", self._handle_start)
@@ -306,6 +296,15 @@ class TelegramAdapter(ChannelAdapter):
         )
         self._app.add_handler(
             CommandHandler("status", self._handle_status)
+        )
+        
+        # 注册消息处理器（处理所有消息，包括系统命令如 /model）
+        # 注意：已注册的 CommandHandler 会优先匹配，其他命令和普通消息由此处理
+        self._app.add_handler(
+            MessageHandler(
+                filters.ALL,  # 接受所有消息，让 Gateway 处理系统命令
+                self._handle_message
+            )
         )
         
         # 初始化

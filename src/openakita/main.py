@@ -227,6 +227,11 @@ async def start_im_channels(agent_or_master):
             except Exception as e:
                 logger.error(f"MasterAgent handler error: {e}", exc_info=True)
                 return f"❌ 处理出错: {str(e)[:200]}"
+        
+        # 设置 Brain 到 Gateway（用于模型切换命令）
+        # MasterAgent 的 _local_agent 有 brain 属性
+        if master._local_agent:
+            _message_gateway.set_brain(master._local_agent.brain)
     else:
         # 单 Agent 模式：直接调用 Agent
         agent = agent_or_master
@@ -249,6 +254,9 @@ async def start_im_channels(agent_or_master):
         
         # 设置 Agent 的 scheduler gateway
         agent.set_scheduler_gateway(_message_gateway)
+        
+        # 设置 Brain 到 Gateway（用于模型切换命令）
+        _message_gateway.set_brain(agent.brain)
     
     _message_gateway.agent_handler = agent_handler
     
