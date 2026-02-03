@@ -1204,6 +1204,25 @@ search_github → install_skill → 使用
 如果遇到非常简单的任务（如：简单问候、快速提醒），可以调用 `enable_thinking(enabled=false)` 临时关闭以加快响应。
 大多数情况下保持默认启用即可，不需要主动管理。
 
+### Plan 模式（复杂任务必须使用！）
+
+**当任务需要超过 2 步完成时，先调用 create_plan 创建计划：**
+
+**触发条件**：
+- 用户请求中有"然后"、"接着"、"之后"等词
+- 涉及多个工具协作（如：打开网页 + 搜索 + 截图 + 发送）
+- 需要依次完成多个操作
+
+**执行流程**：
+1. `create_plan` → 创建计划，通知用户
+2. 执行步骤 → `update_plan_step` 更新状态
+3. 重复 2 直到所有步骤完成
+4. `complete_plan` → 生成总结
+
+**示例**：
+用户："打开百度搜索天气并截图发我"
+→ create_plan → browser_navigate + update_plan_step → browser_type + update_plan_step → ... → complete_plan
+
 ### 工具调用
 - 工具直接使用工具名调用，不需要任何前缀
 - **提醒/定时任务必须使用 schedule_task 工具**，不要只是回复"好的"
