@@ -205,7 +205,7 @@ class MemoryConsolidator:
         if not self.brain or len(turns) < 3:
             # 从用户消息提取任务描述
             user_messages = [t.content for t in turns if t.role == "user"]
-            task_desc = user_messages[0] if user_messages else "Unknown task"
+            task_desc = user_messages[0][:200] if user_messages else "Unknown task"
             
             return SessionSummary(
                 session_id=session_id,
@@ -217,7 +217,7 @@ class MemoryConsolidator:
         
         # 使用 LLM 生成详细摘要
         conv_text = "\n".join([
-            f"[{turn.role}]: {turn.content}"
+            f"[{turn.role}]: {turn.content[:300]}"
             for turn in turns[-30:]  # 最近30轮
         ])
         
@@ -265,7 +265,7 @@ class MemoryConsolidator:
             session_id=session_id,
             start_time=start_time,
             end_time=end_time,
-            task_description=user_messages[0] if user_messages else "Unknown",
+            task_description=user_messages[0][:200] if user_messages else "Unknown",
             outcome="completed",
         )
     

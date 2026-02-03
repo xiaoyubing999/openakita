@@ -12,11 +12,14 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Callable, Awaitable, Any
 
 from .session import Session, SessionState, SessionConfig, SessionContext
 from .user import UserManager
+
+# Session 恢复时的上下文清理阈值
+SESSION_CONTEXT_STALE_HOURS = 1  # 超过 1 小时未活跃，清理上下文
 
 logger = logging.getLogger(__name__)
 
@@ -297,19 +300,60 @@ class SessionManager:
             with open(sessions_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
+            now = datetime.now()
+            stale_threshold = now - timedelta(hours=SESSION_CONTEXT_STALE_HOURS)
+            cleaned_count = 0
+            
             for item in data:
                 try:
                     session = Session.from_dict(item)
                     # 只加载未过期的会话
                     if not session.is_expired() and session.state != SessionState.CLOSED:
+                        # 检查上下文是否过期
+                        if session.last_active < stale_threshold:
+                            # 上下文过期，清理 messages 但保留 session
+                            old_count = len(session.context.messages)
+                            session.context.clear_messages()
+                            session.context.summary = "之前的对话已归档（超过 1 小时未活跃）"
+                            cleaned_count += 1
+                            logger.info(
+                                f"Cleared stale context for session {session.session_key}: "
+                                f"{old_count} messages removed (last_active: {session.last_active})"
+                            )
+                        else:
+                            # 上下文未过期，但清理大型数据（如 base64）
+                            self._clean_large_content_in_messages(session.context.messages)
+                        
                         self._sessions[session.session_key] = session
                 except Exception as e:
                     logger.warning(f"Failed to load session: {e}")
             
-            logger.info(f"Loaded {len(self._sessions)} sessions from storage")
+            logger.info(f"Loaded {len(self._sessions)} sessions from storage (cleaned {cleaned_count} stale contexts)")
             
         except Exception as e:
             logger.error(f"Failed to load sessions: {e}")
+    
+    def _clean_large_content_in_messages(self, messages: list[dict]) -> None:
+        """
+        清理消息中的大型数据（如 base64 截图）
+        
+        这是一个安全措施，防止大型数据在 session 恢复时导致上下文爆炸
+        """
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        # 检查 tool_result 中的大型内容
+                        if block.get("type") == "tool_result":
+                            result_content = block.get("content", "")
+                            if isinstance(result_content, str) and len(result_content) > 10000:
+                                # 大型内容，检查是否是 base64 图片
+                                if "base64" in result_content.lower() or result_content.startswith("data:image"):
+                                    block["content"] = "[图片数据已清理，请重新截图]"
+                                else:
+                                    # 其他大型内容，保留前 2000 字符
+                                    block["content"] = result_content[:2000] + "\n...[内容已截断，原长度: {}]".format(len(result_content))
     
     def _save_sessions(self) -> None:
         """

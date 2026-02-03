@@ -103,7 +103,8 @@ class SkillLoader:
         """
         从目录加载所有技能
         
-        每个子目录如果包含 SKILL.md 则被视为一个技能
+        每个子目录如果包含 SKILL.md 则被视为一个技能。
+        特殊处理: 'system' 子目录会被递归扫描，用于存放系统工具 skill。
         
         Args:
             directory: 技能目录
@@ -122,15 +123,17 @@ class SkillLoader:
                 continue
             
             skill_md = item / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            
-            try:
-                skill = self.load_skill(item)
-                if skill:
-                    loaded += 1
-            except Exception as e:
-                logger.error(f"Failed to load skill from {item}: {e}")
+            if skill_md.exists():
+                # 有 SKILL.md，作为技能加载
+                try:
+                    skill = self.load_skill(item)
+                    if skill:
+                        loaded += 1
+                except Exception as e:
+                    logger.error(f"Failed to load skill from {item}: {e}")
+            elif item.name == "system":
+                # 'system' 子目录：递归加载系统工具 skill
+                loaded += self.load_from_directory(item)
         
         logger.info(f"Loaded {loaded} skills from {directory}")
         return loaded

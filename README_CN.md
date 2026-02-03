@@ -464,6 +464,7 @@ ruff check src/
 OpenAkita 站在巨人的肩膀上：
 
 - [Anthropic Claude](https://www.anthropic.com/claude) - 核心 LLM 引擎
+- [browser-use](https://github.com/browser-use/browser-use) - AI 浏览器自动化
 - [Claude Soul Document](https://gist.github.com/Richard-Weiss/efe157692991535403bd7e7fb20b6695) - 灵魂文档灵感来源
 - [Ralph Playbook](https://claytonfarr.github.io/ralph-playbook/) - Ralph Wiggum 模式哲学
 - [AGENTS.md Standard](https://agentsmd.io/) - Agent 行为规范标准

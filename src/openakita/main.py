@@ -752,6 +752,147 @@ def status():
 
 
 @app.command()
+def compile(
+    force: bool = typer.Option(False, "--force", "-f", help="强制重新编译"),
+):
+    """
+    编译 identity 文件
+    
+    将 SOUL.md, AGENT.md, USER.md 编译为精简摘要，
+    降低约 55% 的 token 消耗。
+    
+    编译产物保存在 identity/compiled/ 目录。
+    """
+    from .prompt.compiler import compile_all, check_compiled_outdated
+    
+    identity_dir = settings.identity_path
+    
+    # 检查是否需要编译
+    if not force and not check_compiled_outdated(identity_dir):
+        console.print("[yellow]编译产物已是最新，使用 --force 强制重新编译[/yellow]")
+        return
+    
+    console.print("[bold]正在编译 identity 文件...[/bold]")
+    
+    try:
+        results = compile_all(identity_dir)
+        
+        # 显示结果
+        table = Table(title="编译结果")
+        table.add_column("源文件", style="cyan")
+        table.add_column("产物", style="green")
+        table.add_column("大小", style="yellow")
+        
+        for name, path in results.items():
+            if path.exists():
+                size = len(path.read_text(encoding="utf-8"))
+                table.add_row(f"{name}.md", path.name, f"{size} 字符")
+        
+        console.print(table)
+        console.print(f"\n[green]✓[/green] 编译完成，产物保存在 {identity_dir / 'compiled'}")
+        
+    except Exception as e:
+        console.print(f"[red]编译失败: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="prompt-debug")
+def prompt_debug(
+    task: str = typer.Argument("", help="任务描述（用于记忆检索）"),
+    compiled: bool = typer.Option(True, "--compiled/--full", help="使用编译版本或全文版本"),
+):
+    """
+    显示 prompt 调试信息
+    
+    显示系统提示词的各部分 token 统计，
+    帮助调试和优化 prompt。
+    """
+    from .prompt.builder import get_prompt_debug_info
+    from .prompt.budget import estimate_tokens
+    
+    async def _debug():
+        agent = get_agent()
+        await agent.initialize()
+        
+        console.print(f"[bold]Prompt 调试信息[/bold] (任务: {task or '无'})")
+        console.print()
+        
+        if compiled:
+            # 使用编译版本
+            info = get_prompt_debug_info(
+                identity_dir=settings.identity_path,
+                tool_catalog=agent.tool_catalog,
+                skill_catalog=agent.skill_catalog,
+                mcp_catalog=agent.mcp_catalog,
+                memory_manager=agent.memory_manager,
+                task_description=task,
+            )
+            
+            # 编译产物
+            table = Table(title="编译产物 (v2)")
+            table.add_column("文件", style="cyan")
+            table.add_column("Tokens", style="green")
+            
+            for name, tokens in info["compiled_files"].items():
+                table.add_row(name, str(tokens))
+            
+            console.print(table)
+            console.print()
+            
+            # 清单
+            table = Table(title="清单")
+            table.add_column("类型", style="cyan")
+            table.add_column("Tokens", style="green")
+            
+            for name, tokens in info["catalogs"].items():
+                table.add_row(name, str(tokens))
+            
+            console.print(table)
+            console.print()
+            
+            # 记忆
+            console.print(f"记忆: {info['memory']} tokens")
+            console.print()
+            
+            # 总计
+            total = info["total"]
+            budget = info["budget"]["total"]
+            color = "green" if total <= budget else "red"
+            console.print(f"[bold]总计: [{color}]{total}[/{color}] / {budget} tokens[/bold]")
+            
+        else:
+            # 使用全文版本
+            from .core.identity import Identity
+            identity = Identity()
+            identity.load()
+            
+            full_prompt = identity.get_system_prompt()
+            full_tokens = estimate_tokens(full_prompt)
+            
+            console.print(f"全文版本: {full_tokens} tokens")
+            console.print()
+            
+            # 对比
+            info = get_prompt_debug_info(
+                identity_dir=settings.identity_path,
+                tool_catalog=agent.tool_catalog,
+                skill_catalog=agent.skill_catalog,
+                mcp_catalog=agent.mcp_catalog,
+                memory_manager=agent.memory_manager,
+                task_description=task,
+            )
+            compiled_total = info["total"]
+            
+            savings = full_tokens - compiled_total
+            savings_pct = (savings / full_tokens * 100) if full_tokens > 0 else 0
+            
+            console.print(f"编译版本: {compiled_total} tokens")
+            console.print(f"[green]节省: {savings} tokens ({savings_pct:.1f}%)[/green]")
+    
+    asyncio.run(_debug())
+
+
+@app.command()
 def serve():
     """
     启动服务模式 (无 CLI，只运行 IM 通道)
@@ -759,7 +900,21 @@ def serve():
     用于后台运行，只处理 IM 消息。
     支持单 Agent 和多 Agent 协同模式。
     """
+    import signal
+    import warnings
+    
+    # 压制 Windows asyncio 关闭时的 ResourceWarning
+    warnings.filterwarnings("ignore", category=ResourceWarning, module="asyncio")
+    
+    # 用于优雅关闭的标志
+    shutdown_event = None
+    agent_or_master = None
+    shutdown_triggered = False
+    
     async def _serve():
+        nonlocal shutdown_event, agent_or_master, shutdown_triggered
+        shutdown_event = asyncio.Event()
+        
         mode_text = "多 Agent 协同模式" if is_orchestration_enabled() else "单 Agent 模式"
         console.print(Panel(
             f"[bold]OpenAkita 服务模式[/bold]\n\n"
@@ -806,23 +961,66 @@ def serve():
         console.print()
         console.print("[bold]服务运行中...[/bold] 按 Ctrl+C 停止")
         
-        # 保持运行
+        # 保持运行，使用 Event 来优雅关闭
         try:
-            while True:
-                await asyncio.sleep(1)
+            await shutdown_event.wait()
         except asyncio.CancelledError:
             pass
         finally:
-            console.print("\n[yellow]正在停止服务...[/yellow]")
-            await stop_im_channels()
-            if is_orchestration_enabled():
-                await agent_or_master.stop()
-            console.print("[green]✓[/green] 服务已停止")
+            if not shutdown_triggered:
+                shutdown_triggered = True
+                console.print("\n[yellow]正在停止服务...[/yellow]")
+                try:
+                    # 使用 asyncio.shield 保护关闭操作
+                    await asyncio.wait_for(stop_im_channels(), timeout=5.0)
+                    if is_orchestration_enabled() and agent_or_master:
+                        await asyncio.wait_for(agent_or_master.stop(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Shutdown timeout, forcing exit")
+                except Exception as e:
+                    # 忽略停止过程中的异常（常见于 Windows asyncio）
+                    logger.debug(f"Exception during shutdown (ignored): {e}")
+                console.print("[green]✓[/green] 服务已停止")
+    
+    def signal_handler(signum, frame):
+        """信号处理器，用于优雅关闭"""
+        nonlocal shutdown_triggered
+        if shutdown_event and not shutdown_triggered:
+            shutdown_triggered = True
+            console.print("\n[yellow]收到停止信号，正在优雅关闭...[/yellow]")
+            # 使用 call_soon_threadsafe 确保线程安全
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(shutdown_event.set)
+            except RuntimeError:
+                pass
+    
+    # 设置信号处理
+    if sys.platform == "win32":
+        # Windows 上使用 signal.signal
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
     
     try:
         asyncio.run(_serve())
     except KeyboardInterrupt:
-        console.print("\n[yellow]服务已停止[/yellow]")
+        if not shutdown_triggered:
+            console.print("\n[yellow]服务已停止[/yellow]")
+    except (ConnectionResetError, OSError) as e:
+        # 忽略 Windows asyncio 关闭时的已知问题
+        # WinError 995: 由于线程退出或应用程序请求，已中止 I/O 操作
+        if "995" in str(e):
+            if not shutdown_triggered:
+                console.print("\n[yellow]服务已停止[/yellow]")
+        else:
+            raise
+    except Exception as e:
+        # 捕获其他异常，检查是否是 InvalidStateError
+        if "InvalidState" in str(type(e).__name__) or "invalid state" in str(e).lower():
+            if not shutdown_triggered:
+                console.print("\n[yellow]服务已停止[/yellow]")
+        else:
+            raise
 
 
 if __name__ == "__main__":

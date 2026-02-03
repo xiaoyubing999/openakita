@@ -67,9 +67,10 @@ data/*
 identity/*.md
 !identity/*.md.example
 
-# Downloaded skills (keep structure)
+# External/downloaded skills (keep structure)
 skills/*
 !skills/.gitkeep
+!skills/system/
 
 # Plugins (keep structure)
 plugins/*

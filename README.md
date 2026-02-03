@@ -483,6 +483,7 @@ mypy src/
 ## Acknowledgments
 
 - [Anthropic Claude](https://www.anthropic.com/claude) — LLM Engine
+- [browser-use](https://github.com/browser-use/browser-use) — AI browser automation
 - [AGENTS.md Standard](https://agentsmd.io/) — Agent behavior specification
 - [ZeroMQ](https://zeromq.org/) — Inter-process communication
 
