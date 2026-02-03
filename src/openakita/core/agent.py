@@ -2100,6 +2100,12 @@ search_github → install_skill → 使用
         Returns:
             True 如果任务已完成，False 如果需要继续执行
         """
+        # === Quick completion check: if delivery tools executed, task is done ===
+        COMPLETION_TOOLS = {"send_to_chat", "send_file", "complete_plan"}
+        if executed_tools and any(tool in COMPLETION_TOOLS for tool in executed_tools):
+            logger.info(f"[TaskVerify] Completion tool executed: {[t for t in executed_tools if t in COMPLETION_TOOLS]}, marking as completed")
+            return True
+        
         # === Plan 步骤检查：如果有活跃 Plan 且有未完成步骤，强制继续执行 ===
         from ..tools.handlers.plan import has_active_plan, get_plan_handler_for_session
         
@@ -2115,12 +2121,13 @@ search_github → install_skill → 使用
                     logger.info(f"[TaskVerify] Plan has {len(pending)} pending steps: {pending_ids}, forcing continue")
                     return False  # 还有未完成步骤，强制继续执行
                 
-                # 所有步骤完成但 Plan 未结束（未调用 complete_plan）
+                # 所有步骤完成但 Plan 未关闭 - 宽松处理，继续 LLM 验证
+                # (不再强制返回 False，因为实际任务可能已完成)
                 if handler.current_plan.get("status") != "completed":
-                    logger.info("[TaskVerify] All steps done but plan not completed, forcing continue")
-                    return False
+                    logger.info("[TaskVerify] All plan steps done but plan not formally completed, proceeding to LLM verification")
+                    # 继续执行 LLM 验证，不强制返回 False
         
-        # 完全依赖 LLM 进行判断，不使用关键词匹配
+        # 依赖 LLM 进行判断
         verify_prompt = f"""请判断以下任务是否已经**真正完成**用户的意图。
 
 ## 用户请求
@@ -2133,10 +2140,12 @@ search_github → install_skill → 使用
 {', '.join(executed_tools) if executed_tools else '无'}
 
 ## 判断标准
-- 如果用户要求"下载文件并发送"，必须同时完成下载和发送才算完成
-- 如果用户要求"搜索并告诉我结果"，必须返回搜索结果才算完成
-- 如果响应只是说"现在开始..."、"让我..."、"接下来..."，说明任务还在进行中
-- 如果响应包含明确的结果（数据、文件路径、操作确认），可能已完成
+- 如果已执行 send_to_chat 工具，说明内容/文件已发送给用户，发送任务完成
+- 如果已执行 write_file 工具，说明文件已保存，保存任务完成  
+- 如果已执行 browser_navigate/browser_click 等浏览器工具，说明浏览器操作已执行
+- 工具执行成功即表示该操作完成，不要求响应文本中包含文件内容
+- 如果响应只是说"现在开始..."、"让我..."且没有工具执行，说明任务还在进行中
+- 如果响应包含明确的操作确认（如"已完成"、"已发送"、"已保存"），任务完成
 
 ## 回答要求
 请用以下格式回答：
@@ -2214,6 +2223,13 @@ NEXT: 建议的下一步（如有）"""
         no_tool_call_count = 0
         max_no_tool_retries = 1  # 建议22: 降低强制追问次数  # 最多追问 2 次
         tools_executed_in_task = False  # 本轮任务是否已执行过工具
+        
+        # TaskVerify incomplete counter (prevent infinite loop)
+        verify_incomplete_count = 0
+        max_verify_retries = 3
+        
+        # Track executed tool names for task completion verification
+        executed_tool_names: list[str] = []
         
         for iteration in range(max_iterations):
             # 任务监控：开始迭代
@@ -2333,14 +2349,18 @@ NEXT: 建议的下一步（如有）"""
                         is_completed = await self._verify_task_completion(
                             user_request=self._get_last_user_request(messages),
                             assistant_response=cleaned_text,
-                            executed_tools=executed_tool_names if 'executed_tool_names' in dir() else [],
+                            executed_tools=executed_tool_names,
                         )
                         
                         if is_completed:
                             logger.info("[ForceToolCall] Skipped - task verified as completed")
                             return cleaned_text
                         else:
-                            logger.info("[ForceToolCall] Task not completed, continuing execution...")
+                            verify_incomplete_count += 1
+                            if verify_incomplete_count >= max_verify_retries:
+                                logger.warning(f"[ForceToolCall] TaskVerify returned incomplete {verify_incomplete_count} times, forcing completion")
+                                return cleaned_text
+                            logger.info(f"[ForceToolCall] Task not completed (attempt {verify_incomplete_count}/{max_verify_retries}), continuing...")
                             # 任务未完成，追加提示让 LLM 继续
                             working_messages.append({
                                 "role": "assistant",
@@ -2463,9 +2483,7 @@ NEXT: 建议的下一步（如有）"""
                     })
                     tools_executed_in_task = True
                     # 记录已执行的工具名称（用于任务完成度复核）
-                    if 'executed_tool_names' not in dir():
-                        executed_tool_names = []
-                    executed_tool_names.append(tc["name"])  # 标记本轮已执行工具
+                    executed_tool_names.append(tc["name"])
                     # 任务监控：结束工具调用（成功）
                     if task_monitor:
                         task_monitor.end_tool_call(str(result) if result else "", success=True)
