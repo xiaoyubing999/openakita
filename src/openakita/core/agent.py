@@ -61,6 +61,7 @@ from ..tools.handlers.system import create_handler as create_system_handler
 from ..tools.handlers.im_channel import create_handler as create_im_channel_handler
 from ..tools.handlers.skills import create_handler as create_skills_handler
 from ..tools.handlers.desktop import create_handler as create_desktop_handler
+from ..tools.handlers.plan import create_plan_handler
 
 # Windows Desktop Automation (Windows only)
 import sys
@@ -446,6 +447,13 @@ class Agent:
             "profile",
             create_profile_handler(self),
             ["get_user_profile", "update_user_profile", "skip_profile_question"]
+        )
+        
+        # Plan 模式
+        self.handler_registry.register(
+            "plan",
+            create_plan_handler(self),
+            ["create_plan", "update_plan_step", "get_plan_status", "complete_plan"]
         )
         
         # 系统工具

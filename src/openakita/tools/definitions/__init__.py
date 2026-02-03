@@ -17,6 +17,7 @@
 - profile.py      # User Profile 工具（3 个）
 - system.py       # System 工具（3 个）
 - mcp.py          # MCP 工具（3 个）
+- plan.py         # Plan 模式工具（4 个）
 """
 
 # 基础模块
@@ -46,6 +47,7 @@ from .im_channel import IM_CHANNEL_TOOLS
 from .profile import PROFILE_TOOLS
 from .system import SYSTEM_TOOLS
 from .mcp import MCP_TOOLS
+from .plan import PLAN_TOOLS
 
 # 合并所有工具定义
 BASE_TOOLS = (
@@ -57,7 +59,8 @@ BASE_TOOLS = (
     IM_CHANNEL_TOOLS +
     SYSTEM_TOOLS +
     PROFILE_TOOLS +
-    MCP_TOOLS
+    MCP_TOOLS +
+    PLAN_TOOLS
 )
 
 __all__ = [
@@ -86,4 +89,5 @@ __all__ = [
     "PROFILE_TOOLS",
     "SYSTEM_TOOLS",
     "MCP_TOOLS",
+    "PLAN_TOOLS",
 ]
