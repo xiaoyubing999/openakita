@@ -95,10 +95,84 @@ Through **Multi-Agent architecture** for efficient parallelism:
 
 | Feature | Description |
 |---------|-------------|
+| **Plan Mode** | Intelligent multi-step task planning and execution |
 | **Skill System** | Extensible skill library, supports customization |
 | **MCP Integration** | Connect browsers, databases, external services |
 | **Scheduled Tasks** | Set reminders, periodic tasks |
 | **User Profile** | Learn your preferences, personalized service |
+
+### Plan Mode (Multi-Step Task Management)
+
+For complex tasks requiring multiple steps, OpenAkita automatically activates **Plan Mode** to ensure reliable execution:
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Plan Mode                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│   User Request                                               │
+│        ↓                                                     │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  Multi-Step Detection                                │   │
+│   │  • 5+ action words (complex task)                    │   │
+│   │  • 3+ actions + connectors ("then", "after")         │   │
+│   │  • Compound task type                                │   │
+│   └─────────────────────────────────────────────────────┘   │
+│        ↓                                                     │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  create_plan → Execute Steps → update_plan_step     │   │
+│   │       ↓              ↓                ↓             │   │
+│   │  Plan Created   Tool Calls    Progress Tracked      │   │
+│   │       ↓              ↓                ↓             │   │
+│   │  User Notified  Real-time     Status Updates        │   │
+│   └─────────────────────────────────────────────────────┘   │
+│        ↓                                                     │
+│   complete_plan → Summary Report                             │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Auto Detection** | Automatically identifies multi-step tasks |
+| **Plan First** | Forces plan creation before execution |
+| **Progress Tracking** | Real-time status updates for each step |
+| **User Notification** | Sends progress to IM channels |
+| **Persistent Plans** | Saves plans as Markdown files |
+| **Step Dependencies** | Supports step dependency chains |
+
+#### Example
+
+```
+User: "Open Baidu, search for weather, and take a screenshot"
+
+📋 Task Plan: Search weather on Baidu and screenshot
+├─ 1. Launch browser and navigate to Baidu
+├─ 2. Enter search keyword
+├─ 3. Click search button
+└─ 4. Take screenshot and send
+
+Execution:
+✅ [1/4] Launch browser - Done
+✅ [2/4] Enter keyword - Done  
+✅ [3/4] Click search - Done
+✅ [4/4] Screenshot - Done
+
+🎉 Task completed! 4/4 steps successful.
+```
+
+#### Plan Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_plan` | Create execution plan with steps |
+| `update_plan_step` | Update step status (pending/in_progress/completed/failed) |
+| `get_plan_status` | Get current plan progress |
+| `complete_plan` | Mark plan as completed, generate summary |
 
 ### Self-Maintenance System
 
