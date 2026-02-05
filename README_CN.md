@@ -535,13 +535,14 @@ ruff check src/
 <table>
   <tr>
     <td align="center">
-      <img src="docs/assets/wecaht_group.jpg" width="200" alt="微信群二维码" /><br/>
+      <img src="docs/assets/wechat_group.jpg" width="200" alt="微信群二维码" /><br/>
       <b>微信交流群</b><br/>
       <sub>扫码加入中文社区</sub>
     </td>
     <td>
       <b>💬 微信群</b> - 中文用户即时交流<br/><br/>
       <b>🎮 Discord</b> - <a href="https://discord.gg/openakita">加入 Discord</a>（即将开放）<br/><br/>
+      <b>🐦 X (Twitter)</b> - <a href="https://x.com/openakita">@openakita</a><br/><br/>
       <b>📧 邮箱</b> - <a href="mailto:zacon365@gmail.com">zacon365@gmail.com</a>
     </td>
   </tr>
