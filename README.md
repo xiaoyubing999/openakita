@@ -16,7 +16,7 @@
     <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version" />
   </a>
   <a href="https://github.com/openakita/openakita/releases">
-    <img src="https://img.shields.io/badge/version-1.0.0-green.svg" alt="Version" />
+    <img src="https://img.shields.io/github/v/release/openakita/openakita?color=green" alt="Version" />
   </a>
 </p>
 

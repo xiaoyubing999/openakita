@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-02-05
+
+### Added
+- **Feishu (飞书) Full Support** - Text, voice, image, and file messages fully tested
+- **Plan Mode Documentation** - Comprehensive guide for multi-step task management
+- **Community Section** - WeChat group, Discord, X (Twitter) contact info
+
+### Changed
+- **Version Management** - Unified version source from `pyproject.toml`
+  - `__init__.py` now reads version dynamically
+  - README badge auto-syncs with GitHub releases
+- **README Enhancements** - Added Plan Mode workflow diagrams and examples
+
+### Fixed
+- WeChat group QR code image path typo
+
 ## [1.2.0] - 2026-02-02
 
 ### Added
