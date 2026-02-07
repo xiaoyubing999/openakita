@@ -113,13 +113,14 @@ jobs:
         working-directory: apps/setup-center
         run: npm ci
 
-      - name: Build and upload Tauri bundles
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Tauri bundles
+        working-directory: apps/setup-center
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload Setup Center artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          projectPath: apps/setup-center
-          releaseId: ${{ needs.python_release.outputs.release_id }}
-          tagName: ${{ github.ref_name }}
-          releaseDraft: false
-          args: ${{ matrix.args }}
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: false
+          files: |
+            apps/setup-center/src-tauri/target/release/bundle/**/*
