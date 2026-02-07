@@ -1,6 +1,6 @@
 [project]
 name = "openakita"
-version = "1.2.2"
+version = "1.2.3"
 description = "全能自进化AI Agent - 基于Ralph Wiggum模式，永不放弃"
 readme = "README.md"
 license = { text = "MIT" }
@@ -90,14 +90,23 @@ browser = [
 windows = [
     "mss>=9.0.0",
     "pyautogui>=0.9.54",
-    "pywinauto>=0.6.8",
+    "pywinauto>=0.6.8; platform_system == 'Windows'",
     "pyperclip>=1.8.2",
     "psutil>=5.9.0",
 ]
 
 # 全部可选依赖
 all = [
-    "openakita[feishu,whisper,browser,windows]",
+    # 注意：不要让项目“依赖自己”。这里展开成所有 extra 的合集。
+    "lark-oapi>=1.2.0",
+    "openai-whisper>=20231117",
+    "browser-use>=0.11.8",
+    "langchain-openai>=1.0.0",
+    "mss>=9.0.0",
+    "pyautogui>=0.9.54",
+    "pywinauto>=0.6.8; platform_system == 'Windows'",
+    "pyperclip>=1.8.2",
+    "psutil>=5.9.0",
 ]
 
 # 开发依赖
@@ -118,6 +127,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openakita"]
+
+# 把仓库根目录的系统技能一并打进 wheel，保证 `pip install openakita` 后可用。
+# 这些文件会被放到 site-packages/openakita/builtin_skills/system/...
+force-include = { "skills/system" = "openakita/builtin_skills/system" }
 
 [tool.ruff]
 line-length = 100

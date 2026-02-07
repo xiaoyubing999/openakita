@@ -15,9 +15,26 @@ from .registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
 
+def _builtin_skills_root() -> Path | None:
+    """
+    返回内置技能目录（随 wheel 分发）。
+
+    期望结构：
+    openakita/
+      builtin_skills/
+        system/<tool-name>/SKILL.md
+    """
+    try:
+        root = Path(__file__).resolve().parents[1] / "builtin_skills"
+        return root if root.exists() and root.is_dir() else None
+    except Exception:
+        return None
+
 
 # 标准技能目录 (按优先级排序)
 SKILL_DIRECTORIES = [
+    # 内置系统技能（随 pip 包分发，优先级最高）
+    "__builtin__",
     # 项目级别
     ".cursor/skills",
     ".claude/skills",
@@ -69,6 +86,13 @@ class SkillLoader:
         directories = []
 
         for skill_dir in SKILL_DIRECTORIES:
+            if skill_dir == "__builtin__":
+                builtin = _builtin_skills_root()
+                if builtin is not None:
+                    directories.append(builtin)
+                    logger.debug(f"Found builtin skill directory: {builtin}")
+                continue
+
             if skill_dir.startswith("~"):
                 path = Path(skill_dir).expanduser()
             else:

@@ -77,7 +77,7 @@ pip install openakita[feishu]     # + 飞书支持
 pip install openakita[whisper]    # + 语音识别
 pip install openakita[browser]    # + 浏览器 AI 代理
 pip install openakita[windows]    # + Windows 桌面自动化
-pip install openakita[all]        # 安装所有可选功能
+pip install openakita[all]        # 安装所有可选功能（跨平台安全，Windows-only 依赖会自动跳过）
 
 # 4. 运行初始化向导
 openakita init
@@ -88,7 +88,43 @@ openakita
 
 ### 方式二：一键部署脚本
 
-自动安装 Python、Git、依赖等全部环境：
+如果你希望“零手动操作”快速跑起来，有两种脚本路径：
+
+- **一键安装（PyPI）**：适合只想装好并运行（推荐）
+- **一键部署（源码）**：适合需要从源码开发/修改
+
+#### 方式二-A：一键安装（PyPI，推荐）
+
+**Linux/macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+```
+
+如需安装 extras / 使用镜像，建议先下载脚本再带参数运行：
+
+```bash
+curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh
+bash quickstart.sh --extras all --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
+.\quickstart.ps1 -Extras all -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+> 说明：脚本会把工作目录默认放在 `~/.openakita/app`（Windows：`%USERPROFILE%\.openakita\app`），
+> 并创建独立虚拟环境 `~/.openakita/venv`，避免污染系统 Python。
+
+#### 方式二-B：一键部署（源码）
+
+自动安装 Python、Git、依赖等全部环境（需要先 `git clone` 仓库）：
 
 **Linux/macOS:**
 ```bash

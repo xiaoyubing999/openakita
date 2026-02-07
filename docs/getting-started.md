@@ -12,30 +12,63 @@ Before you begin, ensure you have:
 
 ## Installation
 
-### Option 1: Install from Source (Recommended)
+### Option 1: Install from PyPI (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/openakita/openakita.git
-cd openakita
-
 # Create and activate virtual environment
 python -m venv venv
+source venv/bin/activate  # Linux/macOS
+# or .\venv\Scripts\activate  # Windows
 
-# On Linux/macOS:
-source venv/bin/activate
+# Install OpenAkita (core)
+pip install openakita
 
-# On Windows:
-venv\Scripts\activate
+# Optional features
+pip install "openakita[all]"      # install all optional features
+# pip install "openakita[browser]"  # browser agent
+# pip install "openakita[windows]"  # Windows desktop automation
+# pip install "openakita[whisper]"  # voice recognition
+# pip install "openakita[feishu]"   # Feishu (Lark)
 
-# Install the package
-pip install -e .
+# Run setup wizard
+openakita init
 ```
 
-### Option 2: Install from PyPI (Coming Soon)
+### Option 2: One-click install script (PyPI)
+
+Linux/macOS:
 
 ```bash
-pip install openakita
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+```
+
+To install extras / use a mirror, download and run with parameters (recommended):
+
+```bash
+curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh
+bash quickstart.sh --extras all --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
+.\quickstart.ps1 -Extras all -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+### Option 3: Install from Source (Development)
+
+```bash
+git clone https://github.com/openakita/openakita.git
+cd openakita
+python -m venv venv
+source venv/bin/activate  # Windows: .\venv\Scripts\activate
+pip install -e ".[all,dev]"
+openakita init
 ```
 
 ## Configuration

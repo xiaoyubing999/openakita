@@ -1,15 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# OpenAkita Quick Start Script
-# 
+# OpenAkita One-Click Install Script (PyPI)
+#
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
 #
-# Or download and run:
-#   chmod +x quickstart.sh && ./quickstart.sh
+# Recommended (download then run with parameters):
+#   curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh
+#   bash quickstart.sh --extras all --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 #
 
-set -e
+set -euo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -18,207 +19,203 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-echo -e "${CYAN}"
-cat << "EOF"
-   ____                      _    _    _ _        
-  / __ \                    / \  | | _(_) |_ __ _ 
- | |  | |_ __   ___ _ __   / _ \ | |/ / | __/ _` |
- | |  | | '_ \ / _ \ '_ \ / ___ \|   <| | || (_| |
- | |__| | |_) |  __/ | | /_/   \_\_|\_\_|\__\__,_|
-  \____/| .__/ \___|_| |_|                        
-        |_|    Your Loyal AI Companion 🐕
+OPENAKITA_ROOT_DEFAULT="${OPENAKITA_ROOT:-$HOME/.openakita}"
+OPENAKITA_APP_DIR_DEFAULT="${OPENAKITA_APP_DIR:-$OPENAKITA_ROOT_DEFAULT/app}"
+OPENAKITA_VENV_DIR_DEFAULT="${OPENAKITA_VENV_DIR:-$OPENAKITA_ROOT_DEFAULT/venv}"
+
+EXTRAS="${OPENAKITA_EXTRAS:-}"
+INDEX_URL="${OPENAKITA_INDEX_URL:-}"
+TORCH_MODE="${OPENAKITA_TORCH_MODE:-cpu}" # cpu|skip
+INSTALL_PLAYWRIGHT="${OPENAKITA_INSTALL_PLAYWRIGHT:-1}" # 1|0
+RUN_INIT="${OPENAKITA_RUN_INIT:-1}" # 1|0
+INSTALL_WRAPPER="${OPENAKITA_INSTALL_WRAPPER:-1}" # 1|0
+YES="${OPENAKITA_YES:-0}" # 1|0
+FORCE_WRAPPER="${OPENAKITA_FORCE_WRAPPER:-0}" # 1|0
+
+usage() {
+  cat <<'EOF'
+OpenAkita one-click install (PyPI).
+
+Options:
+  --dir <path>            App working directory (default: ~/.openakita/app)
+  --venv <path>           Virtualenv directory (default: ~/.openakita/venv)
+  --extras <list>         Extras to install, e.g. "all" or "browser,windows"
+  --index-url <url>       pip index-url (mirror)
+  --torch <cpu|skip>      Pre-install torch (CPU-only) or skip (default: cpu)
+  --no-playwright         Skip installing Playwright browsers
+  --no-init               Skip running `openakita init`
+  --no-wrapper            Skip creating ~/.local/bin/openakita wrapper
+  --force-wrapper         Overwrite existing wrapper if present
+  -y, --yes               Non-interactive defaults
+  -h, --help              Show this help
+
+Environment variables (optional):
+  OPENAKITA_ROOT, OPENAKITA_APP_DIR, OPENAKITA_VENV_DIR, OPENAKITA_EXTRAS,
+  OPENAKITA_INDEX_URL, OPENAKITA_TORCH_MODE, OPENAKITA_INSTALL_PLAYWRIGHT,
+  OPENAKITA_RUN_INIT, OPENAKITA_INSTALL_WRAPPER, OPENAKITA_YES, OPENAKITA_FORCE_WRAPPER
 EOF
-echo -e "${NC}"
-
-echo -e "${CYAN}=== OpenAkita Quick Start ===${NC}\n"
-
-# Check Python version
-echo -e "${YELLOW}Checking Python version...${NC}"
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-else
-    echo -e "${RED}Error: Python is not installed.${NC}"
-    echo "Please install Python 3.11 or later from https://www.python.org"
-    exit 1
-fi
-
-PYTHON_VERSION=$($PYTHON_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-PYTHON_MAJOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.major)")
-PYTHON_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
-
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]); then
-    echo -e "${RED}Error: Python 3.11+ is required. Found: $PYTHON_VERSION${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Python $PYTHON_VERSION${NC}\n"
-
-# Function to install venv package for Debian/Ubuntu
-install_venv_package() {
-    if command -v apt &> /dev/null; then
-        echo -e "${YELLOW}Installing python${PYTHON_VERSION}-venv...${NC}"
-        sudo apt update
-        # Try version-specific package first, then generic
-        if sudo apt install -y python${PYTHON_VERSION}-venv 2>/dev/null; then
-            return 0
-        elif sudo apt install -y python3-venv 2>/dev/null; then
-            return 0
-        fi
-    elif command -v dnf &> /dev/null; then
-        sudo dnf install -y python3-pip python3-devel
-        return 0
-    elif command -v yum &> /dev/null; then
-        sudo yum install -y python3-pip python3-devel
-        return 0
-    fi
-    return 1
 }
 
-# Create virtual environment (with auto-install of venv package if needed)
+APP_DIR="$OPENAKITA_APP_DIR_DEFAULT"
+VENV_DIR="$OPENAKITA_VENV_DIR_DEFAULT"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir) APP_DIR="${2:-}"; shift 2 ;;
+    --venv) VENV_DIR="${2:-}"; shift 2 ;;
+    --extras) EXTRAS="${2:-}"; shift 2 ;;
+    --index-url) INDEX_URL="${2:-}"; shift 2 ;;
+    --torch) TORCH_MODE="${2:-}"; shift 2 ;;
+    --no-playwright) INSTALL_PLAYWRIGHT="0"; shift ;;
+    --no-init) RUN_INIT="0"; shift ;;
+    --no-wrapper) INSTALL_WRAPPER="0"; shift ;;
+    --force-wrapper) FORCE_WRAPPER="1"; shift ;;
+    -y|--yes) YES="1"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo -e "${RED}Unknown option: $1${NC}"; usage; exit 2 ;;
+  esac
+done
+
+echo -e "${CYAN}=== OpenAkita One-Click Install ===${NC}"
+echo -e "${CYAN}App dir:${NC} $APP_DIR"
+echo -e "${CYAN}Venv dir:${NC} $VENV_DIR"
+if [[ -n "$EXTRAS" ]]; then
+  echo -e "${CYAN}Extras:${NC} $EXTRAS"
+fi
+if [[ -n "$INDEX_URL" ]]; then
+  echo -e "${CYAN}pip index-url:${NC} $INDEX_URL"
+fi
+echo ""
+
+find_python() {
+  if command -v python3 >/dev/null 2>&1; then echo python3; return 0; fi
+  if command -v python >/dev/null 2>&1; then echo python; return 0; fi
+  return 1
+}
+
+PYTHON_CMD="$(find_python || true)"
+if [[ -z "$PYTHON_CMD" ]]; then
+  echo -e "${RED}Error: Python is not installed.${NC}"
+  echo "Please install Python 3.11+ from https://www.python.org"
+  exit 1
+fi
+
+PY_MAJOR="$("$PYTHON_CMD" -c "import sys; print(sys.version_info.major)")"
+PY_MINOR="$("$PYTHON_CMD" -c "import sys; print(sys.version_info.minor)")"
+PY_VER="$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")"
+if [[ "$PY_MAJOR" -ne 3 || "$PY_MINOR" -lt 11 ]]; then
+  echo -e "${RED}Error: Python 3.11+ required. Found: $PY_VER${NC}"
+  exit 1
+fi
+echo -e "${GREEN}✓ Python $PY_VER ($PYTHON_CMD)${NC}"
+
+mkdir -p "$APP_DIR"
+mkdir -p "$(dirname "$VENV_DIR")"
+
 echo -e "${YELLOW}Creating virtual environment...${NC}"
+if [[ -d "$VENV_DIR" && ! -f "$VENV_DIR/bin/activate" ]]; then
+  echo -e "${YELLOW}Found incomplete venv, recreating...${NC}"
+  rm -rf "$VENV_DIR"
+fi
+if [[ ! -d "$VENV_DIR" ]]; then
+  "$PYTHON_CMD" -m venv "$VENV_DIR"
+fi
+echo -e "${GREEN}✓ venv ready${NC}"
 
-# Check if venv exists AND is valid (has activate script)
-if [ -d ".venv" ] && [ ! -f ".venv/bin/activate" ]; then
-    echo -e "${YELLOW}Found incomplete venv, removing and recreating...${NC}"
-    rm -rf .venv
+# shellcheck disable=SC1090
+source "$VENV_DIR/bin/activate"
+
+PIP_INSTALL_ARGS=()
+if [[ -n "$INDEX_URL" ]]; then
+  PIP_INSTALL_ARGS+=( -i "$INDEX_URL" )
 fi
 
-if [ ! -d ".venv" ]; then
-    # Try to create venv, install package if it fails
-    if ! $PYTHON_CMD -m venv .venv 2>/dev/null; then
-        echo -e "${YELLOW}venv creation failed. Installing required packages...${NC}"
-        if install_venv_package; then
-            # Retry venv creation after installing package
-            if ! $PYTHON_CMD -m venv .venv; then
-                echo -e "${RED}Error: Failed to create virtual environment.${NC}"
-                echo "Please install python${PYTHON_VERSION}-venv manually:"
-                echo "  sudo apt install python${PYTHON_VERSION}-venv"
-                exit 1
-            fi
-        else
-            echo -e "${RED}Error: Cannot install venv package automatically.${NC}"
-            echo "Please install python${PYTHON_VERSION}-venv manually for your distribution."
-            exit 1
-        fi
-    fi
-    echo -e "${GREEN}✓ Virtual environment created${NC}"
+echo -e "${YELLOW}Upgrading pip...${NC}"
+python -m pip install -U pip setuptools wheel "${PIP_INSTALL_ARGS[@]}" >/dev/null
+echo -e "${GREEN}✓ pip ready${NC}"
+
+if [[ "$TORCH_MODE" == "cpu" ]]; then
+  echo -e "${YELLOW}Installing PyTorch (CPU-only)...${NC}"
+  python -m pip install -U torch --index-url https://download.pytorch.org/whl/cpu >/dev/null
+  echo -e "${GREEN}✓ torch (CPU) installed${NC}"
+elif [[ "$TORCH_MODE" == "skip" ]]; then
+  echo -e "${YELLOW}Skipping torch pre-install${NC}"
 else
-    echo -e "${GREEN}✓ Virtual environment already exists${NC}"
+  echo -e "${RED}Invalid --torch value: $TORCH_MODE (expected cpu|skip)${NC}"
+  exit 2
 fi
 
-# Activate virtual environment
-echo -e "${YELLOW}Activating virtual environment...${NC}"
-source .venv/bin/activate
-echo -e "${GREEN}✓ Virtual environment activated${NC}\n"
+PKG="openakita"
+if [[ -n "$EXTRAS" ]]; then
+  PKG="openakita[$EXTRAS]"
+fi
 
-# Check pip inside venv (venv should include pip, but may need ensurepip)
-echo -e "${YELLOW}Checking pip in virtual environment...${NC}"
-if ! python -m pip --version &> /dev/null; then
-    echo -e "${YELLOW}pip not found in venv. Installing pip...${NC}"
-    
-    # Try ensurepip first
-    if python -m ensurepip --upgrade &> /dev/null; then
-        echo -e "${GREEN}✓ pip installed via ensurepip${NC}"
+echo -e "${YELLOW}Installing $PKG ...${NC}"
+python -m pip install -U "$PKG" "${PIP_INSTALL_ARGS[@]}"
+echo -e "${GREEN}✓ OpenAkita installed${NC}"
+
+if [[ "$INSTALL_PLAYWRIGHT" == "1" ]]; then
+  echo -e "${YELLOW}Installing Playwright browsers (optional)...${NC}"
+  python -m playwright install chromium >/dev/null 2>&1 || true
+  # Linux deps (best-effort)
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -n true >/dev/null 2>&1 && sudo python -m playwright install-deps chromium >/dev/null 2>&1 || true
+  fi
+  echo -e "${GREEN}✓ Playwright step finished${NC}"
+fi
+
+if [[ "$RUN_INIT" == "1" ]]; then
+  echo -e "${YELLOW}Running setup wizard (openakita init)...${NC}"
+  pushd "$APP_DIR" >/dev/null
+  if [[ -t 0 ]]; then
+    openakita init
+  else
+    # When running via pipe (curl | bash), stdin is not a tty.
+    if [[ -e /dev/tty ]]; then
+      exec < /dev/tty
+      openakita init
     else
-        # Fallback to get-pip.py (safe inside venv)
-        echo -e "${YELLOW}Downloading get-pip.py...${NC}"
-        if command -v curl &> /dev/null; then
-            curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-        elif command -v wget &> /dev/null; then
-            wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py
-        else
-            echo -e "${RED}Error: Neither curl nor wget is available to download pip.${NC}"
-            exit 1
-        fi
-        
-        python /tmp/get-pip.py
-        rm -f /tmp/get-pip.py
-        
-        if ! python -m pip --version &> /dev/null; then
-            echo -e "${RED}Error: Failed to install pip in virtual environment.${NC}"
-            exit 1
-        fi
-        echo -e "${GREEN}✓ pip installed via get-pip.py${NC}"
+      echo -e "${YELLOW}No TTY available; skipping init. Run later:${NC}"
+      echo "  cd \"$APP_DIR\" && source \"$VENV_DIR/bin/activate\" && openakita init"
     fi
-fi
-echo -e "${GREEN}✓ pip is available${NC}\n"
-
-# Install OpenAkita
-echo -e "${YELLOW}Installing OpenAkita...${NC}"
-pip install --upgrade pip > /dev/null 2>&1
-
-# Install CPU-only PyTorch first (saves ~2GB disk space)
-echo -e "${YELLOW}Installing PyTorch (CPU-only)...${NC}"
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-echo -e "${GREEN}✓ PyTorch (CPU) installed${NC}"
-
-pip install openakita
-echo -e "${GREEN}✓ OpenAkita installed${NC}\n"
-
-# Install Playwright browsers (for web tools)
-echo -e "${YELLOW}Installing Playwright browsers...${NC}"
-playwright install chromium > /dev/null 2>&1 || true
-echo -e "${GREEN}✓ Playwright ready${NC}\n"
-
-echo -e "${GREEN}=== Installation Complete ===${NC}\n"
-
-# Run setup wizard (redirect stdin from /dev/tty for pipe execution)
-echo -e "${CYAN}Starting setup wizard...${NC}\n"
-if [ -t 0 ]; then
-    # Running interactively
-    openakita init
-else
-    # Running via pipe (curl | bash), need to redirect stdin
-    exec < /dev/tty
-    openakita init
+  fi
+  popd >/dev/null
 fi
 
-# Create global command wrapper
-echo -e "${YELLOW}Setting up global command...${NC}"
-WRAPPER_SCRIPT="/usr/local/bin/openakita"
-VENV_PATH="$HOME/.venv"
+if [[ "$INSTALL_WRAPPER" == "1" ]]; then
+  WRAPPER_DIR="$HOME/.local/bin"
+  WRAPPER_PATH="$WRAPPER_DIR/openakita"
+  mkdir -p "$WRAPPER_DIR"
 
-# Create wrapper script
-cat > /tmp/openakita-wrapper << EOF
-#!/bin/bash
-# OpenAkita global command wrapper
-# Auto-activates virtual environment and runs openakita
-
-VENV_PATH="$VENV_PATH"
-
-if [ -f "\$VENV_PATH/bin/activate" ]; then
-    source "\$VENV_PATH/bin/activate"
-    exec openakita "\$@"
-else
-    echo "Error: Virtual environment not found at \$VENV_PATH"
-    echo "Please run the installation script first."
-    exit 1
-fi
+  if [[ -f "$WRAPPER_PATH" && "$FORCE_WRAPPER" != "1" ]]; then
+    echo -e "${YELLOW}Wrapper already exists, not overwriting: $WRAPPER_PATH${NC}"
+    echo -e "${YELLOW}Use --force-wrapper to overwrite.${NC}"
+  else
+    cat > "$WRAPPER_PATH" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$APP_DIR"
+VENV_DIR="$VENV_DIR"
+# shellcheck disable=SC1090
+source "\$VENV_DIR/bin/activate"
+cd "\$APP_DIR"
+exec openakita "\$@"
 EOF
+    chmod +x "$WRAPPER_PATH"
+    echo -e "${GREEN}✓ Wrapper installed: $WRAPPER_PATH${NC}"
+  fi
 
-# Install wrapper (try sudo, fall back to user bin)
-if sudo mv /tmp/openakita-wrapper "$WRAPPER_SCRIPT" 2>/dev/null && sudo chmod +x "$WRAPPER_SCRIPT"; then
-    echo -e "${GREEN}✓ Global command installed: ${CYAN}openakita${NC}"
-else
-    # Fallback: add to user's ~/.local/bin
-    mkdir -p ~/.local/bin
-    mv /tmp/openakita-wrapper ~/.local/bin/openakita
-    chmod +x ~/.local/bin/openakita
-    
-    # Add to PATH if not already
-    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-        echo -e "${YELLOW}Note: Added ~/.local/bin to PATH in ~/.bashrc${NC}"
-        echo -e "${YELLOW}Run 'source ~/.bashrc' or restart terminal to use global command${NC}"
-    fi
-    echo -e "${GREEN}✓ Global command installed: ${CYAN}~/.local/bin/openakita${NC}"
+  if [[ ":$PATH:" != *":$WRAPPER_DIR:"* ]]; then
+    echo -e "${YELLOW}Note: $WRAPPER_DIR is not in PATH.${NC}"
+    echo "Add this to your shell profile:"
+    echo "  export PATH=\"$WRAPPER_DIR:\$PATH\""
+  fi
 fi
 
-echo -e "\n${GREEN}=== Setup Complete! ===${NC}"
-echo -e ""
-echo -e "You can now use OpenAkita from anywhere:"
-echo -e "  ${CYAN}openakita${NC}        - Interactive chat mode"
-echo -e "  ${CYAN}openakita serve${NC}  - Run as service (Telegram/IM)"
-echo -e "  ${CYAN}openakita --help${NC} - Show all commands"
-echo -e ""
+echo ""
+echo -e "${GREEN}=== Done ===${NC}"
+echo "Start:"
+echo "  openakita"
+echo "  openakita --help"
+echo "App dir:"
+echo "  $APP_DIR"

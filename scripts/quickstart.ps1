@@ -1,101 +1,149 @@
-#
-# OpenAkita Quick Start Script for Windows
-#
-# Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
-#
-# Or download and run:
-#   .\quickstart.ps1
-#
+<#
+.SYNOPSIS
+  OpenAkita 一键安装脚本（PyPI，Windows PowerShell）
+.DESCRIPTION
+  - 创建独立的 venv（默认在 %USERPROFILE%\.openakita\venv）
+  - 安装 openakita（可选 extras、可选镜像）
+  - 可选安装 Playwright 浏览器
+  - 可选运行 openakita init（在 AppDir 目录生成 .env / data / identity）
+
+默认用法（最简单）：
+  irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+
+推荐用法（可传参数）：
+  irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
+  .\quickstart.ps1 -Extras all -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+#>
+
+[CmdletBinding()]
+param(
+  [string]$AppDir = "$env:USERPROFILE\.openakita\app",
+  [string]$VenvDir = "$env:USERPROFILE\.openakita\venv",
+  [string]$Extras = "",
+  [ValidateSet("cpu","skip")] [string]$Torch = "cpu",
+  [string]$IndexUrl = "",
+  [switch]$NoPlaywright,
+  [switch]$NoInit,
+  [switch]$NoWrapper,
+  [switch]$ForceWrapper
+)
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-# Colors
 function Write-Color {
-    param([string]$Text, [string]$Color = "White")
-    Write-Host $Text -ForegroundColor $Color
+  param([string]$Text, [string]$Color = "White")
+  Write-Host $Text -ForegroundColor $Color
 }
 
-Write-Color @"
+function Get-PythonCommand {
+  # Prefer Python Launcher (py) for selecting 3.11+
+  try {
+    $pyVer = & py -3.11 -c "import sys; print(sys.version)" 2>$null
+    if ($LASTEXITCODE -eq 0) { return @("py","-3.11") }
+  } catch {}
 
-   ____                      _    _    _ _        
-  / __ \                    / \  | | _(_) |_ __ _ 
- | |  | |_ __   ___ _ __   / _ \ | |/ / | __/ _` |
- | |  | | '_ \ / _ \ '_ \ / ___ \|   <| | || (_| |
- | |__| | |_) |  __/ | | /_/   \_\_|\_\_|\__\__,_|
-  \____/| .__/ \___|_| |_|                        
-        |_|    Your Loyal AI Companion
-
-"@ -Color Cyan
-
-Write-Color "=== OpenAkita Quick Start ===" -Color Cyan
-Write-Host ""
-
-# Check Python version
-Write-Color "Checking Python version..." -Color Yellow
-try {
-    $pythonVersion = python --version 2>&1
-    $versionMatch = $pythonVersion -match "Python (\d+)\.(\d+)"
-    if ($versionMatch) {
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        
-        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 11)) {
-            Write-Color "Error: Python 3.11+ is required. Found: $pythonVersion" -Color Red
-            exit 1
-        }
-        Write-Color "OK Python $major.$minor" -Color Green
-    }
-} catch {
-    Write-Color "Error: Python is not installed." -Color Red
-    Write-Host "Please install Python 3.11 or later from https://www.python.org"
-    exit 1
+  foreach ($cmd in @("python","python3")) {
+    try {
+      $ver = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')" 2>$null
+      if ($LASTEXITCODE -ne 0) { continue }
+      $parts = $ver.Split(".")
+      if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11) {
+        return @($cmd)
+      }
+    } catch {}
+  }
+  return $null
 }
-Write-Host ""
 
-# Check pip
-Write-Color "Checking pip..." -Color Yellow
-try {
-    python -m pip --version | Out-Null
-    Write-Color "OK pip is available" -Color Green
-} catch {
-    Write-Color "Error: pip is not installed." -Color Red
-    exit 1
+$py = Get-PythonCommand
+if ($null -eq $py) {
+  Write-Color "Error: Python 3.11+ 未检测到。请先安装 Python 3.11+（建议勾选 Add to PATH）。" Red
+  Write-Host "https://www.python.org/downloads/"
+  exit 1
 }
+
+Write-Color "=== OpenAkita One-Click Install ===" Cyan
+Write-Color "AppDir: $AppDir" Cyan
+Write-Color "VenvDir: $VenvDir" Cyan
+if (-not [string]::IsNullOrWhiteSpace($Extras)) { Write-Color "Extras: $Extras" Cyan }
+if (-not [string]::IsNullOrWhiteSpace($IndexUrl)) { Write-Color "pip IndexUrl: $IndexUrl" Cyan }
 Write-Host ""
 
-# Create virtual environment
-Write-Color "Creating virtual environment..." -Color Yellow
-if (-not (Test-Path ".venv")) {
-    python -m venv .venv
-    Write-Color "OK Virtual environment created" -Color Green
+New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path $VenvDir -Parent) -Force | Out-Null
+
+Write-Color "Creating virtual environment..." Yellow
+if ((Test-Path $VenvDir) -and -not (Test-Path (Join-Path $VenvDir "Scripts\Activate.ps1"))) {
+  Write-Color "Found incomplete venv; recreating..." Yellow
+  Remove-Item -Recurse -Force $VenvDir
+}
+if (-not (Test-Path $VenvDir)) {
+  & $py -m venv $VenvDir
+}
+Write-Color "OK venv ready" Green
+Write-Host ""
+
+# Activate venv (for `openakita` entrypoint)
+& (Join-Path $VenvDir "Scripts\Activate.ps1")
+
+Write-Color "Upgrading pip..." Yellow
+python -m pip install -U pip setuptools wheel | Out-Null
+
+if ($Torch -eq "cpu") {
+  Write-Color "Installing PyTorch (CPU-only)..." Yellow
+  python -m pip install -U torch --index-url https://download.pytorch.org/whl/cpu | Out-Null
+}
+
+$pkg = "openakita"
+if (-not [string]::IsNullOrWhiteSpace($Extras)) {
+  $pkg = "openakita[$Extras]"
+}
+
+Write-Color "Installing $pkg ..." Yellow
+if ([string]::IsNullOrWhiteSpace($IndexUrl)) {
+  python -m pip install -U $pkg
 } else {
-    Write-Color "OK Virtual environment already exists" -Color Green
+  python -m pip install -U $pkg -i $IndexUrl
 }
+Write-Color "OK OpenAkita installed" Green
 Write-Host ""
 
-# Activate virtual environment
-Write-Color "Activating virtual environment..." -Color Yellow
-& .\.venv\Scripts\Activate.ps1
-Write-Color "OK Virtual environment activated" -Color Green
-Write-Host ""
+if (-not $NoPlaywright) {
+  Write-Color "Installing Playwright browsers (optional)..." Yellow
+  try { python -m playwright install chromium | Out-Null } catch {}
+}
 
-# Install OpenAkita
-Write-Color "Installing OpenAkita..." -Color Yellow
-python -m pip install --upgrade pip | Out-Null
-python -m pip install openakita
-Write-Color "OK OpenAkita installed" -Color Green
-Write-Host ""
+if (-not $NoInit) {
+  Write-Color "Running setup wizard (openakita init)..." Cyan
+  Push-Location $AppDir
+  try { openakita init } finally { Pop-Location }
+}
 
-# Run setup wizard
-Write-Color "Starting setup wizard..." -Color Cyan
-Write-Host ""
-openakita init
+if (-not $NoWrapper) {
+  $binDir = "$env:USERPROFILE\.openakita\bin"
+  New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+  $cmdPath = Join-Path $binDir "openakita.cmd"
+
+  if ((Test-Path $cmdPath) -and (-not $ForceWrapper)) {
+    Write-Color "Wrapper already exists, not overwriting: $cmdPath (use -ForceWrapper to overwrite)" Yellow
+  } else {
+    $cmd = @"
+@echo off
+set "APPDIR=$AppDir"
+set "VENV=$VenvDir"
+call "%VENV%\Scripts\activate.bat"
+cd /d "%APPDIR%"
+openakita %*
+"@
+    Set-Content -Path $cmdPath -Value $cmd -Encoding ASCII
+    Write-Color "Wrapper created: $cmdPath" Green
+    Write-Color "Add to PATH if you want global command: $binDir" Yellow
+  }
+}
 
 Write-Host ""
-Write-Color "=== Installation Complete ===" -Color Green
-Write-Host "To start OpenAkita, run: " -NoNewline
-Write-Color "openakita" -Color Cyan
-Write-Host "Or with Telegram: " -NoNewline
-Write-Color "openakita serve" -Color Cyan
-Write-Host ""
+Write-Color "=== Done ===" Green
+Write-Host "Start:"
+Write-Host "  openakita"
+Write-Host "  openakita --help"

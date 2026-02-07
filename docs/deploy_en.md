@@ -77,7 +77,7 @@ pip install openakita[feishu]     # + Feishu (Lark) support
 pip install openakita[whisper]    # + Voice recognition
 pip install openakita[browser]    # + Browser AI agent
 pip install openakita[windows]    # + Windows desktop automation
-pip install openakita[all]        # Install all optional features
+pip install openakita[all]        # Install all optional features (Windows-only deps are auto-skipped on non-Windows)
 
 # 4. Run setup wizard
 openakita init
@@ -88,7 +88,43 @@ openakita
 
 ### Method 2: One-Click Deploy Script
 
-Automatically installs Python, Git, dependencies, and everything else:
+There are two one-click paths:
+
+- **One-click install (PyPI)**: fastest way to get a working installation (recommended)
+- **One-click deploy (Source)**: for development / modifying the repo
+
+#### Method 2-A: One-click install (PyPI, recommended)
+
+**Linux/macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
+```
+
+For extras / mirrors, download and run with parameters (recommended):
+
+```bash
+curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh
+bash quickstart.sh --extras all --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+```powershell
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
+.\quickstart.ps1 -Extras all -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+> The script installs into `~/.openakita/app` and uses an isolated venv at `~/.openakita/venv` by default
+> (Windows: `%USERPROFILE%\.openakita\...`), to avoid polluting system Python.
+
+#### Method 2-B: One-click deploy (Source)
+
+Automatically installs Python, Git, dependencies, and everything else (requires cloning the repo first):
 
 **Linux/macOS:**
 ```bash
