@@ -1,3 +1,5 @@
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 use dirs_next::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -90,9 +92,10 @@ fn is_pid_running(pid: u32) -> bool {
         return false;
     }
     if cfg!(windows) {
-        let out = Command::new("cmd")
-            .args(["/C", &format!("tasklist /FI \"PID eq {}\"", pid)])
-            .output();
+        let mut c = Command::new("cmd");
+        c.args(["/C", &format!("tasklist /FI \"PID eq {}\"", pid)]);
+        apply_no_window(&mut c);
+        let out = c.output();
         if let Ok(out) = out {
             let s = String::from_utf8_lossy(&out.stdout);
             return s.contains(&pid.to_string());
@@ -109,9 +112,10 @@ fn kill_pid(pid: u32) -> Result<(), String> {
         return Ok(());
     }
     if cfg!(windows) {
-        let status = Command::new("cmd")
-            .args(["/C", &format!("taskkill /PID {} /T /F", pid)])
-            .status()
+        let mut c = Command::new("cmd");
+        c.args(["/C", &format!("taskkill /PID {} /T /F", pid)]);
+        apply_no_window(&mut c);
+        let status = c.status()
             .map_err(|e| format!("taskkill failed: {e}"))?;
         if !status.success() {
             return Err(format!("taskkill failed: {status}"));
@@ -168,10 +172,10 @@ fn ensure_workspace_scaffold(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("write identity/SOUL.md failed: {e}"))?;
     }
 
-    // 默认 llm_endpoints.json：用仓库内的 data/llm_endpoints.json 作为初始模板
+    // 默认 llm_endpoints.json：用仓库内的 data/llm_endpoints.json.example 作为初始模板
     let llm = dir.join("data").join("llm_endpoints.json");
     if !llm.exists() {
-        const DEFAULT_LLM_ENDPOINTS: &str = include_str!("../../../../data/llm_endpoints.json");
+        const DEFAULT_LLM_ENDPOINTS: &str = include_str!("../../../../data/llm_endpoints.json.example");
         fs::write(&llm, DEFAULT_LLM_ENDPOINTS)
             .map_err(|e| format!("write data/llm_endpoints.json failed: {e}"))?;
     }
@@ -324,6 +328,17 @@ fn openakita_service_status(workspace_id: String) -> Result<ServiceStatus, Strin
     })
 }
 
+#[cfg(windows)]
+fn apply_no_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: avoid flashing a black console window for spawned commands.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn apply_no_window(_cmd: &mut Command) {}
+
 fn read_env_kv(path: &Path) -> Vec<(String, String)> {
     let Ok(content) = fs::read_to_string(path) else {
         return vec![];
@@ -394,7 +409,7 @@ fn openakita_service_start(venv_dir: String, workspace_id: String) -> Result<Ser
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000008u32 | 0x00000200u32); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(0x00000008u32 | 0x00000200u32 | 0x0800_0000u32); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
     }
 
     let child = cmd.spawn().map_err(|e| format!("spawn openakita serve failed: {e}"))?;
@@ -657,6 +672,7 @@ fn run_capture(cmd: &[String]) -> Result<String, String> {
     if cmd.len() > 1 {
         c.args(&cmd[1..]);
     }
+    apply_no_window(&mut c);
     let out = c.output().map_err(|e| format!("failed to run {:?}: {e}", cmd))?;
     let mut s = String::new();
     if !out.stdout.is_empty() {
@@ -964,6 +980,7 @@ fn create_venv(python_command: Vec<String>, venv_dir: String) -> Result<String, 
     if cmd.len() > 1 {
         c.args(&cmd[1..]);
     }
+    apply_no_window(&mut c);
     c.args(["-m", "venv"])
         .arg(&venv)
         .status()
@@ -996,6 +1013,7 @@ fn pip_install(
 
     // upgrade pip first (best-effort)
     let mut up = Command::new(&py);
+    apply_no_window(&mut up);
     up.args(["-m", "pip", "install", "-U", "pip", "setuptools", "wheel"]);
     if let Some(url) = &index_url {
         up.args(["-i", url]);
@@ -1003,6 +1021,7 @@ fn pip_install(
     let _ = up.status();
 
     let mut c = Command::new(&py);
+    apply_no_window(&mut c);
     c.args(["-m", "pip", "install", "-U", &package_spec]);
     if let Some(url) = &index_url {
         c.args(["-i", url]);
@@ -1027,6 +1046,7 @@ fn pip_uninstall(venv_dir: String, package_name: String) -> Result<String, Strin
     }
 
     let mut c = Command::new(&py);
+    apply_no_window(&mut c);
     c.args(["-m", "pip", "uninstall", "-y", package_name.trim()]);
     let status = c
         .status()
@@ -1067,6 +1087,7 @@ fn run_python_module_json(
     }
 
     let mut c = Command::new(&py);
+    apply_no_window(&mut c);
     c.arg("-m").arg(module);
     c.args(args);
     for (k, v) in extra_env {
