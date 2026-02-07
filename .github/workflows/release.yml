@@ -2,9 +2,17 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要上传/发布到的 tag（例如 v1.2.7）。留空则使用当前 ref。"
+        required: false
+        default: ""
   push:
     tags:
       - 'v*'
+
+env:
+  RELEASE_TAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag) || github.ref_name }}
 
 jobs:
   python_release:
@@ -21,6 +29,8 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,9 +54,10 @@ jobs:
         id: gh_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
           generate_release_notes: true
+          overwrite_files: true
       
       - name: Publish to PyPI (Trusted Publishing / OIDC)
         if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags') && env.PYPI_API_TOKEN == '' }}
@@ -73,15 +84,20 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
+            bundles: "msi"
             args: ""
           - platform: ubuntu-22.04
+            bundles: "deb,appimage"
             args: ""
           - platform: macos-latest
+            bundles: "dmg"
             args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux system dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -91,7 +107,9 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libfuse2 \
+            rpm
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -115,12 +133,22 @@ jobs:
 
       - name: Build Tauri bundles
         working-directory: apps/setup-center
-        run: npm run tauri build -- ${{ matrix.args }}
+        run: npm run tauri build -- --bundles "${{ matrix.bundles }}" ${{ matrix.args }}
+
+      - name: List bundle outputs
+        shell: bash
+        run: |
+          echo "== release dir =="
+          ls -la "apps/setup-center/src-tauri/target/release" || true
+          echo "== bundle dir =="
+          ls -la "apps/setup-center/src-tauri/target/release/bundle" || true
+          echo "== bundle tree (depth 4) =="
+          find "apps/setup-center/src-tauri/target/release/bundle" -maxdepth 4 -type f -print || true
 
       - name: Upload Setup Center artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: false
+          tag_name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
           files: |
             apps/setup-center/src-tauri/target/release/bundle/**/*
