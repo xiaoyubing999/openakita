@@ -145,15 +145,56 @@ jobs:
           echo "== bundle tree (depth 4) =="
           find "apps/setup-center/src-tauri/target/release/bundle" -maxdepth 4 -type f -print || true
 
-      - name: Upload Setup Center artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          fail_on_unmatched_files: true
-          overwrite_files: true
-          files: |
-            apps/setup-center/src-tauri/target/release/bundle/**/*.msi
-            apps/setup-center/src-tauri/target/release/bundle/**/*.dmg
-            apps/setup-center/src-tauri/target/release/bundle/**/*.AppImage
-            apps/setup-center/src-tauri/target/release/bundle/**/*.deb
-            apps/setup-center/src-tauri/target/release/bundle/**/*.rpm
+      - name: Collect installer bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLE_DIR="apps/setup-center/src-tauri/target/release/bundle"
+          OUT_DIR="${BUNDLE_DIR}/_upload"
+          rm -rf "${OUT_DIR}"
+          mkdir -p "${OUT_DIR}"
+
+          copy_norm() {
+            local f="$1"
+            local base
+            base="$(basename "$f")"
+            # 统一文件名：把空格换成点，避免 Release 里出现重复/难找的资产名
+            local norm="${base// /.}"
+            cp -f "$f" "${OUT_DIR}/${norm}"
+          }
+
+          want=()
+          case "${RUNNER_OS}" in
+            Windows) want=("msi") ;;
+            macOS) want=("dmg") ;;
+            Linux) want=("deb" "AppImage") ;;
+            *) echo "Unsupported RUNNER_OS=${RUNNER_OS}" >&2; exit 2 ;;
+          esac
+
+          found=0
+          for ext in "${want[@]}"; do
+            while IFS= read -r -d '' f; do
+              copy_norm "$f"
+              found=$((found+1))
+            done < <(find "${BUNDLE_DIR}" -type f -name "*.${ext}" -print0)
+          done
+
+          echo "Collected ${found} installer(s) into ${OUT_DIR}:"
+          ls -la "${OUT_DIR}" || true
+
+          if [ "${found}" -eq 0 ]; then
+            echo "ERROR: no installer bundles found." >&2
+            exit 1
+          fi
+
+      - name: Upload installers to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="apps/setup-center/src-tauri/target/release/bundle"
+          OUT_DIR="${BUNDLE_DIR}/_upload"
+          ls -la "${OUT_DIR}"
+          gh release upload "${RELEASE_TAG}" "${OUT_DIR}"/* --clobber
