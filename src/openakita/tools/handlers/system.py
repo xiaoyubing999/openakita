@@ -131,7 +131,7 @@ class SystemHandler:
         size = (params.get("size") or "1664*928").strip()
         prompt_extend = params.get("prompt_extend", True)
         watermark = params.get("watermark", False)
-        seed = params.get("seed", None)
+        seed = params.get("seed")
         output_path = (params.get("output_path") or "").strip()
 
         # 允许通过配置覆盖（便于跨地域/私有网络）

@@ -14,9 +14,9 @@ OpenAI Provider
 import json
 import logging
 from collections.abc import AsyncIterator
+from json import JSONDecodeError
 
 import httpx
-from json import JSONDecodeError
 
 from ..converters.messages import convert_messages_to_openai
 from ..converters.tools import (

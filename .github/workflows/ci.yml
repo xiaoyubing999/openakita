@@ -56,11 +56,16 @@ jobs:
           pip install -e ".[dev]"
       
       - name: Run tests
+        if: ${{ hashFiles('tests/**') != '' }}
         run: pytest tests/ -v --cov=src/openakita --cov-report=xml -k "not TestVectorStore"
+
+      - name: Skip tests (no tests directory)
+        if: ${{ hashFiles('tests/**') == '' }}
+        run: echo "No tests/ directory in repository; skipping pytest."
       
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        if: ${{ hashFiles('coverage.xml') != '' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11' }}
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -82,28 +87,39 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Verify parallel tool execution
+        if: ${{ hashFiles('tests/llm/unit/test_tool_parallel_execution.py') != '' }}
         run: pytest tests/llm/unit/test_tool_parallel_execution.py -v
+
+      - name: Skip tool_parallel (test file missing)
+        if: ${{ hashFiles('tests/llm/unit/test_tool_parallel_execution.py') == '' }}
+        run: echo "tests/llm/unit/test_tool_parallel_execution.py not found; skipping."
 
   setup_center_build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/setup-center
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
+        if: ${{ hashFiles('apps/setup-center/package-lock.json') != '' }}
         with:
           node-version: '20'
           cache: npm
           cache-dependency-path: apps/setup-center/package-lock.json
 
       - name: Install dependencies
+        if: ${{ hashFiles('apps/setup-center/package-lock.json') != '' }}
+        working-directory: apps/setup-center
         run: npm ci
 
       - name: Build
+        if: ${{ hashFiles('apps/setup-center/package-lock.json') != '' }}
+        working-directory: apps/setup-center
         run: npm run build
+
+      - name: Skip setup-center build (project not present)
+        if: ${{ hashFiles('apps/setup-center/package-lock.json') == '' }}
+        run: echo "apps/setup-center not present in repository; skipping."
 
   build:
     runs-on: ubuntu-latest

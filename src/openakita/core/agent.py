@@ -19,10 +19,8 @@ import json
 import logging
 import os
 import re
-import time
-
-# Windows Desktop Automation (Windows only)
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -3720,10 +3718,6 @@ NEXT: 建议的下一步（如有）"""
                     allow_interrupt_checks=False,
                     capture_delivery_receipts=False,
                 )
-                executed_tools = [
-                    {"name": n, "result_preview": ""}
-                    for n in executed_names
-                ]  # 兼容后续摘要逻辑（如有）
 
                 messages.append({"role": "user", "content": tool_results})
 

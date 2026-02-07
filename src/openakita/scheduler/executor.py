@@ -164,10 +164,15 @@ class TaskExecutor:
         """
         try:
             # 清除 IM 上下文，防止判断时发送消息
-            from ..core.im_context import get_im_gateway, get_im_session, reset_im_context, set_im_context
+            from ..core.im_context import (
+                get_im_gateway,
+                get_im_session,
+                reset_im_context,
+                set_im_context,
+            )
 
-            old_session = get_im_session()
-            old_gateway = get_im_gateway()
+            _ = get_im_session()
+            _ = get_im_gateway()
             tokens = set_im_context(session=None, gateway=None)
 
             try:
@@ -504,11 +509,12 @@ class TaskExecutor:
         调用 SelfChecker.run_daily_check()
         """
         try:
+            from datetime import datetime, timedelta
+
             from ..config import settings
             from ..core.brain import Brain
             from ..evolution import SelfChecker
             from ..logging import LogCleaner
-            from datetime import datetime, timedelta
 
             # 1. 清理旧日志
             log_cleaner = LogCleaner(

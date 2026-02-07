@@ -1444,9 +1444,9 @@ class BrowserMCP:
                 # 先尝试直接写入（如果对象允许）
                 try:
                     if not hasattr(llm_obj, "provider"):
-                        setattr(llm_obj, "provider", provider)
+                        llm_obj.provider = provider
                     if not hasattr(llm_obj, "model"):
-                        setattr(llm_obj, "model", model)
+                        llm_obj.model = model
                     if hasattr(llm_obj, "provider") and hasattr(llm_obj, "model"):
                         return llm_obj
                 except Exception:

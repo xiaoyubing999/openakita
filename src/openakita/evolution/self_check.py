@@ -1233,8 +1233,9 @@ ID: {result.test_id}
                 # Akita 核心系统代码（core/llm/memory/scheduler/storage/orchestration 等）一律不允许自动修改。
                 #
                 # 具体执行在 FilesystemHandler 中做硬拦截；这里仅注入策略。
-                from ..config import settings as _settings
                 from pathlib import Path as _Path
+
+                from ..config import settings as _settings
 
                 project_root = _Path(_settings.project_root).resolve()
                 agent._selfcheck_fix_policy = {
