@@ -364,7 +364,10 @@ def _get_tools_guide_short() -> str:
 3. **MCP 服务**：外部 API 集成
    - 查看清单 → `call_mcp_tool(server, tool, args)`
 
-**原则**：任务型请求必须使用工具，无工具则创造工具！"""
+**原则**：
+- 需要执行操作时使用工具；纯问答、闲聊、信息查询直接文字回复
+- 任务完成后，用简洁的文字告知用户结果，不要继续调用工具
+- 不要为了使用工具而使用工具"""
 
 
 def get_prompt_debug_info(

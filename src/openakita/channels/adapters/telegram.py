@@ -357,6 +357,13 @@ class TelegramAdapter(ChannelAdapter):
             logger.info(f"Telegram bot started with webhook: {self.webhook_url}")
         else:
             # Long Polling 模式 - 使用 updater.start_polling
+            # 先清除可能残留的旧 webhook/polling 连接，避免 Conflict 错误
+            try:
+                await self._bot.delete_webhook(drop_pending_updates=True)
+                logger.info("Cleared previous webhook/polling connections before starting")
+            except Exception as e:
+                logger.warning(f"Failed to delete webhook before polling: {e}")
+
             await self._app.start()
             await self._app.updater.start_polling(
                 drop_pending_updates=True,

@@ -59,16 +59,12 @@ class ProfileHandler:
 
     def _get_profile(self, params: dict) -> str:
         """获取用户档案"""
-        profile = self.agent.profile_manager.get_summary()
+        summary = self.agent.profile_manager.get_profile_summary()
 
-        if not profile:
+        if not summary:
             return "用户档案为空\n\n提示: 通过对话中分享信息来建立档案"
 
-        output = "用户档案:\n\n"
-        for key, value in profile.items():
-            output += f"- {key}: {value}\n"
-
-        return output
+        return summary
 
 
 def create_handler(agent: "Agent"):

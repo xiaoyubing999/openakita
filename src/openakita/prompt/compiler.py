@@ -301,12 +301,13 @@ def compile_agent_tooling(agent_content: str) -> str:
         summary += "\n".join(unique)
     else:
         # 默认原则
-        summary += """- 任务型请求必须使用工具/脚本完成
+        summary += """- 需要执行操作的请求使用工具完成；纯问答/闲聊直接文字回复
 - 禁止敷衍响应：不能只说"好的"而不执行
 - 工具优先级：系统工具 > Skills 技能 > MCP 外部服务
-- 无工具则创造：write_file + run_shell 或 skill-creator
+- 缺少现成工具时可组合 write_file + run_shell 或 skill-creator
 - 提醒/定时任务必须调用 schedule_task 工具
 - Plan 模式：超过 2 步的任务先 create_plan
+- 任务完成后用简洁文字告知用户结果，不要继续调用工具
 """
 
     return summary

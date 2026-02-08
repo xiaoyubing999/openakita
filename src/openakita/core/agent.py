@@ -1324,7 +1324,8 @@ class Agent:
                     self.task_scheduler._save_tasks()
 
     def _build_system_prompt(
-        self, base_prompt: str, task_description: str = "", use_compiled: bool = False
+        self, base_prompt: str, task_description: str = "", use_compiled: bool = False,
+        session_type: str = "cli",
     ) -> str:
         """
         构建系统提示词 (动态生成，包含技能清单、MCP 清单和相关记忆)
@@ -1346,7 +1347,7 @@ class Agent:
         """
         # 使用编译管线 (v2) - 降低 token 消耗
         if use_compiled:
-            return self._build_system_prompt_compiled(task_description)
+            return self._build_system_prompt_compiled(task_description, session_type=session_type)
 
         # 技能清单 (Agent Skills 规范) - 每次动态生成，确保新创建的技能被包含
         skill_catalog = self.skill_catalog.generate_catalog()
@@ -1686,7 +1687,7 @@ search_github → install_skill → 使用
 **用户信任比看起来厉害更重要！宁可说"我做不到"也不要骗人！**
 {profile_prompt}"""
 
-    def _build_system_prompt_compiled(self, task_description: str = "") -> str:
+    def _build_system_prompt_compiled(self, task_description: str = "", session_type: str = "cli") -> str:
         """
         使用编译管线构建系统提示词 (v2)
 
@@ -1694,6 +1695,7 @@ search_github → install_skill → 使用
 
         Args:
             task_description: 任务描述 (用于检索相关记忆)
+            session_type: 会话类型 "cli" 或 "im"
 
         Returns:
             编译后的系统提示词
@@ -1715,6 +1717,7 @@ search_github → install_skill → 使用
             memory_manager=self.memory_manager,
             task_description=task_description,
             include_tools_guide=True,  # 包含工具使用指南
+            session_type=session_type,
         )
 
     def _generate_tools_text(self) -> str:
@@ -2181,8 +2184,15 @@ search_github → install_skill → 使用
             self._current_task_query = compiler_summary or message
 
             # 构建 API 消息格式（从 session_messages 转换）
+            # 注意：session_messages 已包含当前轮用户消息（由 gateway 在调用前通过
+            # session.add_message 添加）。当前轮消息由下方 compiled_message 单独追加
+            # （可能经过 Prompt Compiler 处理），因此这里需要排除最后一条用户消息以避免重复。
+            history_messages = session_messages
+            if history_messages and history_messages[-1].get("role") == "user":
+                history_messages = history_messages[:-1]
+
             messages = []
-            for msg in session_messages:
+            for msg in history_messages:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
@@ -2250,7 +2260,7 @@ search_github → install_skill → 使用
 
             # === 两段式 Prompt 第二阶段：主模型处理 ===
             response_text = await self._chat_with_tools_and_context(
-                messages, task_monitor=task_monitor
+                messages, task_monitor=task_monitor, session_type="im",
             )
 
             # === 完成任务监控 ===
@@ -2618,6 +2628,7 @@ NEXT: 建议的下一步（如有）"""
         messages: list[dict],
         use_session_prompt: bool = True,
         task_monitor: TaskMonitor | None = None,
+        session_type: str = "cli",
     ) -> str:
         """
         使用指定的消息上下文进行对话（支持工具调用）
@@ -2674,7 +2685,8 @@ NEXT: 建议的下一步（如有）"""
             # 否则 LLM 不知道有哪些工具可用（MCP、Skill、Tools）
             base_prompt = self.identity.get_session_system_prompt()
             system_prompt = self._build_system_prompt(
-                base_prompt, task_description=task_description, use_compiled=True
+                base_prompt, task_description=task_description, use_compiled=True,
+                session_type=session_type,
             )
         else:
             system_prompt = self._context.system
@@ -2727,6 +2739,13 @@ NEXT: 建议的下一步（如有）"""
         executed_tool_names: list[str] = []
         # Track deliver_artifacts receipts as delivery evidence
         delivery_receipts: list[dict] = []
+
+        # === 循环检测与轮次上限（防止 LLM 无限调用工具） ===
+        consecutive_tool_rounds = 0           # 连续有工具调用的轮次计数
+        max_tool_rounds_soft = 15             # 软上限：注入"请收尾"提示
+        max_tool_rounds_hard = 30             # 硬上限：直接终止循环
+        recent_tool_signatures: list[str] = []  # 最近 N 轮的工具签名（用于模式检测）
+        tool_pattern_window = 6               # 模式检测窗口大小
 
         def _resolve_endpoint_name(model_or_endpoint: str) -> str | None:
             """将 'endpoint_name' 或 'model' 解析为 endpoint_name（最小兼容）。"""
@@ -2926,6 +2945,9 @@ NEXT: 建议的下一步（如有）"""
 
             # 如果没有工具调用，检查是否需要强制要求调用工具
             if not tool_calls:
+                # LLM 返回了纯文本（无工具调用），重置连续工具轮次计数
+                consecutive_tool_rounds = 0
+
                 # 如果本轮任务已经执行过工具
                 if tools_executed_in_task:
                     # 只有当 LLM 返回了有意义的文本确认时才检查是否真正完成
@@ -3097,6 +3119,76 @@ NEXT: 建议的下一步（如有）"""
                     "content": tool_results,
                 }
             )
+
+            # === 循环检测与轮次上限 ===
+            consecutive_tool_rounds += 1
+
+            # (a) stop_reason 检查：LLM 明确表示结束（与 _chat_with_tools 对齐）
+            if getattr(response, "stop_reason", None) == "end_turn":
+                cleaned_text = strip_thinking_tags(text_content)
+                if cleaned_text and cleaned_text.strip():
+                    logger.info(
+                        f"[LoopGuard] LLM stop_reason=end_turn with text after {consecutive_tool_rounds} tool rounds, ending."
+                    )
+                    return cleaned_text
+
+            # (b) 工具调用模式检测：检测重复的工具调用序列
+            round_signature = "+".join(sorted(tc["name"] for tc in tool_calls))
+            recent_tool_signatures.append(round_signature)
+            if len(recent_tool_signatures) > tool_pattern_window:
+                recent_tool_signatures = recent_tool_signatures[-tool_pattern_window:]
+
+            # 检测最近 N 轮中是否存在 >= 3 次完全相同的工具签名
+            if len(recent_tool_signatures) >= 3:
+                from collections import Counter
+                sig_counts = Counter(recent_tool_signatures)
+                most_common_sig, most_common_count = sig_counts.most_common(1)[0]
+                if most_common_count >= 3:
+                    logger.warning(
+                        f"[LoopGuard] Detected repeating tool pattern '{most_common_sig}' "
+                        f"({most_common_count} times in last {len(recent_tool_signatures)} rounds). "
+                        f"Injecting completion hint."
+                    )
+                    working_messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[系统] 检测到重复的工具调用模式。如果任务已完成，请停止调用工具，"
+                                "直接用简洁的文字回复用户最终结果。"
+                            ),
+                        }
+                    )
+                    # 如果重复 >= 5 次，直接终止
+                    if most_common_count >= 5:
+                        logger.error(
+                            f"[LoopGuard] Tool loop detected ({most_common_count} repeats). Force terminating."
+                        )
+                        cleaned_text = strip_thinking_tags(text_content)
+                        return cleaned_text or "⚠️ 检测到工具调用陷入循环，任务已自动终止。请重新描述您的需求。"
+
+            # (c) 硬上限：超过 max_tool_rounds_hard 直接终止
+            if consecutive_tool_rounds >= max_tool_rounds_hard:
+                logger.error(
+                    f"[LoopGuard] Reached hard limit of {max_tool_rounds_hard} consecutive tool rounds. Terminating."
+                )
+                cleaned_text = strip_thinking_tags(text_content)
+                return cleaned_text or "⚠️ 连续工具调用轮次过多，任务已自动终止。请重新描述您的需求。"
+
+            # (d) 软上限：超过 max_tool_rounds_soft 时注入完成提示
+            if consecutive_tool_rounds == max_tool_rounds_soft:
+                logger.warning(
+                    f"[LoopGuard] Reached soft limit of {max_tool_rounds_soft} consecutive tool rounds. "
+                    f"Injecting completion hint."
+                )
+                working_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[系统] 你已连续执行了较多工具调用。如果任务已完成，请直接用文字回复用户结果，"
+                            "不要继续调用工具。如果确实需要继续，请说明剩余步骤。"
+                        ),
+                    }
+                )
 
         return "已达到最大工具调用次数，请重新描述您的需求。"
 
