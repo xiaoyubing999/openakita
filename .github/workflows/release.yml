@@ -170,6 +170,11 @@ jobs:
               norm="${norm/_arm64_en-US/_arm64_CN}"
               norm="${norm/_arm64_zh-CN/_arm64_CN}"
               norm="${norm/_arm64_zh_CN/_arm64_CN}"
+
+              # 新版 NSIS 输出可能是 *_x64-setup.exe（不含 locale），这里统一追加 _CN
+              if [[ "${norm}" == *.exe ]] && [[ "${norm}" != *_CN.exe ]]; then
+                norm="${norm%.exe}_CN.exe"
+              fi
             fi
             cp -f "$f" "${OUT_DIR}/${norm}"
           }
