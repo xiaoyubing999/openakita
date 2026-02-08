@@ -553,6 +553,27 @@ export function App() {
     };
   }, []);
 
+  // tray quit failed: service still running
+  useEffect(() => {
+    let unlisten: null | (() => void) = null;
+    (async () => {
+      unlisten = await listen("quit_failed", async (ev) => {
+        const p = ev.payload as any;
+        const msg = String(p?.message || "退出失败：后台服务仍在运行。请先停止服务。");
+        setView("status");
+        setError(msg);
+        try {
+          await refreshStatus();
+        } catch {
+          // ignore
+        }
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const canUsePython = useMemo(() => {
     if (selectedPythonIdx < 0) return false;
     return pythonCandidates[selectedPythonIdx]?.isUsable ?? false;
@@ -1677,6 +1698,12 @@ export function App() {
                       });
                       setServiceStatus(ss);
                       setNotice("后台服务已启动（openakita serve）");
+                      // 立即刷新一次全量状态，避免“已启动但状态没更新/按钮还可点”
+                      try {
+                        await refreshStatus();
+                      } catch {
+                        // ignore
+                      }
                       void refreshServiceLog(effectiveWsId);
                     } catch (e) {
                       setError(String(e));
@@ -4012,6 +4039,8 @@ export function App() {
                     }
                     setBusy("启动后台服务...");
                     setError(null);
+                    // 无论启动是否成功，都进入状态面板，方便用户看日志/重试（面向非技术用户）
+                    setView("status");
                     try {
                       const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_start", {
                         venvDir,
@@ -4024,7 +4053,6 @@ export function App() {
                         workspaceId: effectiveWsId,
                       });
                       setServiceStatus(real);
-                      setView("status");
                       await refreshStatus();
                       await refreshServiceLog(effectiveWsId);
                       if (!real.running) {
@@ -4034,6 +4062,12 @@ export function App() {
                       }
                     } catch (e) {
                       setError(String(e));
+                      try {
+                        await refreshStatus();
+                        await refreshServiceLog(effectiveWsId);
+                      } catch {
+                        // ignore
+                      }
                     } finally {
                       setBusy(null);
                     }

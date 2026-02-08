@@ -88,18 +88,105 @@ fn service_pid_file(workspace_id: &str) -> PathBuf {
     run_dir().join(format!("openakita-{}.pid", workspace_id))
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ServicePidEntry {
+    workspace_id: String,
+    pid: u32,
+    pid_file: String,
+}
+
+fn list_service_pids() -> Vec<ServicePidEntry> {
+    let mut out = Vec::new();
+    let dir = run_dir();
+    let Ok(rd) = fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("openakita-") || !name.ends_with(".pid") {
+            continue;
+        }
+        let ws = name
+            .trim_start_matches("openakita-")
+            .trim_end_matches(".pid")
+            .to_string();
+        let pid = fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if pid == 0 {
+            continue;
+        }
+        out.push(ServicePidEntry {
+            workspace_id: ws,
+            pid,
+            pid_file: p.to_string_lossy().to_string(),
+        });
+    }
+    out
+}
+
+fn stop_service_pid_entry(ent: &ServicePidEntry) -> Result<(), String> {
+    if is_pid_running(ent.pid) {
+        kill_pid(ent.pid)?;
+        // 等待最多 2s 确认退出
+        for _ in 0..10 {
+            if !is_pid_running(ent.pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        if is_pid_running(ent.pid) {
+            return Err(format!(
+                "pid {} still running (workspace={})",
+                ent.pid, ent.workspace_id
+            ));
+        }
+    }
+    let _ = fs::remove_file(PathBuf::from(&ent.pid_file));
+    Ok(())
+}
+
 fn is_pid_running(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
     if cfg!(windows) {
+        // Use CSV output to avoid false positive substring matches.
+        // Example output:
+        //   "pythonw.exe","1234","Console","1","10,000 K"
+        // If no match:
+        //   INFO: No tasks are running which match the specified criteria.
         let mut c = Command::new("cmd");
-        c.args(["/C", &format!("tasklist /FI \"PID eq {}\"", pid)]);
+        c.args([
+            "/C",
+            &format!("tasklist /FO CSV /NH /FI \"PID eq {}\"", pid),
+        ]);
         apply_no_window(&mut c);
         let out = c.output();
         if let Ok(out) = out {
-            let s = String::from_utf8_lossy(&out.stdout);
-            return s.contains(&pid.to_string());
+            let s = String::from_utf8_lossy(&out.stdout).to_string();
+            let line = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+            if line.to_ascii_lowercase().starts_with("info:") {
+                return false;
+            }
+            // Parse CSV line: trim outer quotes then split by ",".
+            let trimmed = line.trim_matches('\r').trim();
+            if trimmed.starts_with('"') {
+                let cols: Vec<&str> = trimmed
+                    .trim_matches('"')
+                    .split("\",\"")
+                    .collect();
+                if cols.len() >= 2 {
+                    return cols[1].trim() == pid.to_string();
+                }
+            }
+            // Fallback to substring check (best-effort).
+            return trimmed.contains(&format!("\"{}\"", pid));
         }
         false
     } else {
@@ -183,14 +270,27 @@ fn ensure_workspace_scaffold(dir: &Path) -> Result<(), String> {
         fs::write(&env_path, content).map_err(|e| format!("write .env failed: {e}"))?;
     }
 
-    // minimal identity files (后续可由 GUI 编辑)
+    // identity 文件：从仓库模板复制生成，保证字段完整性与一致性（而不是随意占位）
+    const DEFAULT_SOUL: &str = include_str!("../../../../identity/SOUL.md.example");
+    const DEFAULT_AGENT: &str = include_str!("../../../../identity/AGENT.md.example");
+    const DEFAULT_USER: &str = include_str!("../../../../identity/USER.md.example");
+    const DEFAULT_MEMORY: &str = include_str!("../../../../identity/MEMORY.md.example");
+
     let soul = dir.join("identity").join("SOUL.md");
     if !soul.exists() {
-        fs::write(
-            &soul,
-            "# Agent Soul\n\n你是 OpenAkita，一个忠诚可靠的 AI 助手。\n- 永不放弃，持续尝试直到成功\n- 诚实可靠，不会隐瞒问题\n- 主动学习，不断自我改进\n",
-        )
-        .map_err(|e| format!("write identity/SOUL.md failed: {e}"))?;
+        fs::write(&soul, DEFAULT_SOUL).map_err(|e| format!("write identity/SOUL.md failed: {e}"))?;
+    }
+    let agent_md = dir.join("identity").join("AGENT.md");
+    if !agent_md.exists() {
+        fs::write(&agent_md, DEFAULT_AGENT).map_err(|e| format!("write identity/AGENT.md failed: {e}"))?;
+    }
+    let user_md = dir.join("identity").join("USER.md");
+    if !user_md.exists() {
+        fs::write(&user_md, DEFAULT_USER).map_err(|e| format!("write identity/USER.md failed: {e}"))?;
+    }
+    let memory_md = dir.join("identity").join("MEMORY.md");
+    if !memory_md.exists() {
+        fs::write(&memory_md, DEFAULT_MEMORY).map_err(|e| format!("write identity/MEMORY.md failed: {e}"))?;
     }
 
     // 默认 llm_endpoints.json：用仓库内的 data/llm_endpoints.json.example 作为初始模板
@@ -416,7 +516,8 @@ fn openakita_service_start(venv_dir: String, workspace_id: String) -> Result<Ser
 
     let ws_dir = workspace_dir(&workspace_id);
     ensure_workspace_scaffold(&ws_dir)?;
-    let py = venv_python_path(&venv_dir);
+    // Prefer pythonw.exe on Windows to avoid showing any console window.
+    let py = venv_pythonw_path(&venv_dir);
     if !py.exists() {
         return Err(format!("venv python not found: {}", py.to_string_lossy()));
     }
@@ -462,6 +563,28 @@ fn openakita_service_start(venv_dir: String, workspace_id: String) -> Result<Ser
     let child = cmd.spawn().map_err(|e| format!("spawn openakita serve failed: {e}"))?;
     let pid = child.id();
     fs::write(&pid_file, pid.to_string()).map_err(|e| format!("write pid file failed: {e}"))?;
+
+    // Confirm the process is still alive shortly after spawning.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if !is_pid_running(pid) {
+        let _ = fs::remove_file(&pid_file);
+        // Best-effort log tail for debugging.
+        let tail = fs::read_to_string(&log_path)
+            .ok()
+            .and_then(|s| {
+                if s.len() > 6000 {
+                    Some(s[s.len() - 6000..].to_string())
+                } else {
+                    Some(s)
+                }
+            })
+            .unwrap_or_default();
+        return Err(format!(
+            "openakita serve 似乎启动后立即退出（PID={pid}）。\n请查看服务日志：{}\n\n--- log tail ---\n{}",
+            log_path.to_string_lossy(),
+            tail
+        ));
+    }
 
     Ok(ServiceStatus {
         running: true,
@@ -582,7 +705,46 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "quit" => {
-                app.exit(0);
+                // 退出前先确保后台 OpenAkita serve 已停止（对不懂技术的用户很关键，避免残留进程）
+                let entries = list_service_pids();
+                if entries.is_empty() {
+                    app.exit(0);
+                    return;
+                }
+
+                let mut failed: Vec<ServicePidEntry> = Vec::new();
+                for ent in &entries {
+                    if let Err(_e) = stop_service_pid_entry(ent) {
+                        failed.push(ent.clone());
+                    }
+                }
+
+                // 再次确认
+                let still = list_service_pids()
+                    .into_iter()
+                    .filter(|x| is_pid_running(x.pid))
+                    .collect::<Vec<_>>();
+
+                if !failed.is_empty() || !still.is_empty() {
+                    // 阻止退出：提示用户退出不成功，并引导去状态面板查看日志/手动停止
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                    let msg = format!(
+                        "退出失败：后台服务仍在运行。\n\n请先在“状态面板”点击“停止服务”，确认状态变为“未运行”。\n\n仍在运行的进程：{}",
+                        still
+                            .iter()
+                            .map(|x| format!("{} (PID={}, pidFile={})", x.workspace_id, x.pid, x.pid_file))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                    let _ = app.emit("open_status", serde_json::json!({}));
+                    let _ = app.emit("quit_failed", serde_json::json!({ "message": msg }));
+                } else {
+                    app.exit(0);
+                }
             }
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
@@ -1106,6 +1268,19 @@ async fn create_venv(python_command: Vec<String>, venv_dir: String) -> Result<St
 fn venv_python_path(venv_dir: &str) -> PathBuf {
     let v = PathBuf::from(venv_dir);
     if cfg!(windows) {
+        v.join("Scripts").join("python.exe")
+    } else {
+        v.join("bin").join("python")
+    }
+}
+
+fn venv_pythonw_path(venv_dir: &str) -> PathBuf {
+    let v = PathBuf::from(venv_dir);
+    if cfg!(windows) {
+        let p = v.join("Scripts").join("pythonw.exe");
+        if p.exists() {
+            return p;
+        }
         v.join("Scripts").join("python.exe")
     } else {
         v.join("bin").join("python")
