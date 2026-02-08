@@ -84,7 +84,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            bundles: "msi"
+            bundles: "nsis"
             args: ""
           - platform: ubuntu-22.04
             bundles: "deb,appimage"
@@ -161,12 +161,22 @@ jobs:
             base="$(basename "$f")"
             # 统一文件名：把空格换成点，避免 Release 里出现重复/难找的资产名
             local norm="${base// /.}"
+
+            # Windows：强制使用 CN 后缀（避免 Release 资产显示 en-US / 并与本地“中文安装器”保持一致）
+            if [ "${RUNNER_OS}" = "Windows" ]; then
+              norm="${norm/_x64_en-US/_x64_CN}"
+              norm="${norm/_x64_zh-CN/_x64_CN}"
+              norm="${norm/_x64_zh_CN/_x64_CN}"
+              norm="${norm/_arm64_en-US/_arm64_CN}"
+              norm="${norm/_arm64_zh-CN/_arm64_CN}"
+              norm="${norm/_arm64_zh_CN/_arm64_CN}"
+            fi
             cp -f "$f" "${OUT_DIR}/${norm}"
           }
 
           want=()
           case "${RUNNER_OS}" in
-            Windows) want=("msi") ;;
+            Windows) want=("exe") ;;
             macOS) want=("dmg") ;;
             Linux) want=("deb" "AppImage") ;;
             *) echo "Unsupported RUNNER_OS=${RUNNER_OS}" >&2; exit 2 ;;
@@ -175,6 +185,20 @@ jobs:
           found=0
           for ext in "${want[@]}"; do
             while IFS= read -r -d '' f; do
+              # Windows：只取 NSIS 安装器（bundle/nsis/*.exe），过滤掉卸载器等其他 exe
+              if [ "${RUNNER_OS}" = "Windows" ]; then
+                case "$f" in
+                  */nsis/*.exe)
+                    if [ "$(basename "$f")" = "uninstall.exe" ]; then
+                      continue
+                    fi
+                    ;;
+                  *)
+                    continue
+                    ;;
+                esac
+              fi
+
               copy_norm "$f"
               found=$((found+1))
             done < <(find "${BUNDLE_DIR}" -type f -name "*.${ext}" -print0)
