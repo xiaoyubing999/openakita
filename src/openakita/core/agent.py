@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 # 默认上下文预算：基于 150K context_window 计算 (150000 - 4096 输出预留) * 0.85 ≈ 124K
 # 仅在无法从端点配置获取 context_window 时使用此兜底值
 DEFAULT_MAX_CONTEXT_TOKENS = 124000
-CHARS_PER_TOKEN = 4  # 简单估算: 约 4 字符 = 1 token
+CHARS_PER_TOKEN = 2  # JSON 序列化后约 2 字符 = 1 token（与 brain.py 一致）
 MIN_RECENT_TURNS = 4  # 至少保留最近 4 轮对话
 COMPRESSION_RATIO = 0.15  # 目标压缩到原上下文的 15%
 CHUNK_MAX_TOKENS = 30000  # 每次发给 LLM 压缩的单块上限
@@ -1907,27 +1907,21 @@ search_github → install_skill → 使用
         return max(int(chinese_tokens + english_tokens), 1)
 
     def _estimate_messages_tokens(self, messages: list[dict]) -> int:
-        """估算消息列表的 token 数量"""
-        total = 0
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                total += self._estimate_tokens(content)
-            elif isinstance(content, list):
-                # 处理复杂内容 (tool_use, tool_result 等)
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text":
-                            total += self._estimate_tokens(item.get("text", ""))
-                        elif item.get("type") == "tool_result":
-                            total += self._estimate_tokens(str(item.get("content", "")))
-                        elif item.get("type") == "tool_use":
-                            total += self._estimate_tokens(json.dumps(item.get("input", {})))
-                        # 图片等二进制内容单独计算
-                        elif item.get("type") == "image":
-                            total += 1000  # 图片固定估算
-            total += 4  # 每条消息的格式开销
-        return total
+        """估算消息列表的 token 数量（使用 JSON 序列化方式，与 brain.py 一致）"""
+        try:
+            messages_text = json.dumps(messages, ensure_ascii=False, default=str)
+            return max(int(len(messages_text) / 2), 1)
+        except Exception:
+            # fallback: 逐条估算
+            total = 0
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    total += self._estimate_tokens(content)
+                elif isinstance(content, list):
+                    total += self._estimate_tokens(json.dumps(content, ensure_ascii=False, default=str))
+                total += 4
+            return total
 
     @staticmethod
     def _group_messages(messages: list[dict]) -> list[list[dict]]:
@@ -2000,7 +1994,9 @@ search_github → install_skill → 使用
 
         return groups
 
-    async def _compress_context(self, messages: list[dict], max_tokens: int = None) -> list[dict]:
+    async def _compress_context(
+        self, messages: list[dict], max_tokens: int = None, system_prompt: str = None
+    ) -> list[dict]:
         """
         压缩对话上下文（使用 LLM 分块压缩，保证 tool 配对完整性）
 
@@ -2014,21 +2010,45 @@ search_github → install_skill → 使用
         Args:
             messages: 消息列表
             max_tokens: 最大 token 数 (默认动态获取或使用 DEFAULT_MAX_CONTEXT_TOKENS)
+            system_prompt: 实际发送给 LLM 的 system_prompt（用于更准确估算系统 token）
 
         Returns:
             压缩后的消息列表
         """
         max_tokens = max_tokens or self._get_max_context_tokens()
 
-        # 估算系统提示的 token
-        system_tokens = self._estimate_tokens(self._context.system)
-        hard_limit = max_tokens - system_tokens - 1000  # 绝对上限（留 1000 给响应）
+        # 估算系统提示的 token：优先使用传入的实际 system_prompt
+        system_tokens = self._estimate_tokens(system_prompt or self._context.system)
+
+        # 估算工具定义的 token（60 个工具可达 15K-25K tokens）
+        tools_tokens = 0
+        if hasattr(self, '_tools') and self._tools:
+            try:
+                tools_text = json.dumps(self._tools, ensure_ascii=False, default=str)
+                tools_tokens = int(len(tools_text) / 2)
+            except Exception:
+                tools_tokens = len(self._tools) * 300  # 保守估算每个工具 300 tokens
+
+        hard_limit = max_tokens - system_tokens - tools_tokens - 1000  # 绝对上限（留 1000 给响应）
+        # 安全保护：hard_limit 不能为负或过小（system+tools 过大时兜底）
+        if hard_limit < 4096:
+            logger.warning(
+                f"[Compress] hard_limit too small ({hard_limit}), "
+                f"max={max_tokens}, system={system_tokens}, tools={tools_tokens}. "
+                f"Falling back to 4096."
+            )
+            hard_limit = 4096
         soft_limit = int(hard_limit * 0.7)  # 70% 提前压缩阈值，留出充足缓冲
 
         current_tokens = self._estimate_messages_tokens(messages)
 
         # 如果没超过 70% 软阈值，直接返回
         if current_tokens <= soft_limit:
+            if current_tokens > soft_limit * 0.5:
+                logger.debug(
+                    f"[Compress] Skip: {current_tokens} tokens < soft_limit {soft_limit} "
+                    f"(max={max_tokens}, system={system_tokens}, tools={tools_tokens})"
+                )
             return messages
 
         logger.info(
@@ -2219,12 +2239,30 @@ search_github → install_skill → 使用
                         "content": f"请将以下内容压缩到 {target_chars} 字以内:\n\n{text}",
                     }
                 ],
+                use_thinking=False,  # 压缩不需要 thinking，避免结果被放入 thinking 块
             )
 
             summary = ""
             for block in response.content:
                 if block.type == "text":
                     summary += block.text
+                elif block.type == "thinking" and hasattr(block, "thinking"):
+                    # thinking 块 fallback：当模型把摘要放在 thinking 中时
+                    if not summary:
+                        summary = block.thinking if isinstance(block.thinking, str) else str(block.thinking)
+
+            # 如果仍然为空，记录警告并回退到硬截断
+            if not summary.strip():
+                logger.warning(
+                    f"[Compress] LLM returned empty summary (tokens_out={response.usage.output_tokens}), "
+                    f"falling back to hard truncation"
+                )
+                if len(text) > target_chars:
+                    head = int(target_chars * 0.7)
+                    tail = int(target_chars * 0.2)
+                    return text[:head] + "\n...(压缩失败，已截断)...\n" + text[-tail:]
+                return text
+
             return summary.strip()
 
         except Exception as e:
@@ -2354,17 +2392,34 @@ search_github → install_skill → 使用
                             ),
                         }
                     ],
+                    use_thinking=False,  # 压缩不需要 thinking，避免结果被放入 thinking 块
                 )
 
                 summary = ""
                 for block in response.content:
                     if block.type == "text":
                         summary += block.text
-                chunk_summaries.append(summary.strip())
-                logger.info(
-                    f"Chunk {i + 1}/{len(chunks)}: {chunk_tokens} -> "
-                    f"~{self._estimate_tokens(summary)} tokens"
-                )
+                    elif block.type == "thinking" and hasattr(block, "thinking"):
+                        # thinking 块 fallback：当模型把摘要放在 thinking 中时
+                        if not summary:
+                            summary = block.thinking if isinstance(block.thinking, str) else str(block.thinking)
+
+                if not summary.strip():
+                    # 摘要为空，回退到硬截断
+                    logger.warning(f"[Compress] Chunk {i + 1} returned empty summary, using hard truncation")
+                    max_chars = chunk_target * CHARS_PER_TOKEN
+                    if len(chunk) > max_chars:
+                        chunk_summaries.append(
+                            chunk[:max_chars // 2] + "\n...(摘要失败，已截断)...\n"
+                        )
+                    else:
+                        chunk_summaries.append(chunk)
+                else:
+                    chunk_summaries.append(summary.strip())
+                    logger.info(
+                        f"Chunk {i + 1}/{len(chunks)}: {chunk_tokens} -> "
+                        f"~{self._estimate_tokens(summary)} tokens"
+                    )
 
             except Exception as e:
                 logger.warning(f"Failed to summarize chunk {i + 1}: {e}")
@@ -3460,7 +3515,9 @@ NEXT: 建议的下一步（如有）"""
 
             # 每次迭代前检查上下文大小
             if iteration > 0:
-                working_messages = await self._compress_context(working_messages)
+                working_messages = await self._compress_context(
+                    working_messages, system_prompt=_build_effective_system_prompt()
+                )
 
             # 调用 Brain，传递工具列表（在线程池中执行同步调用，避免事件循环冲突）
             try:
@@ -4038,7 +4095,9 @@ NEXT: 建议的下一步（如有）"""
 
             # 每次迭代前检查上下文大小（工具调用可能产生大量输出）
             if iteration > 0:
-                messages = await self._compress_context(messages)
+                messages = await self._compress_context(
+                    messages, system_prompt=_build_effective_system_prompt_cli()
+                )
 
             # 调用 Brain，传递工具列表（在线程池中执行同步调用）
             response = await asyncio.to_thread(
@@ -4391,7 +4450,9 @@ NEXT: 建议的下一步（如有）"""
 
                 # 检查并压缩上下文（任务执行可能产生大量工具输出）
                 if iteration > 1:
-                    messages = await self._compress_context(messages)
+                    messages = await self._compress_context(
+                        messages, system_prompt=_build_effective_system_prompt_task()
+                    )
 
                 # 调用 Brain（在线程池中执行同步调用）
                 try:

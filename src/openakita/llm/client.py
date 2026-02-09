@@ -502,7 +502,7 @@ class LLMClient:
 
                     logger.info(
                         f"[LLM] endpoint={provider.name} model={provider.model} "
-                        f"action=response tokens_out={response.usage.output_tokens}"
+                        f"action=response tokens_in={response.usage.input_tokens} tokens_out={response.usage.output_tokens}"
                     )
 
                     return response
