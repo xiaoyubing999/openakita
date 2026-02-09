@@ -3236,6 +3236,23 @@ NEXT: 建议的下一步（如有）"""
         if task_def:
             system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
 
+        # === Plan 持久化：保存不含 Plan 的基础提示词，循环内动态追加 ===
+        base_system_prompt = system_prompt
+
+        def _build_effective_system_prompt() -> str:
+            """在 base_system_prompt 基础上动态追加活跃 Plan 段落（每轮刷新最新状态）"""
+            from ..tools.handlers.plan import get_active_plan_prompt
+
+            _cid = getattr(self, "_current_conversation_id", None) or getattr(
+                self, "_current_session_id", None
+            )
+            prompt = base_system_prompt
+            if _cid:
+                plan_section = get_active_plan_prompt(_cid)
+                if plan_section:
+                    prompt += f"\n\n{plan_section}\n"
+            return prompt
+
         # 获取当前模型
         current_model = self.brain.model
 
@@ -3451,7 +3468,7 @@ NEXT: 建议的下一步（如有）"""
                     self.brain.messages_create,
                     model=current_model,
                     max_tokens=self.brain.max_tokens,
-                    system=system_prompt,
+                    system=_build_effective_system_prompt(),
                     tools=self._tools,
                     messages=working_messages,
                     conversation_id=getattr(self, "_current_conversation_id", None),
@@ -3988,6 +4005,23 @@ NEXT: 建议的下一步（如有）"""
 
         max_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
 
+        # === Plan 持久化：保存不含 Plan 的基础提示词，循环内动态追加 ===
+        _base_system_prompt_cli = self._context.system
+
+        def _build_effective_system_prompt_cli() -> str:
+            """在基础提示词上动态追加活跃 Plan 段落（CLI 路径）"""
+            from ..tools.handlers.plan import get_active_plan_prompt
+
+            _cid = getattr(self, "_current_conversation_id", None) or getattr(
+                self, "_current_session_id", None
+            )
+            prompt = _base_system_prompt_cli
+            if _cid:
+                plan_section = get_active_plan_prompt(_cid)
+                if plan_section:
+                    prompt += f"\n\n{plan_section}\n"
+            return prompt
+
         # 防止循环检测
         recent_tool_calls: list[str] = []
         max_repeated_calls = 3
@@ -4007,7 +4041,7 @@ NEXT: 建议的下一步（如有）"""
                 self.brain.messages_create,
                 model=self.brain.model,
                 max_tokens=self.brain.max_tokens,
-                system=self._context.system,
+                system=_build_effective_system_prompt_cli(),
                 tools=self._tools,
                 messages=messages,
             )
@@ -4241,6 +4275,20 @@ NEXT: 建议的下一步（如有）"""
 永不放弃，直到任务完成！"""
         )
 
+        # === Plan 持久化：保存不含 Plan 的基础提示词，循环内动态追加 ===
+        _base_system_prompt_task = system_prompt
+        _task_conversation_id = task.session_id or f"task:{task.id}"
+
+        def _build_effective_system_prompt_task() -> str:
+            """在基础提示词上动态追加活跃 Plan 段落（Task 路径）"""
+            from ..tools.handlers.plan import get_active_plan_prompt
+
+            prompt = _base_system_prompt_task
+            plan_section = get_active_plan_prompt(_task_conversation_id)
+            if plan_section:
+                prompt += f"\n\n{plan_section}\n"
+            return prompt
+
         # === 关键：保存原始任务描述，用于模型切换时重置上下文 ===
         original_task_message = {"role": "user", "content": task.description}
         messages = [original_task_message.copy()]
@@ -4346,7 +4394,7 @@ NEXT: 建议的下一步（如有）"""
                     response = await asyncio.to_thread(
                         self.brain.messages_create,
                         max_tokens=self.brain.max_tokens,
-                        system=system_prompt,
+                        system=_build_effective_system_prompt_task(),
                         tools=self._tools,
                         messages=messages,
                         conversation_id=conversation_id,
@@ -4544,7 +4592,7 @@ NEXT: 建议的下一步（如有）"""
                     summary_response = await asyncio.to_thread(
                         self.brain.messages_create,
                         max_tokens=1000,
-                        system=system_prompt,
+                        system=_build_effective_system_prompt_task(),
                         messages=messages,
                         conversation_id=conversation_id,
                     )

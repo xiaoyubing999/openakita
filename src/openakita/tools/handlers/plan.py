@@ -9,6 +9,7 @@ Plan 模式处理器
 """
 
 import logging
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -83,6 +84,19 @@ def register_plan_handler(session_id: str, handler: "PlanHandler") -> None:
 def get_plan_handler_for_session(session_id: str) -> Optional["PlanHandler"]:
     """获取 session 对应的 PlanHandler 实例"""
     return _session_handlers.get(session_id)
+
+
+def get_active_plan_prompt(session_id: str) -> str:
+    """
+    获取 session 对应的活跃 Plan 提示词段落（注入 system_prompt 用）。
+
+    返回紧凑格式的计划摘要，包含所有步骤及其当前状态。
+    如果没有活跃 Plan 或 Plan 已完成，返回空字符串。
+    """
+    handler = get_plan_handler_for_session(session_id)
+    if handler:
+        return handler.get_plan_prompt_section()
+    return ""
 
 
 def should_require_plan(user_message: str) -> bool:
@@ -185,7 +199,16 @@ class PlanHandler:
 
     async def _create_plan(self, params: dict) -> str:
         """创建任务计划"""
-        plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # 防止重复创建：如果已有活跃 Plan，返回当前状态
+        if self.current_plan and self.current_plan.get("status") == "in_progress":
+            plan_id = self.current_plan["id"]
+            status = self._get_status()
+            return (
+                f"⚠️ 已有活跃计划 {plan_id}，不允许重复创建。\n"
+                f"请使用 update_plan_step 继续执行当前计划。\n\n{status}"
+            )
+
+        plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
 
         # 创建 Plan 后：确保工具护栏至少追问 1 次，避免“无确认文本”直接结束
         # 注意：chat 循环里也会基于 active plan 动态提升 effective retries，这里是额外的全局兜底。
@@ -300,18 +323,15 @@ class PlanHandler:
         self._add_log(f"{status_emoji} {step_id}: {result or status}")
 
         # 通知用户（每个状态变化都通知）
-        # 计算进度
+        # 计算进度：使用步骤的位置序号（而非已完成数量）
         steps = self.current_plan["steps"]
-        completed_count = sum(1 for s in steps if s["status"] in ["completed", "failed", "skipped"])
         total_count = len(steps)
 
-        # 构建通知消息
-        {
-            "in_progress": "开始执行",
-            "completed": "完成",
-            "failed": "失败",
-            "skipped": "跳过",
-        }.get(status, status)
+        # 使用步骤在列表中的位置序号（1-indexed）
+        step_number = next(
+            (i + 1 for i, s in enumerate(steps) if s["id"] == step_id),
+            0,
+        )
 
         # 查找步骤描述
         step_desc = ""
@@ -320,7 +340,7 @@ class PlanHandler:
                 step_desc = s.get("description", "")
                 break
 
-        message = f"{status_emoji} **[{completed_count}/{total_count}]** {step_desc or step_id}"
+        message = f"{status_emoji} **[{step_number}/{total_count}]** {step_desc or step_id}"
         if status == "completed" and result:
             message += f"\n   结果：{result}"
         elif status == "failed":
@@ -460,6 +480,55 @@ class PlanHandler:
         message += "\n开始执行..."
 
         return message
+
+    def get_plan_prompt_section(self) -> str:
+        """
+        生成注入 system_prompt 的计划摘要段落。
+
+        该段落放在 system_prompt 中，不随 working_messages 压缩而丢失，
+        确保 LLM 在任何时候都能看到完整的计划结构和最新进度。
+
+        Returns:
+            紧凑格式的计划段落字符串；无活跃 Plan 或 Plan 已完成时返回空字符串。
+        """
+        if not self.current_plan or self.current_plan.get("status") == "completed":
+            return ""
+
+        plan = self.current_plan
+        steps = plan["steps"]
+        total = len(steps)
+        completed = sum(1 for s in steps if s["status"] in ("completed", "failed", "skipped"))
+
+        lines = [
+            f"## Active Plan: {plan['task_summary']}  (id: {plan['id']})",
+            f"Progress: {completed}/{total} done",
+            "",
+        ]
+
+        for i, step in enumerate(steps):
+            num = i + 1
+            icon = {
+                "pending": "  ",
+                "in_progress": ">>",
+                "completed": "OK",
+                "failed": "XX",
+                "skipped": "--",
+            }.get(step["status"], "??")
+            desc = step.get("description", step["id"])
+            result_hint = ""
+            if step["status"] == "completed" and step.get("result"):
+                result_hint = f" => {step['result'][:80]}"
+            elif step["status"] == "failed" and step.get("result"):
+                result_hint = f" => FAIL: {step['result'][:60]}"
+            lines.append(f"  [{icon}] {num}. {desc}{result_hint}")
+
+        lines.append("")
+        lines.append(
+            "IMPORTANT: This plan already exists. Do NOT call create_plan again. "
+            "Continue from the current step using update_plan_step."
+        )
+
+        return "\n".join(lines)
 
     def _save_plan_markdown(self) -> None:
         """保存计划到 Markdown 文件"""
