@@ -509,7 +509,7 @@ class TaskExecutor:
         调用 SelfChecker.run_daily_check()
         """
         try:
-            from datetime import datetime, timedelta
+            from datetime import datetime
 
             from ..config import settings
             from ..core.brain import Brain
@@ -546,7 +546,7 @@ class TaskExecutor:
                         channel, chat_id = target
                         adapter = self.gateway.get_adapter(channel)
                         if adapter and adapter.is_running:
-                            report_date = getattr(report, "date", "") or now.strftime("%Y-%m-%d")
+                            report_date = getattr(report, "date", "") or datetime.now().strftime("%Y-%m-%d")
                             await self._send_report_chunks(
                                 adapter, chat_id, report_md, report_date
                             )
