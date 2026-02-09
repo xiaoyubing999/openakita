@@ -516,8 +516,29 @@ class LLMClient:
                     break
 
                 except LLMError as e:
+                    error_str = str(e)
                     logger.warning(f"[LLM] endpoint={provider.name} action=error error={e}")
                     errors.append(f"{provider.name}: {e}")
+
+                    # 检测不可重试的结构性错误（重试不会修复，浪费配额）
+                    # 这类错误通常是消息格式问题，需要上层修复上下文后重新提交
+                    non_retryable_patterns = [
+                        "invalid_request_error",
+                        "invalid_parameter",
+                        "messages with role",
+                        "must be a response to a preceeding message",
+                    ]
+                    is_non_retryable = any(
+                        pattern in error_str.lower() for pattern in non_retryable_patterns
+                    )
+
+                    if is_non_retryable:
+                        logger.error(
+                            f"[LLM] endpoint={provider.name} non-retryable structural error detected, "
+                            f"skipping remaining retries. Error: {error_str[:200]}"
+                        )
+                        provider.mark_unhealthy(error_str)
+                        break  # 跳出重试循环，直接让上层处理
 
                     # 无备选时才重试（或禁止 failover 时）
                     if (not has_fallback or not allow_failover) and attempt < max_attempts - 1:
@@ -528,7 +549,7 @@ class LLMClient:
                         await asyncio.sleep(retry_delay)
                     else:
                         # 最后一次尝试也失败，设置冷静期
-                        provider.mark_unhealthy(str(e))
+                        provider.mark_unhealthy(error_str)
                         logger.warning(f"[LLM] endpoint={provider.name} cooldown=180s")
 
                 except Exception as e:

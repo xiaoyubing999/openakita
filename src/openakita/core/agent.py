@@ -85,7 +85,9 @@ if sys.platform == "win32":
 logger = logging.getLogger(__name__)
 
 # 上下文管理常量
-DEFAULT_MAX_CONTEXT_TOKENS = 180000  # 默认上下文限制 (留 20k buffer)，可通过端点配置动态覆盖
+# 默认上下文预算：基于 150K context_window 计算 (150000 - 4096 输出预留) * 0.85 ≈ 124K
+# 仅在无法从端点配置获取 context_window 时使用此兜底值
+DEFAULT_MAX_CONTEXT_TOKENS = 124000
 CHARS_PER_TOKEN = 4  # 简单估算: 约 4 字符 = 1 token
 MIN_RECENT_TURNS = 4  # 至少保留最近 4 轮对话
 COMPRESSION_RATIO = 0.15  # 目标压缩到原上下文的 15%
@@ -1846,19 +1848,42 @@ search_github → install_skill → 使用
 
     def _get_max_context_tokens(self) -> int:
         """
-        动态获取当前模型的上下文 token 上限
+        动态获取当前模型的上下文窗口大小
 
-        从当前端点配置获取 max_tokens，留 15% buffer 给响应和格式开销。
-        无法获取时 fallback 到 DEFAULT_MAX_CONTEXT_TOKENS。
+        优先级：
+        1. 端点配置的 context_window 字段（输入+输出总 token 上限）
+        2. 如果 context_window 缺失/为 0，使用兜底值 150000
+        3. 减去 max_tokens（输出预留）和 15% buffer → 可用对话预算
+        4. 完全无法获取时 fallback 到 DEFAULT_MAX_CONTEXT_TOKENS (124K)
+
+        额外保护：
+        - context_window 异常小 (< 8192) 时使用兜底值
+        - 计算结果异常小 (< 4096) 时使用兜底值
         """
+        FALLBACK_CONTEXT_WINDOW = 150000  # 兜底上下文窗口
+
         try:
             info = self.brain.get_current_model_info()
             ep_name = info.get("name", "")
             endpoints = self.brain._llm_client.endpoints
             for ep in endpoints:
                 if ep.name == ep_name:
-                    if ep.max_tokens and ep.max_tokens > 0:
-                        return int(ep.max_tokens * 0.85)  # 留 15% buffer
+                    ctx = getattr(ep, "context_window", 0) or 0
+
+                    # context_window 缺失或异常小 → 使用兜底值
+                    if ctx < 8192:
+                        ctx = FALLBACK_CONTEXT_WINDOW
+
+                    # context_window 是总上限，减去输出预留和 buffer
+                    output_reserve = ep.max_tokens or 4096
+                    # 保护：output_reserve 不能超过 context_window 的一半
+                    output_reserve = min(output_reserve, ctx // 2)
+                    result = int((ctx - output_reserve) * 0.85)
+
+                    # 最终安全检查：结果不能太小
+                    if result < 4096:
+                        return DEFAULT_MAX_CONTEXT_TOKENS
+                    return result
             return DEFAULT_MAX_CONTEXT_TOKENS
         except Exception:
             return DEFAULT_MAX_CONTEXT_TOKENS
@@ -1867,11 +1892,19 @@ search_github → install_skill → 使用
         """
         估算文本的 token 数量
 
-        简单估算: 约 4 字符 = 1 token (对中英文混合比较准确)
+        使用中英文感知算法：中文约 1.5 字符/token，英文约 4 字符/token。
+        与 prompt.budget.estimate_tokens() 保持一致，避免各处估算值差异过大。
         """
         if not text:
             return 0
-        return len(text) // CHARS_PER_TOKEN + 1
+        # 统计中文字符数量
+        chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        total_chars = len(text)
+        english_chars = total_chars - chinese_chars
+        # 中文约 1.5 字符/token，英文约 4 字符/token
+        chinese_tokens = chinese_chars / 1.5
+        english_tokens = english_chars / 4
+        return max(int(chinese_tokens + english_tokens), 1)
 
     def _estimate_messages_tokens(self, messages: list[dict]) -> int:
         """估算消息列表的 token 数量"""
@@ -1896,15 +1929,87 @@ search_github → install_skill → 使用
             total += 4  # 每条消息的格式开销
         return total
 
+    @staticmethod
+    def _group_messages(messages: list[dict]) -> list[list[dict]]:
+        """
+        将消息列表分组为"工具交互组"，保证 tool_calls/tool 配对不被拆散
+
+        分组规则：
+        - assistant 消息如果包含 tool_calls（即 content 中有 type=tool_use），
+          则该 assistant 和紧随其后所有 role=user 且仅含 tool_result 的消息归为同一组
+        - 其他消息各自独立成组
+        - 系统注入的纯文本 user 消息（如 LoopGuard 提示）独立成组
+
+        Returns:
+            分组后的列表，每个元素是一组消息（list[dict]）
+        """
+        if not messages:
+            return []
+
+        groups: list[list[dict]] = []
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            # 检测 assistant 消息是否包含 tool_use
+            has_tool_calls = False
+            if role == "assistant" and isinstance(content, list):
+                has_tool_calls = any(
+                    isinstance(item, dict) and item.get("type") == "tool_use"
+                    for item in content
+                )
+
+            if has_tool_calls:
+                # 开始一个工具交互组：assistant(tool_calls) + 后续的 tool_result 消息
+                group = [msg]
+                i += 1
+                while i < len(messages):
+                    next_msg = messages[i]
+                    next_role = next_msg.get("role", "")
+                    next_content = next_msg.get("content", "")
+
+                    # user 消息仅含 tool_result → 属于本工具组
+                    if next_role == "user" and isinstance(next_content, list):
+                        all_tool_results = all(
+                            isinstance(item, dict) and item.get("type") == "tool_result"
+                            for item in next_content
+                            if isinstance(item, dict)
+                        )
+                        if all_tool_results and next_content:
+                            group.append(next_msg)
+                            i += 1
+                            continue
+
+                    # tool 角色消息（OpenAI 格式）→ 也属于本工具组
+                    if next_role == "tool":
+                        group.append(next_msg)
+                        i += 1
+                        continue
+
+                    # 其他消息类型 → 工具组结束
+                    break
+
+                groups.append(group)
+            else:
+                # 普通消息独立成组
+                groups.append([msg])
+                i += 1
+
+        return groups
+
     async def _compress_context(self, messages: list[dict], max_tokens: int = None) -> list[dict]:
         """
-        压缩对话上下文（使用 LLM 分块压缩，目标压缩到 15%）
+        压缩对话上下文（使用 LLM 分块压缩，保证 tool 配对完整性）
 
         策略:
         1. 先对单条过大的 tool_result 内容独立 LLM 压缩
-        2. 保留最近 MIN_RECENT_TURNS 轮对话完整
-        3. 将早期对话分块，每块调 LLM 摘要（目标 15%）
-        4. 如果还是太长，递归压缩（减少保留轮数）
+        2. 将消息按工具交互组分组（assistant+tool_calls 与后续 tool_result 为原子组）
+        3. 按组边界切割，保留最近若干组完整
+        4. 早期组整体送 LLM 摘要压缩
+        5. 如果还是太长，递归压缩（减少保留组数）
 
         Args:
             messages: 消息列表
@@ -1938,23 +2043,34 @@ search_github → install_skill → 使用
             logger.info(f"After tool_result compression: {current_tokens} tokens, within limit")
             return messages
 
-        # 计算需要保留的最近对话数量 (user + assistant = 1 轮)
-        recent_count = MIN_RECENT_TURNS * 2  # 4 轮 = 8 条消息
+        # 第二步：按工具交互组分组，保证 tool_calls/tool 配对不被拆散
+        groups = self._group_messages(messages)
 
-        if len(messages) <= recent_count:
-            # 消息不多但每条很大——已在上面做了 tool_result 压缩
-            # 如果还超限，尝试对最近消息中的大 tool_result 再压缩（更激进的阈值）
+        # 计算需要保留的最近组数量（目标保留 MIN_RECENT_TURNS 组）
+        recent_group_count = min(MIN_RECENT_TURNS, len(groups))
+
+        if len(groups) <= recent_group_count:
+            # 组数不多但每组很大——已在上面做了 tool_result 压缩
             logger.warning(
-                f"Only {len(messages)} messages but still {current_tokens} tokens, "
+                f"Only {len(groups)} groups but still {current_tokens} tokens, "
                 f"attempting aggressive tool_result compression..."
             )
             messages = await self._compress_large_tool_results(messages, threshold=2000)
-            # 硬保底：如果激进压缩后仍超 hard_limit，硬截断
             return self._hard_truncate_if_needed(messages, hard_limit)
 
-        # 分离早期消息和最近消息
-        early_messages = messages[:-recent_count]
-        recent_messages = messages[-recent_count:]
+        # 按组边界切割：早期组 vs 最近组
+        early_groups = groups[:-recent_group_count]
+        recent_groups = groups[-recent_group_count:]
+
+        # 展平组为消息列表
+        early_messages = [msg for group in early_groups for msg in group]
+        recent_messages = [msg for group in recent_groups for msg in group]
+
+        logger.info(
+            f"Split into {len(early_groups)} early groups ({len(early_messages)} msgs) "
+            f"and {len(recent_groups)} recent groups ({len(recent_messages)} msgs) "
+            f"at safe tool-pair boundary"
+        )
 
         # 使用 LLM 分块摘要早期对话
         early_tokens = self._estimate_messages_tokens(early_messages)
@@ -1979,7 +2095,7 @@ search_github → install_skill → 使用
             logger.info(f"Compressed context from {current_tokens} to {compressed_tokens} tokens")
             return compressed
 
-        # 还是太长，递归压缩（减少保留的最近消息数量）
+        # 还是太长，递归压缩（减少保留的最近组数量）
         logger.warning(f"Context still large ({compressed_tokens} tokens), compressing further...")
         compressed = await self._compress_further(compressed, soft_limit)
 
@@ -2279,7 +2395,7 @@ search_github → install_skill → 使用
 
     async def _compress_further(self, messages: list[dict], max_tokens: int) -> list[dict]:
         """
-        递归压缩：减少保留的最近消息数量，继续压缩
+        递归压缩：减少保留的最近组数量，继续压缩（保证 tool 配对完整性）
 
         Args:
             messages: 当前消息列表
@@ -2293,15 +2409,20 @@ search_github → install_skill → 使用
         if current_tokens <= max_tokens:
             return messages
 
-        # 保留最近 4 条消息完整（比 _compress_context 的 recent_count 更小）
-        recent_count = min(4, len(messages))
-        recent_messages = messages[-recent_count:] if recent_count > 0 else []
-        early_messages = messages[:-recent_count] if len(messages) > recent_count else []
+        # 按组边界切割，保留最近 2 组（比 _compress_context 的 MIN_RECENT_TURNS 更少）
+        groups = self._group_messages(messages)
+        recent_group_count = min(2, len(groups))
 
-        if not early_messages:
-            # 只有最近消息了，做最后一次 tool_result 压缩
+        if len(groups) <= recent_group_count:
+            # 只有最近的几个组了，做最后一次 tool_result 压缩
             logger.warning("Cannot compress further, attempting final tool_result compression")
             return await self._compress_large_tool_results(messages, threshold=1000)
+
+        early_groups = groups[:-recent_group_count]
+        recent_groups = groups[-recent_group_count:]
+
+        early_messages = [msg for group in early_groups for msg in group]
+        recent_messages = [msg for group in recent_groups for msg in group]
 
         # 用 LLM 压缩早期消息
         early_tokens = self._estimate_messages_tokens(early_messages)
@@ -3170,18 +3291,41 @@ NEXT: 建议的下一步（如有）"""
         tool_pattern_window = 8               # 模式检测窗口大小
         llm_self_check_interval = 10          # 每 N 轮触发一次 LLM 自检提示
         extreme_safety_threshold = 50         # 极端安全阈值：不终止，而是提醒用户
+        _last_browser_url = ""                # 最近一次 browser_navigate 的 URL（用于区分不同页面）
+
+        # 浏览器"读页面状态"工具：参数可能为空但页面不同，需要额外区分
+        _browser_page_read_tools = frozenset({
+            "browser_get_content", "browser_screenshot", "browser_list_tabs",
+        })
 
         def _make_tool_signature(tc: dict) -> str:
-            """生成工具签名：名称 + 参数哈希。不同参数的同名工具视为不同调用。"""
+            """
+            生成工具签名：名称 + 参数哈希。不同参数的同名工具视为不同调用。
+
+            对浏览器"读页面"类工具（如 browser_get_content），当参数为空时
+            将最近导航的 URL 纳入哈希，避免在不同页面上的同名空参数调用
+            被误判为重复循环。
+            """
+            nonlocal _last_browser_url
             import hashlib
             name = tc.get("name", "")
             inp = tc.get("input", {})
+
+            # 跟踪最近的 browser_navigate URL
+            if name == "browser_navigate":
+                _last_browser_url = inp.get("url", "")
+
             # 对参数做稳定的 JSON 序列化后取 hash
             try:
                 import json as _json
                 param_str = _json.dumps(inp, sort_keys=True, ensure_ascii=False)
             except Exception:
                 param_str = str(inp)
+
+            # 对浏览器读页面工具，参数为空/极少时纳入最近 URL 作为区分因子
+            if name in _browser_page_read_tools and len(param_str) <= 20 and _last_browser_url:
+                param_str = f"{param_str}|url={_last_browser_url}"
+
             param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
             return f"{name}({param_hash})"
 
@@ -3418,9 +3562,27 @@ NEXT: 建议的下一步（如有）"""
                             return cleaned_text
                         else:
                             verify_incomplete_count += 1
-                            if verify_incomplete_count >= max_verify_retries:
+
+                            # 检查是否有活跃 Plan 且仍有 pending steps
+                            has_active_plan_pending = False
+                            try:
+                                plan_handler = self._get_handler("plan")
+                                if plan_handler and hasattr(plan_handler, "current_plan") and plan_handler.current_plan:
+                                    steps = plan_handler.current_plan.get("steps", [])
+                                    pending = [s for s in steps if s.get("status") in ("pending", "in_progress")]
+                                    if pending:
+                                        has_active_plan_pending = True
+                            except Exception:
+                                pass
+
+                            # 有活跃 Plan 时，提高容忍度（Plan 本身就是多步骤任务，不应过早放弃）
+                            effective_max_retries = max_verify_retries * 2 if has_active_plan_pending else max_verify_retries
+
+                            if verify_incomplete_count >= effective_max_retries:
                                 logger.warning(
-                                    f"[ForceToolCall] TaskVerify returned incomplete {verify_incomplete_count} times; stopping without claiming completion"
+                                    f"[ForceToolCall] TaskVerify returned incomplete {verify_incomplete_count} times "
+                                    f"(max={effective_max_retries}, plan_pending={has_active_plan_pending}); "
+                                    f"stopping without claiming completion"
                                 )
                                 return (
                                     f"{cleaned_text}\n\n"
@@ -3429,7 +3591,7 @@ NEXT: 建议的下一步（如有）"""
                                     "我会据此继续完成剩余步骤。"
                                 )
                             logger.info(
-                                f"[ForceToolCall] Task not completed (attempt {verify_incomplete_count}/{max_verify_retries}), continuing..."
+                                f"[ForceToolCall] Task not completed (attempt {verify_incomplete_count}/{effective_max_retries}), continuing..."
                             )
                             # 任务未完成，追加提示让 LLM 继续
                             working_messages.append(
@@ -3438,12 +3600,26 @@ NEXT: 建议的下一步（如有）"""
                                     "content": [{"type": "text", "text": text_content}],
                                 }
                             )
-                            working_messages.append(
-                                {
-                                    "role": "user",
-                                    "content": "[系统提示] 根据复核判断，用户请求可能还有未完成的部分。如果你认为已经完成，请直接给用户一个总结回复；如果确实还有剩余步骤，请继续执行。",
-                                }
-                            )
+
+                            # 有活跃 Plan 时，给更明确的继续指令
+                            if has_active_plan_pending:
+                                working_messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            "[系统提示] 当前 Plan 仍有未完成的步骤。"
+                                            "请立即继续执行下一个 pending 步骤，不要停下来询问用户。"
+                                            "只有在所有步骤完成并交付后才结束任务。"
+                                        ),
+                                    }
+                                )
+                            else:
+                                working_messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": "[系统提示] 根据复核判断，用户请求可能还有未完成的部分。如果你认为已经完成，请直接给用户一个总结回复；如果确实还有剩余步骤，请继续执行。",
+                                    }
+                                )
                             continue
                     else:
                         # LLM 没有返回任何可见文本：优先强制再问 1 次，让模型给出用户可见的确认/总结

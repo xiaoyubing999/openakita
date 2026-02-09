@@ -42,6 +42,7 @@ type EndpointDraft = {
   model: string;
   priority: number;
   max_tokens: number;
+  context_window: number;
   timeout: number;
   capabilities: string[];
   note?: string | null;
@@ -954,6 +955,7 @@ export function App() {
           model: String(e?.model || ""),
           priority: Number.isFinite(Number(e?.priority)) ? Number(e?.priority) : 999,
           max_tokens: Number.isFinite(Number(e?.max_tokens)) ? Number(e?.max_tokens) : 8192,
+          context_window: Number.isFinite(Number(e?.context_window)) ? Number(e?.context_window) : 150000,
           timeout: Number.isFinite(Number(e?.timeout)) ? Number(e?.timeout) : 180,
           capabilities: Array.isArray(e?.capabilities) ? e.capabilities.map((x: any) => String(x)) : [],
           note: e?.note ? String(e.note) : null,
@@ -981,6 +983,7 @@ export function App() {
           model: String(e.model || ""),
           priority: Number.isFinite(Number(e.priority)) ? Number(e.priority) : 1,
           max_tokens: Number.isFinite(Number(e.max_tokens)) ? Number(e.max_tokens) : 2048,
+          context_window: Number.isFinite(Number(e.context_window)) ? Number(e.context_window) : 150000,
           timeout: Number.isFinite(Number(e.timeout)) ? Number(e.timeout) : 30,
           capabilities: Array.isArray(e.capabilities) ? e.capabilities.map((x: any) => String(x)) : ["text"],
           note: e.note ? String(e.note) : null,
@@ -1123,6 +1126,7 @@ export function App() {
         model: compilerModel.trim(),
         priority: base.compiler_endpoints.length + 1,
         max_tokens: 2048,
+        context_window: 150000,
         timeout: 30,
         capabilities: ["text"],
       };
@@ -1323,6 +1327,8 @@ export function App() {
         throw new Error(`端点名称已存在：${editDraft.name.trim()}（请换一个）`);
       }
       const idx = endpoints.findIndex((e: any) => String(e?.name || "") === editingOriginalName);
+      // 编辑时保留原端点的 max_tokens/context_window/timeout（UI 不暴露这些高级字段）
+      const existing = idx >= 0 ? endpoints[idx] : null;
       const next = {
         name: editDraft.name.trim().slice(0, 64),
         provider: editDraft.providerSlug || "custom",
@@ -1331,8 +1337,9 @@ export function App() {
         api_key_env: editDraft.apiKeyEnv.trim(),
         model: editDraft.modelId.trim(),
         priority: normalizePriority(editDraft.priority, 1),
-        max_tokens: 8192,
-        timeout: 180,
+        max_tokens: existing?.max_tokens ?? 8192,
+        context_window: existing?.context_window ?? 150000,
+        timeout: existing?.timeout ?? 180,
         capabilities: editDraft.caps?.length ? editDraft.caps : ["text"],
         extra_params:
           (editDraft.caps || []).includes("thinking") && editDraft.providerSlug === "dashscope"
@@ -1426,6 +1433,7 @@ export function App() {
           model: selectedModelId,
           priority: normalizePriority(endpointPriority, 1),
           max_tokens: 8192,
+          context_window: 150000,
           timeout: 180,
           capabilities: capList,
           // DashScope 思考模式：OpenAkita 的 OpenAI provider 会识别 enable_thinking
