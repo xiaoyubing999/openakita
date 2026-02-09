@@ -75,9 +75,26 @@ feishu = [
     "lark-oapi>=1.2.0",
 ]
 
+# 钉钉 IM 通道 (Stream 模式)
+dingtalk = [
+    "dingtalk-stream>=0.24.0",
+]
+
+# 企业微信 IM 通道
+wework = [
+    "aiohttp>=3.9.0",
+    "pycryptodome>=3.19.0",
+]
+
+# QQ IM 通道 (OneBot 协议)
+qq = [
+    "websockets>=12.0",
+]
+
 # 语音识别 (Whisper)
 whisper = [
     "openai-whisper>=20231117",
+    "static-ffmpeg>=2.7",
 ]
 
 # 浏览器 AI 代理
@@ -99,7 +116,12 @@ windows = [
 all = [
     # 注意：不要让项目“依赖自己”。这里展开成所有 extra 的合集。
     "lark-oapi>=1.2.0",
+    "dingtalk-stream>=0.24.0",
+    "aiohttp>=3.9.0",
+    "pycryptodome>=3.19.0",
+    "websockets>=12.0",
     "openai-whisper>=20231117",
+    "static-ffmpeg>=2.7",
     "browser-use>=0.11.8",
     "langchain-openai>=1.0.0",
     "mss>=9.0.0",

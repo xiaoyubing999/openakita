@@ -91,7 +91,15 @@ class QQAdapter(ChannelAdapter):
         """启动 QQ 客户端"""
         _import_websockets()
 
-        # 连接 WebSocket
+        self._running = True
+
+        # 启动带自动重连的消息接收循环
+        self._receive_task = asyncio.create_task(self._receive_loop_with_reconnect())
+
+        logger.info(f"QQ adapter starting, will connect to {self.config.ws_url}")
+
+    async def _connect_ws(self) -> bool:
+        """建立 WebSocket 连接，成功返回 True"""
         headers = {}
         if self.config.access_token:
             headers["Authorization"] = f"Bearer {self.config.access_token}"
@@ -101,16 +109,11 @@ class QQAdapter(ChannelAdapter):
                 self.config.ws_url,
                 extra_headers=headers,
             )
-
-            # 启动消息接收循环
-            self._receive_task = asyncio.create_task(self._receive_loop())
-
-            self._running = True
             logger.info(f"QQ adapter connected to {self.config.ws_url}")
-
+            return True
         except Exception as e:
             logger.error(f"Failed to connect to OneBot: {e}")
-            raise
+            return False
 
     async def stop(self) -> None:
         """停止 QQ 客户端"""
@@ -126,22 +129,43 @@ class QQAdapter(ChannelAdapter):
 
         logger.info("QQ adapter stopped")
 
-    async def _receive_loop(self) -> None:
-        """WebSocket 消息接收循环"""
-        try:
-            async for message in self._ws:
-                try:
-                    data = json.loads(message)
-                    await self._handle_event(data)
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON: {message}")
-                except Exception as e:
-                    logger.error(f"Error handling event: {e}")
+    async def _receive_loop_with_reconnect(self) -> None:
+        """带自动重连的 WebSocket 消息接收循环"""
+        retry_delay = 1  # 初始重试延迟（秒）
+        max_delay = 60  # 最大重试延迟
 
-        except websockets.ConnectionClosed:
-            logger.warning("WebSocket connection closed")
-        except asyncio.CancelledError:
-            pass
+        while self._running:
+            if not await self._connect_ws():
+                logger.warning(
+                    f"QQ adapter: reconnect in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
+                continue
+
+            # 连接成功，重置延迟
+            retry_delay = 1
+
+            try:
+                async for message in self._ws:
+                    try:
+                        data = json.loads(message)
+                        await self._handle_event(data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON: {message}")
+                    except Exception as e:
+                        logger.error(f"Error handling event: {e}")
+            except websockets.ConnectionClosed:
+                logger.warning("QQ WebSocket connection closed, will reconnect...")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.error(f"QQ WebSocket error: {e}")
+
+            if self._running:
+                logger.info(f"QQ adapter: reconnecting in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
 
     async def _handle_event(self, data: dict) -> None:
         """处理 OneBot 事件"""
@@ -201,6 +225,7 @@ class QQAdapter(ChannelAdapter):
             metadata={
                 "nickname": sender.get("nickname"),
                 "card": sender.get("card"),
+                "is_group": chat_type == "group",
             },
         )
 
@@ -314,7 +339,7 @@ class QQAdapter(ChannelAdapter):
         }
 
         # 创建 Future 等待响应
-        future = asyncio.get_event_loop().create_future()
+        future = asyncio.get_running_loop().create_future()
         self._api_callbacks[echo] = future
 
         try:
@@ -408,9 +433,12 @@ class QQAdapter(ChannelAdapter):
             return Path(media.local_path)
 
         if media.url:
-            import httpx
+            try:
+                import httpx as hx
+            except ImportError:
+                raise ImportError("httpx not installed. Run: pip install httpx")
 
-            async with httpx.AsyncClient() as client:
+            async with hx.AsyncClient() as client:
                 response = await client.get(media.url)
 
                 local_path = self.media_dir / media.filename
@@ -467,6 +495,119 @@ class QQAdapter(ChannelAdapter):
             }
         except Exception:
             return None
+
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+    ) -> str:
+        """
+        发送文件
+
+        OneBot v11 不支持通过 CQ 码/消息段发送文件，
+        必须使用 upload_group_file / upload_private_file 专用 API。
+        """
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        chat_id_int = int(chat_id)
+
+        # 如果有 caption，先发送文本
+        if caption:
+            text_msg = [{"type": "text", "data": {"text": caption}}]
+            try:
+                # 检查最近的消息 metadata 判断群聊/私聊
+                # 默认先尝试群聊（QQ 文件发送常见于群聊）
+                await self._call_api(
+                    "send_group_msg",
+                    {"group_id": chat_id_int, "message": text_msg},
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await self._call_api(
+                        "send_private_msg",
+                        {"user_id": chat_id_int, "message": text_msg},
+                    )
+
+        # 尝试群文件上传
+        try:
+            result = await self._call_api(
+                "upload_group_file",
+                {
+                    "group_id": chat_id_int,
+                    "file": str(path.resolve()),
+                    "name": path.name,
+                },
+            )
+            return str(result.get("message_id", f"file_{chat_id}"))
+        except Exception:
+            pass
+
+        # 回退到私聊文件上传
+        try:
+            result = await self._call_api(
+                "upload_private_file",
+                {
+                    "user_id": chat_id_int,
+                    "file": str(path.resolve()),
+                    "name": path.name,
+                },
+            )
+            return str(result.get("message_id", f"file_{chat_id}"))
+        except Exception as e:
+            raise RuntimeError(f"Failed to send file via OneBot: {e}") from e
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        voice_path: str,
+        caption: str | None = None,
+    ) -> str:
+        """发送语音消息"""
+        path = Path(voice_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Voice file not found: {voice_path}")
+
+        chat_id_int = int(chat_id)
+
+        msg_array = [
+            {"type": "record", "data": {"file": f"file:///{path.resolve()}"}}
+        ]
+
+        # 如果有 caption，加上文本（分两条消息，语音不支持附带文本）
+        if caption:
+            caption_msg = [{"type": "text", "data": {"text": caption}}]
+
+        # 尝试群聊发送
+        try:
+            result = await self._call_api(
+                "send_group_msg",
+                {"group_id": chat_id_int, "message": msg_array},
+            )
+            if caption:
+                with contextlib.suppress(Exception):
+                    await self._call_api(
+                        "send_group_msg",
+                        {"group_id": chat_id_int, "message": caption_msg},
+                    )
+            return str(result.get("message_id", ""))
+        except Exception:
+            pass
+
+        # 回退到私聊
+        result = await self._call_api(
+            "send_private_msg",
+            {"user_id": chat_id_int, "message": msg_array},
+        )
+        if caption:
+            with contextlib.suppress(Exception):
+                await self._call_api(
+                    "send_private_msg",
+                    {"user_id": chat_id_int, "message": caption_msg},
+                )
+        return str(result.get("message_id", ""))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """撤回消息"""

@@ -60,8 +60,8 @@ To get a bot token:
 
 ```bash
 DINGTALK_ENABLED=true
-DINGTALK_APP_KEY=your-app-key
-DINGTALK_APP_SECRET=your-app-secret
+DINGTALK_CLIENT_ID=your-client-id
+DINGTALK_CLIENT_SECRET=your-client-secret
 ```
 
 ### Feishu (Lark)

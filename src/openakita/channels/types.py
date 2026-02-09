@@ -303,6 +303,21 @@ class MessageContent:
         """创建图片消息"""
         return cls(text=caption, images=[image])
 
+    @classmethod
+    def with_file(cls, file: MediaFile, caption: str | None = None) -> "MessageContent":
+        """创建文件消息"""
+        return cls(text=caption, files=[file])
+
+    @classmethod
+    def with_voice(cls, voice: MediaFile, caption: str | None = None) -> "MessageContent":
+        """创建语音消息"""
+        return cls(text=caption, voices=[voice])
+
+    @classmethod
+    def with_video(cls, video: MediaFile, caption: str | None = None) -> "MessageContent":
+        """创建视频消息"""
+        return cls(text=caption, videos=[video])
+
 
 @dataclass
 class UnifiedMessage:
@@ -477,6 +492,84 @@ class OutgoingMessage:
         return cls(
             chat_id=chat_id,
             content=MessageContent.with_image(media, caption),
+            **kwargs,
+        )
+
+    @classmethod
+    def with_file(
+        cls,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        **kwargs,
+    ) -> "OutgoingMessage":
+        """创建文件消息"""
+        import mimetypes
+
+        path = Path(file_path)
+        mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        media = MediaFile.create(
+            filename=path.name,
+            mime_type=mime_type,
+        )
+        media.local_path = str(path)
+        media.status = MediaStatus.READY
+
+        return cls(
+            chat_id=chat_id,
+            content=MessageContent.with_file(media, caption),
+            **kwargs,
+        )
+
+    @classmethod
+    def with_voice(
+        cls,
+        chat_id: str,
+        voice_path: str,
+        caption: str | None = None,
+        **kwargs,
+    ) -> "OutgoingMessage":
+        """创建语音消息"""
+        import mimetypes
+
+        path = Path(voice_path)
+        mime_type = mimetypes.guess_type(str(path))[0] or "audio/ogg"
+        media = MediaFile.create(
+            filename=path.name,
+            mime_type=mime_type,
+        )
+        media.local_path = str(path)
+        media.status = MediaStatus.READY
+
+        return cls(
+            chat_id=chat_id,
+            content=MessageContent.with_voice(media, caption),
+            **kwargs,
+        )
+
+    @classmethod
+    def with_video(
+        cls,
+        chat_id: str,
+        video_path: str,
+        caption: str | None = None,
+        **kwargs,
+    ) -> "OutgoingMessage":
+        """创建视频消息"""
+        import mimetypes
+
+        path = Path(video_path)
+        mime_type = mimetypes.guess_type(str(path))[0] or "video/mp4"
+        media = MediaFile.create(
+            filename=path.name,
+            mime_type=mime_type,
+        )
+        media.local_path = str(path)
+        media.status = MediaStatus.READY
+
+        return cls(
+            chat_id=chat_id,
+            content=MessageContent.with_video(media, caption),
             **kwargs,
         )
 

@@ -278,12 +278,11 @@ class IMChannelHandler:
         if not Path(file_path).exists():
             return f"❌ 文件不存在: {file_path}"
 
-        # 所有 adapter 都应该实现 send_file
-        if hasattr(adapter, "send_file"):
+        try:
             message_id = await adapter.send_file(chat_id, file_path, caption)
             logger.info(f"[IM] Sent file to {channel}:{chat_id}: {file_path}")
             return f"✅ 已发送文件: {file_path} (message_id={message_id})"
-        else:
+        except NotImplementedError:
             return f"❌ 当前平台 ({channel}) 不支持发送文件"
 
     async def _send_image(
@@ -294,17 +293,20 @@ class IMChannelHandler:
         if not Path(image_path).exists():
             return f"❌ 图片不存在: {image_path}"
 
-        # 优先使用 send_image（如果有），否则回退到 send_file
-        if hasattr(adapter, "send_image"):
+        # 优先使用 send_image，失败则降级到 send_file
+        try:
             message_id = await adapter.send_image(chat_id, image_path, caption)
             logger.info(f"[IM] Sent image to {channel}:{chat_id}: {image_path}")
             return f"✅ 已发送图片: {image_path} (message_id={message_id})"
-        elif hasattr(adapter, "send_file"):
-            # 回退到文件发送
+        except NotImplementedError:
+            pass
+
+        # 降级：以文件形式发送图片
+        try:
             message_id = await adapter.send_file(chat_id, image_path, caption)
             logger.info(f"[IM] Sent image as file to {channel}:{chat_id}: {image_path}")
-            return f"✅ 已发送图片: {image_path} (message_id={message_id})"
-        else:
+            return f"✅ 已发送图片(作为文件): {image_path} (message_id={message_id})"
+        except NotImplementedError:
             return f"❌ 当前平台 ({channel}) 不支持发送图片"
 
     async def _send_voice(
@@ -315,13 +317,21 @@ class IMChannelHandler:
         if not Path(voice_path).exists():
             return f"❌ 语音文件不存在: {voice_path}"
 
-        # 语音是可选功能，不是所有平台都支持
-        if hasattr(adapter, "send_voice"):
+        # 优先使用 send_voice，失败则降级到 send_file
+        try:
             message_id = await adapter.send_voice(chat_id, voice_path, caption)
             logger.info(f"[IM] Sent voice to {channel}:{chat_id}: {voice_path}")
             return f"✅ 已发送语音: {voice_path} (message_id={message_id})"
-        else:
-            return f"❌ 当前平台 ({channel}) 不支持发送语音，可以尝试用 file_path 发送文件"
+        except NotImplementedError:
+            pass
+
+        # 降级：以文件形式发送语音
+        try:
+            message_id = await adapter.send_file(chat_id, voice_path, caption)
+            logger.info(f"[IM] Sent voice as file to {channel}:{chat_id}: {voice_path}")
+            return f"✅ 已发送语音(作为文件): {voice_path} (message_id={message_id})"
+        except NotImplementedError:
+            return f"❌ 当前平台 ({channel}) 不支持发送语音"
 
     def _get_voice_file(self, params: dict) -> str:
         """获取语音文件路径"""

@@ -1849,8 +1849,8 @@ export function App() {
     const im = [
       { k: "TELEGRAM_ENABLED", name: "Telegram", required: ["TELEGRAM_BOT_TOKEN"] },
       { k: "FEISHU_ENABLED", name: "飞书", required: ["FEISHU_APP_ID", "FEISHU_APP_SECRET"] },
-      { k: "WEWORK_ENABLED", name: "企业微信", required: ["WEWORK_CORP_ID", "WEWORK_AGENT_ID", "WEWORK_SECRET"] },
-      { k: "DINGTALK_ENABLED", name: "钉钉", required: ["DINGTALK_APP_KEY", "DINGTALK_APP_SECRET"] },
+      { k: "WEWORK_ENABLED", name: "企业微信", required: ["WEWORK_CORP_ID", "WEWORK_AGENT_ID", "WEWORK_SECRET", "WEWORK_TOKEN", "WEWORK_ENCODING_AES_KEY"] },
+      { k: "DINGTALK_ENABLED", name: "钉钉", required: ["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"] },
       { k: "QQ_ENABLED", name: "QQ(OneBot)", required: ["QQ_ONEBOT_URL"] },
     ];
     const imStatus = im.map((c) => {
@@ -2418,7 +2418,7 @@ export function App() {
                 </div>
                 <input value={extras} onChange={(e) => setExtras(e.target.value)} placeholder="all / windows / whisper / browser / feishu ..." />
                 <div className="btnRow" style={{ marginTop: 8, justifyContent: "flex-start", flexWrap: "wrap" }}>
-                  {["all", "windows", "browser", "whisper", "feishu"].map((x) => (
+                  {["all", "windows", "browser", "whisper", "feishu", "dingtalk", "wework", "qq"].map((x) => (
                     <button
                       key={x}
                       className="btnSmall"
@@ -3501,9 +3501,12 @@ export function App() {
       "WEWORK_CORP_ID",
       "WEWORK_AGENT_ID",
       "WEWORK_SECRET",
+      "WEWORK_TOKEN",
+      "WEWORK_ENCODING_AES_KEY",
+      "WEWORK_CALLBACK_PORT",
       "DINGTALK_ENABLED",
-      "DINGTALK_APP_KEY",
-      "DINGTALK_APP_SECRET",
+      "DINGTALK_CLIENT_ID",
+      "DINGTALK_CLIENT_SECRET",
       "QQ_ENABLED",
       "QQ_ONEBOT_URL",
     ];
@@ -3539,7 +3542,7 @@ export function App() {
               ),
             },
             {
-              title: "企业微信",
+              title: "企业微信（需要 openakita[wework]）",
               enabledKey: "WEWORK_ENABLED",
               apply: "https://work.weixin.qq.com/",
               body: (
@@ -3547,22 +3550,25 @@ export function App() {
                   <FieldText k="WEWORK_CORP_ID" label="Corp ID（必填）" />
                   <FieldText k="WEWORK_AGENT_ID" label="Agent ID（必填）" />
                   <FieldText k="WEWORK_SECRET" label="Secret（必填）" type="password" />
+                  <FieldText k="WEWORK_TOKEN" label="回调 Token（接收消息必填）" placeholder="在企业微信后台「接收消息」设置中获取" />
+                  <FieldText k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey（接收消息必填）" placeholder="在企业微信后台「接收消息」设置中获取" type="password" />
+                  <FieldText k="WEWORK_CALLBACK_PORT" label="回调端口（默认 9880）" placeholder="9880" />
                 </>
               ),
             },
             {
-              title: "钉钉",
+              title: "钉钉（需要 openakita[dingtalk]）",
               enabledKey: "DINGTALK_ENABLED",
               apply: "https://open.dingtalk.com/",
               body: (
                 <>
-                  <FieldText k="DINGTALK_APP_KEY" label="App Key（必填）" />
-                  <FieldText k="DINGTALK_APP_SECRET" label="App Secret（必填）" type="password" />
+                  <FieldText k="DINGTALK_CLIENT_ID" label="Client ID（必填）" />
+                  <FieldText k="DINGTALK_CLIENT_SECRET" label="Client Secret（必填）" type="password" />
                 </>
               ),
             },
             {
-              title: "QQ（OneBot）",
+              title: "QQ（需要 openakita[qq] + NapCat/Lagrange）",
               enabledKey: "QQ_ENABLED",
               apply: "https://github.com/botuniverse/onebot-11",
               body: <FieldText k="QQ_ONEBOT_URL" label="OneBot WebSocket URL（必填）" placeholder="ws://127.0.0.1:8080" />,
@@ -4056,9 +4062,12 @@ export function App() {
       "WEWORK_CORP_ID",
       "WEWORK_AGENT_ID",
       "WEWORK_SECRET",
+      "WEWORK_TOKEN",
+      "WEWORK_ENCODING_AES_KEY",
+      "WEWORK_CALLBACK_PORT",
       "DINGTALK_ENABLED",
-      "DINGTALK_APP_KEY",
-      "DINGTALK_APP_SECRET",
+      "DINGTALK_CLIENT_ID",
+      "DINGTALK_CLIENT_SECRET",
       "QQ_ENABLED",
       "QQ_ONEBOT_URL",
       // MCP (docs/mcp-integration.md)
@@ -4175,7 +4184,7 @@ export function App() {
                 ),
               },
               {
-                title: "企业微信",
+                title: "企业微信（需要 openakita[wework]）",
                 enabledKey: "WEWORK_ENABLED",
                 apply: "https://work.weixin.qq.com/",
                 body: (
@@ -4183,22 +4192,25 @@ export function App() {
                     <FieldText k="WEWORK_CORP_ID" label="Corp ID" />
                     <FieldText k="WEWORK_AGENT_ID" label="Agent ID" />
                     <FieldText k="WEWORK_SECRET" label="Secret" type="password" />
+                    <FieldText k="WEWORK_TOKEN" label="回调 Token" placeholder="在企业微信后台「接收消息」设置中获取" />
+                    <FieldText k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey" placeholder="在企业微信后台「接收消息」设置中获取" type="password" />
+                    <FieldText k="WEWORK_CALLBACK_PORT" label="回调端口" placeholder="9880" />
                   </>
                 ),
               },
               {
-                title: "钉钉",
+                title: "钉钉（需要 openakita[dingtalk]）",
                 enabledKey: "DINGTALK_ENABLED",
                 apply: "https://open.dingtalk.com/",
                 body: (
                   <>
-                    <FieldText k="DINGTALK_APP_KEY" label="App Key" />
-                    <FieldText k="DINGTALK_APP_SECRET" label="App Secret" type="password" />
+                    <FieldText k="DINGTALK_CLIENT_ID" label="Client ID" />
+                    <FieldText k="DINGTALK_CLIENT_SECRET" label="Client Secret" type="password" />
                   </>
                 ),
               },
               {
-                title: "QQ（OneBot）",
+                title: "QQ（需要 openakita[qq] + NapCat/Lagrange）",
                 enabledKey: "QQ_ENABLED",
                 apply: "https://github.com/botuniverse/onebot-11",
                 body: <FieldText k="QQ_ONEBOT_URL" label="OneBot WebSocket URL" placeholder="ws://127.0.0.1:8080" />,

@@ -190,11 +190,15 @@ class Settings(BaseSettings):
     wework_corp_id: str = Field(default="", description="企业微信 Corp ID")
     wework_agent_id: str = Field(default="", description="企业微信 Agent ID")
     wework_secret: str = Field(default="", description="企业微信 Secret")
+    wework_token: str = Field(default="", description="企业微信回调 Token")
+    wework_encoding_aes_key: str = Field(default="", description="企业微信回调加密 AES Key")
+    wework_callback_port: int = Field(default=9880, description="企业微信回调服务端口")
+    wework_callback_host: str = Field(default="0.0.0.0", description="企业微信回调服务绑定地址")
 
     # 钉钉
     dingtalk_enabled: bool = Field(default=False, description="是否启用钉钉")
-    dingtalk_app_key: str = Field(default="", description="钉钉 App Key")
-    dingtalk_app_secret: str = Field(default="", description="钉钉 App Secret")
+    dingtalk_client_id: str = Field(default="", description="钉钉 Client ID（原 App Key）")
+    dingtalk_client_secret: str = Field(default="", description="钉钉 Client Secret（原 App Secret）")
 
     # QQ (OneBot)
     qq_enabled: bool = Field(default=False, description="是否启用 QQ")

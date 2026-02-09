@@ -2715,7 +2715,10 @@ search_github → install_skill → 使用
 
         # 对齐 MemoryManager 会话：使用 Windows 安全的文件名
         try:
+            import re
             conversation_safe_id = conversation_id.replace(":", "__")
+            # 清理文件名中不安全的字符 (/, \, +, =, ?, *, <, >, |, " 等)
+            conversation_safe_id = re.sub(r'[/\\+=%?*<>|"\x00-\x1f]', "_", conversation_safe_id)
             if getattr(self.memory_manager, "_current_session_id", None) != conversation_safe_id:
                 self.memory_manager.start_session(conversation_safe_id)
         except Exception as e:

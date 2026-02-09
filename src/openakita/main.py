@@ -173,6 +173,10 @@ async def start_im_channels(agent_or_master):
                 corp_id=settings.wework_corp_id,
                 agent_id=settings.wework_agent_id,
                 secret=settings.wework_secret,
+                token=settings.wework_token,
+                encoding_aes_key=settings.wework_encoding_aes_key,
+                callback_port=settings.wework_callback_port,
+                callback_host=settings.wework_callback_host,
             )
             await _message_gateway.register_adapter(wework)
             adapters_started.append("wework")
@@ -181,13 +185,13 @@ async def start_im_channels(agent_or_master):
             logger.error(f"Failed to start WeWork adapter: {e}")
 
     # 钉钉
-    if settings.dingtalk_enabled and settings.dingtalk_app_key:
+    if settings.dingtalk_enabled and settings.dingtalk_client_id:
         try:
             from .channels.adapters import DingTalkAdapter
 
             dingtalk = DingTalkAdapter(
-                app_key=settings.dingtalk_app_key,
-                app_secret=settings.dingtalk_app_secret,
+                app_key=settings.dingtalk_client_id,
+                app_secret=settings.dingtalk_client_secret,
             )
             await _message_gateway.register_adapter(dingtalk)
             adapters_started.append("dingtalk")
@@ -201,7 +205,7 @@ async def start_im_channels(agent_or_master):
             from .channels.adapters import QQAdapter
 
             qq = QQAdapter(
-                onebot_url=settings.qq_onebot_url,
+                ws_url=settings.qq_onebot_url,
             )
             await _message_gateway.register_adapter(qq)
             adapters_started.append("qq")
@@ -417,7 +421,7 @@ def show_channels():
         ("Telegram", settings.telegram_enabled, settings.telegram_bot_token),
         ("飞书", settings.feishu_enabled, settings.feishu_app_id),
         ("企业微信", settings.wework_enabled, settings.wework_corp_id),
-        ("钉钉", settings.dingtalk_enabled, settings.dingtalk_app_key),
+        ("钉钉", settings.dingtalk_enabled, settings.dingtalk_client_id),
         ("QQ", settings.qq_enabled, settings.qq_onebot_url),
     ]
 

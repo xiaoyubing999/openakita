@@ -547,10 +547,33 @@ class MessageGateway:
         except Exception as e:
             logger.warning(f"Failed to preload Whisper model: {e}")
 
+    def _ensure_ffmpeg(self) -> None:
+        """确保 ffmpeg 可用（优先使用系统已有的，否则自动下载静态版本）"""
+        import shutil
+
+        if shutil.which("ffmpeg"):
+            logger.debug("ffmpeg found in system PATH")
+            return
+
+        try:
+            import static_ffmpeg
+
+            static_ffmpeg.add_paths(weak=True)  # weak=True: 不覆盖已有
+            logger.info("ffmpeg auto-configured via static-ffmpeg")
+        except ImportError:
+            logger.warning(
+                "ffmpeg not found and static-ffmpeg not installed. "
+                "Voice transcription may fail. "
+                "Install: pip install static-ffmpeg"
+            )
+
     def _load_whisper_model(self) -> None:
         """加载 Whisper 模型（在线程池中执行）"""
         if self._whisper_loaded:
             return
+
+        # 确保 ffmpeg 可用（Whisper 依赖 ffmpeg 解码音频）
+        self._ensure_ffmpeg()
 
         try:
             import hashlib
@@ -1204,6 +1227,7 @@ class MessageGateway:
                 reply_to=original.channel_message_id if i == 0 else None,
                 thread_id=original.thread_id,
                 parse_mode="markdown",  # 启用 Markdown 格式
+                metadata=original.metadata,  # 透传原始消息元数据 (session_webhook, is_group 等)
             )
 
             # 重试最多 3 次

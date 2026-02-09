@@ -205,6 +205,50 @@ class ChannelAdapter(ABC):
         """编辑消息"""
         return False
 
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+    ) -> str:
+        """
+        发送文件（可选能力，子类覆盖实现）
+
+        Args:
+            chat_id: 目标聊天 ID
+            file_path: 本地文件路径
+            caption: 附加文字说明
+
+        Returns:
+            发送后的消息 ID
+
+        Raises:
+            NotImplementedError: 当前平台不支持发送文件
+        """
+        raise NotImplementedError(f"{self.channel_name} does not support send_file")
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        voice_path: str,
+        caption: str | None = None,
+    ) -> str:
+        """
+        发送语音（可选能力，子类覆盖实现）
+
+        Args:
+            chat_id: 目标聊天 ID
+            voice_path: 本地语音文件路径
+            caption: 附加文字说明
+
+        Returns:
+            发送后的消息 ID
+
+        Raises:
+            NotImplementedError: 当前平台不支持发送语音
+        """
+        raise NotImplementedError(f"{self.channel_name} does not support send_voice")
+
     async def send_typing(self, chat_id: str) -> None:
         """发送正在输入状态"""
         # 可选能力：默认实现为 no-op（部分平台不支持 typing 或无需实现）

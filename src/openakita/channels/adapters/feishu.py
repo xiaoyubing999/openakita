@@ -792,6 +792,57 @@ class FeishuAdapter(ChannelAdapter):
         logger.info(f"Sent file to {chat_id}: {file_path}")
         return message_id
 
+    async def send_voice(self, chat_id: str, voice_path: str, caption: str | None = None) -> str:
+        """
+        发送语音消息
+
+        上传音频文件获取 file_key，然后发送 audio 类型消息。
+        飞书 Create Message API 支持 msg_type="audio"。
+
+        Args:
+            chat_id: 聊天 ID
+            voice_path: 语音文件路径
+            caption: 语音说明文字
+
+        Returns:
+            消息 ID
+        """
+        if not self._client:
+            raise RuntimeError("Feishu client not started")
+
+        # 上传音频文件获取 file_key
+        file_key = await self._upload_file(voice_path)
+
+        # 发送 audio 消息
+        request = (
+            lark_oapi.api.im.v1.CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                lark_oapi.api.im.v1.CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("audio")
+                .content(json.dumps({"file_key": file_key}))
+                .build()
+            )
+            .build()
+        )
+
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._client.im.v1.message.create(request)
+        )
+
+        if not response.success():
+            raise RuntimeError(f"Failed to send voice: {response.msg}")
+
+        message_id = response.data.message_id
+
+        # 如果有说明文字，追加发送文本消息
+        if caption:
+            await self._send_text(chat_id, caption)
+
+        logger.info(f"Sent voice to {chat_id}: {voice_path}")
+        return message_id
+
     async def _send_text(self, chat_id: str, text: str) -> str:
         """发送纯文本消息"""
         request = (

@@ -522,8 +522,8 @@ Press Ctrl+C at any time to cancel.
         app_secret = Prompt.ask("Enter App Secret", password=True)
 
         self.config["DINGTALK_ENABLED"] = "true"
-        self.config["DINGTALK_APP_KEY"] = app_key
-        self.config["DINGTALK_APP_SECRET"] = app_secret
+        self.config["DINGTALK_CLIENT_ID"] = app_key
+        self.config["DINGTALK_CLIENT_SECRET"] = app_secret
 
     def _configure_memory(self):
         """配置记忆系统"""
@@ -683,8 +683,8 @@ Press Ctrl+C at any time to cancel.
                 [
                     "# === DingTalk ===",
                     f"DINGTALK_ENABLED={self.config.get('DINGTALK_ENABLED', 'false')}",
-                    f"DINGTALK_APP_KEY={self.config.get('DINGTALK_APP_KEY', '')}",
-                    f"DINGTALK_APP_SECRET={self.config.get('DINGTALK_APP_SECRET', '')}",
+                    f"DINGTALK_CLIENT_ID={self.config.get('DINGTALK_CLIENT_ID', '')}",
+                    f"DINGTALK_CLIENT_SECRET={self.config.get('DINGTALK_CLIENT_SECRET', '')}",
                     "",
                 ]
             )

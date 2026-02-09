@@ -266,8 +266,8 @@ ANTHROPIC_API_KEY=sk-your-api-key-here
 | `WEWORK_AGENT_ID` | | - | Application Agent ID |
 | `WEWORK_SECRET` | | - | Application Secret |
 | `DINGTALK_ENABLED` | | `false` | Enable DingTalk |
-| `DINGTALK_APP_KEY` | | - | DingTalk App Key |
-| `DINGTALK_APP_SECRET` | | - | DingTalk App Secret |
+| `DINGTALK_CLIENT_ID` | | - | DingTalk Client ID (formerly App Key) |
+| `DINGTALK_CLIENT_SECRET` | | - | DingTalk Client Secret (formerly App Secret) |
 | `QQ_ENABLED` | | `false` | Enable QQ |
 | `QQ_ONEBOT_URL` | | `ws://127.0.0.1:8080` | OneBot WebSocket URL |
 | **Memory System** | | | |
@@ -527,8 +527,8 @@ WEWORK_SECRET=xxxxx
 3. Configure `.env`:
 ```ini
 DINGTALK_ENABLED=true
-DINGTALK_APP_KEY=dingxxxxx
-DINGTALK_APP_SECRET=xxxxx
+DINGTALK_CLIENT_ID=dingxxxxx
+DINGTALK_CLIENT_SECRET=xxxxx
 ```
 
 #### QQ (OneBot)
