@@ -1,9 +1,14 @@
 """
 Shell 工具 - 执行系统命令
 增强版：支持 Windows PowerShell 命令自动转换
+
+PowerShell 转义策略：
+  使用 -EncodedCommand (Base64 UTF-16LE) 传递命令，
+  彻底绕过 cmd.exe → PowerShell 的多层引号/特殊字符转义问题。
 """
 
 import asyncio
+import base64
 import logging
 import os
 import platform
@@ -35,21 +40,41 @@ class CommandResult:
 class ShellTool:
     """Shell 工具 - 执行系统命令"""
 
-    # PowerShell 命令模式（需要特殊处理）
+    # ------------------------------------------------------------------
+    # PowerShell cmdlet 显式白名单（大小写不敏感匹配）
+    # ------------------------------------------------------------------
     POWERSHELL_PATTERNS = [
-        r"Get-EventLog",
-        r"Get-ScheduledTask",
-        r"ConvertFrom-Csv",
-        r"ConvertTo-Csv",
-        r"Select-Object",
-        r"Where-Object",
-        r"ForEach-Object",
-        r"Import-Module",
-        r"Get-Process",
-        r"Get-Service",
-        r"Get-ChildItem",
-        r"Set-ExecutionPolicy",
+        # 原有
+        r"Get-EventLog", r"Get-ScheduledTask",
+        r"ConvertFrom-Csv", r"ConvertTo-Csv",
+        r"Select-Object", r"Where-Object", r"ForEach-Object",
+        r"Import-Module", r"Get-Process", r"Get-Service",
+        r"Get-ChildItem", r"Set-ExecutionPolicy",
+        # 新增常见 cmdlet
+        r"Sort-Object", r"Out-File", r"Out-String",
+        r"Invoke-WebRequest", r"Invoke-RestMethod",
+        r"Test-Path", r"New-Item", r"Remove-Item", r"Copy-Item", r"Move-Item",
+        r"Measure-Object", r"Group-Object",
+        r"ConvertTo-Json", r"ConvertFrom-Json",
+        r"Write-Output", r"Write-Host", r"Write-Error",
+        r"Get-Content", r"Set-Content", r"Add-Content",
+        r"Get-ItemProperty", r"Set-ItemProperty",
+        r"Start-Process", r"Stop-Process",
+        r"Get-WmiObject", r"Get-CimInstance",
+        r"New-Object", r"Add-Type",
     ]
+
+    # 通用 Verb-Noun 模式：PowerShell cmdlet 格式为 Verb-Noun（如 Get-Item, Test-Path）
+    # 匹配常见 approved verbs 开头 + 连字符 + 大写字母开头的名词
+    _VERB_NOUN_RE = re.compile(
+        r"\b(?:Get|Set|New|Remove|Add|Clear|Copy|Move|Test|Start|Stop|Restart|"
+        r"Import|Export|ConvertTo|ConvertFrom|Invoke|Select|Where|ForEach|"
+        r"Sort|Group|Measure|Write|Read|Out|Format|Enter|Exit|Enable|Disable|"
+        r"Register|Unregister|Update|Find|Save|Show|Hide|Protect|Unprotect|"
+        r"Wait|Watch|Assert|Confirm|Compare|Expand|Join|Split|Merge|Resolve|"
+        r"Push|Pop|Rename|Reset|Resume|Suspend|Switch|Undo|Use"
+        r")-[A-Z][A-Za-z]+",
+    )
 
     def __init__(
         self,
@@ -62,29 +87,93 @@ class ShellTool:
         self.shell = shell
         self._is_windows = platform.system() == "Windows"
 
+    # ------------------------------------------------------------------
+    # PowerShell 检测 & 编码
+    # ------------------------------------------------------------------
+
     def _needs_powershell(self, command: str) -> bool:
         """检查命令是否需要 PowerShell 执行"""
         if not self._is_windows:
             return False
 
-        # 检查是否包含 PowerShell 特有命令
+        # 如果 LLM 已经显式写了 powershell/pwsh 前缀，也需要走编码路径
+        stripped = command.strip().lower()
+        if stripped.startswith(("powershell", "pwsh")):
+            return True
+
+        # 1) 白名单精确匹配
         for pattern in self.POWERSHELL_PATTERNS:
             if re.search(pattern, command, re.IGNORECASE):
                 return True
+
+        # 2) 通用 Verb-Noun cmdlet 模式
+        if self._VERB_NOUN_RE.search(command):
+            return True
+
         return False
 
+    @staticmethod
+    def _encode_for_powershell(command: str) -> str:
+        """
+        将 PowerShell 命令编码为 -EncodedCommand 格式。
+
+        PowerShell -EncodedCommand 接受 UTF-16LE Base64 编码的字符串，
+        完全绕过 cmd.exe 的引号和特殊字符解析。
+        """
+        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        return f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
+
+    @staticmethod
+    def _extract_ps_inner_command(command: str) -> str | None:
+        """
+        从 'powershell -Command "..."' 或 'pwsh -Command "..."' 格式中
+        安全提取内部命令字符串。
+
+        Returns:
+            提取到的内部命令，或 None（无法安全提取时）。
+        """
+        # 尝试匹配 powershell/pwsh ... -Command "内容" 或 powershell/pwsh ... -Command '内容'
+        # 也处理 -Command {脚本块} 的情况
+        m = re.match(
+            r"^(?:powershell|pwsh)(?:\.exe)?"       # powershell 或 pwsh
+            r"(?:\s+-\w+)*"                          # 可选参数如 -NoProfile
+            r"\s+-Command\s+"                        # -Command
+            r"(?:"
+            r'"((?:[^"\\]|\\.)*)"|'                  # "双引号内容"
+            r"'((?:[^'\\]|\\.)*)'|"                  # '单引号内容'
+            r"\{(.*)\}|"                             # {脚本块}
+            r"(.+)"                                  # 无引号直接跟内容
+            r")\s*$",
+            command.strip(),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            return None
+        # 返回第一个非 None 的捕获组
+        return next((g for g in m.groups() if g is not None), None)
+
     def _wrap_for_powershell(self, command: str) -> str:
-        """将命令包装为 PowerShell 命令"""
-        # 如果命令已经是 PowerShell 语法，直接返回
-        if command.strip().startswith("powershell"):
-            return command
+        """
+        将命令包装为 PowerShell 命令（使用 -EncodedCommand 避免转义问题）。
 
-        # 移除已有的 -Command 包装
-        command = re.sub(r"^powershell\s+-Command\s+", "", command, flags=re.IGNORECASE)
-        command = re.sub(r"^pwsh\s+-Command\s+", "", command, flags=re.IGNORECASE)
+        策略：
+        1. 如果命令已是 powershell/pwsh 调用 → 提取内部命令再编码
+        2. 否则直接对整个命令编码
+        """
+        stripped = command.strip().lower()
+        if stripped.startswith(("powershell", "pwsh")):
+            # 已经是显式 PowerShell 调用，尝试提取内部命令
+            inner = self._extract_ps_inner_command(command)
+            if inner:
+                logger.debug(f"Extracted inner PS command for encoding: {inner[:80]}...")
+                return self._encode_for_powershell(inner)
+            else:
+                # 无法安全提取（可能是 powershell script.ps1 等），原样返回
+                logger.debug("Cannot extract inner PS command, passing through as-is")
+                return command
 
-        # 使用 PowerShell 执行
-        return f'powershell -NoProfile -Command "{command}"'
+        # 普通 cmdlet 命令，直接编码
+        return self._encode_for_powershell(command)
 
     async def run(
         self,
@@ -114,11 +203,13 @@ class ShellTool:
             cmd_env.update(env)
 
         # Windows PowerShell 命令处理
+        original_command = command
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
-            logger.info(f"Windows PowerShell wrapped: {command}")
+            # EncodedCommand 很长，日志只记录原始命令
+            logger.info(f"Windows PowerShell encoded: {original_command[:200]}")
 
-        logger.info(f"Executing: {command}")
+        logger.info(f"Executing: {command[:300]}")
         logger.debug(f"CWD: {work_dir}")
 
         try:
@@ -174,7 +265,7 @@ class ShellTool:
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
 
-        logger.info(f"Executing interactively: {command}")
+        logger.info(f"Executing interactively: {command[:300]}")
 
         process = await asyncio.create_subprocess_shell(
             command,
@@ -214,7 +305,9 @@ class ShellTool:
 
     async def run_powershell(self, command: str) -> CommandResult:
         """
-        专门执行 PowerShell 命令（跨平台）
+        专门执行 PowerShell 命令（跨平台）。
+
+        使用 -EncodedCommand 传递命令，彻底避免转义问题。
 
         Args:
             command: PowerShell 命令
@@ -222,9 +315,13 @@ class ShellTool:
         Returns:
             CommandResult
         """
+        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
         if self._is_windows:
-            # Windows 上直接使用 powershell
-            return await self.run(f'powershell -NoProfile -Command "{command}"')
+            return await self.run(
+                f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
+            )
         else:
-            # Linux/Mac 上使用 pwsh
-            return await self.run(f'pwsh -NoProfile -Command "{command}"')
+            # Linux/Mac 上使用 pwsh（如果已安装）
+            return await self.run(
+                f"pwsh -NoProfile -NonInteractive -EncodedCommand {encoded}"
+            )

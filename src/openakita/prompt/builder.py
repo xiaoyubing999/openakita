@@ -228,6 +228,15 @@ def _build_runtime_section() -> str:
 
     identity_path = settings.identity_path
 
+    # Windows 环境下注入 Shell 使用提示
+    shell_hint = ""
+    if platform.system() == "Windows":
+        shell_hint = (
+            "\n- **Shell 注意**: Windows 环境，复杂文本处理（正则匹配、JSON/HTML 解析、批量文件操作）"
+            "请使用 `write_file` 写 Python 脚本 + `run_shell python xxx.py` 执行，避免 PowerShell 转义问题。"
+            "简单系统查询（进程/服务/文件列表）可直接使用 PowerShell cmdlet。"
+        )
+
     return f"""## 运行环境
 
 - **当前时间**: {current_time}
@@ -235,7 +244,7 @@ def _build_runtime_section() -> str:
 - **当前工作目录**: {os.getcwd()}
 - **Identity 目录**: {identity_path}
   - SOUL.md, AGENT.md, USER.md, MEMORY.md 均在此目录
-- **临时目录**: data/temp/
+- **临时目录**: data/temp/{shell_hint}
 
 ## 工具可用性（建议 32）
 {tool_status_text}
