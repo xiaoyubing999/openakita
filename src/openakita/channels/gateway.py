@@ -885,6 +885,9 @@ class MessageGateway:
                 user_id=message.user_id,
             )
 
+            # 4.5 推送未送达的自检报告（每天第一条消息时触发，最多一次）
+            await self._maybe_deliver_pending_selfcheck_report(message)
+
             # 5. 记录消息到会话
             session.add_message(
                 role="user",
@@ -1264,6 +1267,110 @@ class MessageGateway:
             )
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
+
+    # ==================== 待推送自检报告 ====================
+
+    async def _maybe_deliver_pending_selfcheck_report(self, message: UnifiedMessage) -> None:
+        """
+        检查并推送未送达的自检报告（每天最多执行一次）
+
+        自检在凌晨 4:00 运行，但此时通常没有活跃会话（30 分钟超时），
+        报告会以 reported=false 状态保存在 data/selfcheck/ 目录下。
+        当用户当天第一次发消息时，这里会把报告补推给用户。
+        """
+        from datetime import date as date_type
+
+        today_str = date_type.today().isoformat()
+        if getattr(self, "_last_report_delivery_date", None) == today_str:
+            return  # 今天已经检查过了
+        self._last_report_delivery_date = today_str
+
+        try:
+            await self._deliver_pending_selfcheck_report(message)
+        except Exception as e:
+            logger.error(f"Pending selfcheck report delivery failed: {e}")
+
+    async def _deliver_pending_selfcheck_report(self, message: UnifiedMessage) -> None:
+        """
+        读取 data/selfcheck/ 中未推送的报告并发送给用户
+
+        检查今天和昨天的报告文件，找到第一个 reported=false 的报告推送。
+        直接通过适配器发送，不写入会话上下文（避免污染对话历史）。
+        """
+        import json
+        from datetime import date as date_type
+
+        from ..config import settings
+
+        selfcheck_dir = settings.selfcheck_dir
+        if not selfcheck_dir.exists():
+            return
+
+        today = date_type.today()
+        # 检查今天和昨天的报告（自检在凌晨 4:00 生成当天日期的报告）
+        candidates = [
+            today.isoformat(),
+            (today - timedelta(days=1)).isoformat(),
+        ]
+
+        for report_date in candidates:
+            json_file = selfcheck_dir / f"{report_date}_report.json"
+            md_file = selfcheck_dir / f"{report_date}_report.md"
+
+            if not json_file.exists():
+                continue
+
+            try:
+                with open(json_file, encoding="utf-8") as f:
+                    data = json.load(f)
+
+                # 已推送过则跳过
+                if data.get("reported"):
+                    continue
+
+                if not md_file.exists():
+                    continue
+
+                with open(md_file, encoding="utf-8") as f:
+                    report_md = f.read()
+
+                if not report_md.strip():
+                    continue
+
+                # 通过适配器直接发送（不写入会话上下文）
+                adapter = self._adapters.get(message.channel)
+                if not adapter or not adapter.is_running:
+                    continue
+
+                header = f"📋 每日系统自检报告（{report_date}）\n\n"
+                full_text = header + report_md
+
+                # 分段发送（兼容 Telegram 4096 限制）
+                max_len = 3500
+                text = full_text
+                while text:
+                    if len(text) <= max_len:
+                        await adapter.send_text(message.chat_id, text)
+                        break
+                    cut = text.rfind("\n", 0, max_len)
+                    if cut < 1000:
+                        cut = max_len
+                    await adapter.send_text(message.chat_id, text[:cut].rstrip())
+                    text = text[cut:].lstrip()
+
+                # 标记为已推送
+                data["reported"] = True
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                logger.info(
+                    f"Delivered pending selfcheck report for {report_date} "
+                    f"to {message.channel}/{message.chat_id}"
+                )
+                break  # 只推送最近一份未读报告
+
+            except Exception as e:
+                logger.error(f"Failed to deliver pending selfcheck report for {report_date}: {e}")
 
     # ==================== 主动发送 ====================
 

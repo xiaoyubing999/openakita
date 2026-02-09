@@ -536,56 +536,32 @@ class TaskExecutor:
                 logger.warning(f"Failed to render report markdown: {e}")
                 report_md = None
 
-            # 2.2 推送报告到“活跃 IM 会话”
+            # 2.2 推送报告到最后活跃的 IM 通道（不限制时间）
             pushed = 0
+            push_target = ""
             if report_md and self.gateway and getattr(self.gateway, "session_manager", None):
                 try:
-                    now = datetime.now()
-                    active_since = now - timedelta(hours=24)
-
-                    sessions = self.gateway.session_manager.list_sessions()
-                    for session in sessions:
-                        # 仅推送到最近活跃且未关闭的会话
-                        if getattr(session, "state", None) and str(session.state.value) == "closed":
-                            continue
-                        if getattr(session, "last_active", None) and session.last_active < active_since:
-                            continue
-
-                        adapter = self.gateway.get_adapter(session.channel)
-                        if not adapter or not adapter.is_running:
-                            continue
-
-                        # 统一分段发送（兼容 Telegram 4096 限制）
-                        max_len = 3500  # 保守值，留余量
-                        chunks = []
-                        text = report_md
-                        while text:
-                            if len(text) <= max_len:
-                                chunks.append(text)
-                                break
-                            # 优先按换行切分
-                            cut = text.rfind("\n", 0, max_len)
-                            if cut < 1000:
-                                cut = max_len
-                            chunks.append(text[:cut].rstrip())
-                            text = text[cut:].lstrip()
-
-                        # 标题 + 正文
-                        header = f"## ✅ 每日系统自检报告（{getattr(report, 'date', '') or now.strftime('%Y-%m-%d')}）"
-                        await self.gateway.send_to_session(session, header, role="system")
-                        for i, part in enumerate(chunks):
-                            prefix = "" if i == 0 else "（续）\n"
-                            await self.gateway.send_to_session(session, prefix + part, role="system")
-                        pushed += 1
+                    target = self._find_last_active_im_target()
+                    if target:
+                        channel, chat_id = target
+                        adapter = self.gateway.get_adapter(channel)
+                        if adapter and adapter.is_running:
+                            report_date = getattr(report, "date", "") or now.strftime("%Y-%m-%d")
+                            await self._send_report_chunks(
+                                adapter, chat_id, report_md, report_date
+                            )
+                            pushed = 1
+                            push_target = f"{channel}/{chat_id}"
 
                     if pushed > 0:
-                        # 标记已提交（避免重复早上推送）
                         with contextlib.suppress(Exception):
                             checker.mark_report_as_reported(getattr(report, "date", None))
                 except Exception as e:
                     logger.error(f"Failed to push daily selfcheck report: {e}", exc_info=True)
 
             # 3. 格式化结果
+            push_info = push_target if pushed else "无可用通道（将在用户下次发消息时补推）"
+
             summary = (
                 f"系统自检完成:\n"
                 f"- 总错误数: {report.total_errors}\n"
@@ -595,7 +571,7 @@ class TaskExecutor:
                 f"- 修复成功: {report.fix_success}\n"
                 f"- 修复失败: {report.fix_failed}\n"
                 f"- 日志清理: 删除 {cleanup_result.get('by_age', 0) + cleanup_result.get('by_size', 0)} 个旧文件\n"
-                f"- 报告推送: {pushed} 个活跃会话"
+                f"- 报告推送: {push_info}"
             )
 
             logger.info(
@@ -606,6 +582,86 @@ class TaskExecutor:
         except Exception as e:
             logger.error(f"Daily selfcheck failed: {e}")
             return False, str(e)
+
+    def _find_last_active_im_target(self) -> tuple[str, str] | None:
+        """
+        找到最后活跃的 IM 通道（不限制时间）
+
+        优先从内存中的会话查找；如果内存为空（凌晨会话已过期被清理），
+        则从 sessions.json 持久化文件中读取。
+
+        Returns:
+            (channel, chat_id) 或 None
+        """
+        import json
+        from datetime import datetime
+
+        # 1. 先从内存中的会话找
+        sessions = self.gateway.session_manager.list_sessions()
+        if sessions:
+            # 按 last_active 降序，取最近的
+            sessions.sort(
+                key=lambda s: getattr(s, "last_active", datetime.min), reverse=True
+            )
+            for session in sessions:
+                if getattr(session, "state", None) and str(session.state.value) == "closed":
+                    continue
+                adapter = self.gateway.get_adapter(session.channel)
+                if adapter and adapter.is_running:
+                    return session.channel, session.chat_id
+
+        # 2. 内存中没有可用会话，从 sessions.json 文件中读取
+        sessions_file = self.gateway.session_manager.storage_path / "sessions.json"
+        if not sessions_file.exists():
+            return None
+
+        try:
+            with open(sessions_file, encoding="utf-8") as f:
+                raw_sessions = json.load(f)
+
+            # 按 last_active 降序排序
+            raw_sessions.sort(key=lambda s: s.get("last_active", ""), reverse=True)
+
+            for s in raw_sessions:
+                channel = s.get("channel")
+                chat_id = s.get("chat_id")
+                state = s.get("state", "")
+                if not channel or not chat_id or state == "closed":
+                    continue
+                adapter = self.gateway.get_adapter(channel)
+                if adapter and adapter.is_running:
+                    logger.info(
+                        f"Found last active IM target from file: {channel}/{chat_id} "
+                        f"(last_active: {s.get('last_active', 'unknown')})"
+                    )
+                    return channel, chat_id
+        except Exception as e:
+            logger.error(f"Failed to read sessions file for IM target: {e}")
+
+        return None
+
+    async def _send_report_chunks(
+        self,
+        adapter: Any,
+        chat_id: str,
+        report_md: str,
+        report_date: str,
+    ) -> None:
+        """分段发送自检报告（兼容 Telegram 4096 字符限制）"""
+        header = f"📋 每日系统自检报告（{report_date}）\n\n"
+        full_text = header + report_md
+
+        max_len = 3500
+        text = full_text
+        while text:
+            if len(text) <= max_len:
+                await adapter.send_text(chat_id, text)
+                break
+            cut = text.rfind("\n", 0, max_len)
+            if cut < 1000:
+                cut = max_len
+            await adapter.send_text(chat_id, text[:cut].rstrip())
+            text = text[cut:].lstrip()
 
     def _build_prompt(self, task: ScheduledTask, suppress_send_to_chat: bool = False) -> str:
         """
