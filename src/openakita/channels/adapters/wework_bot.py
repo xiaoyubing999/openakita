@@ -29,7 +29,8 @@ import logging
 import re
 import struct
 import time
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -566,7 +567,8 @@ class WeWorkBotAdapter(ChannelAdapter):
                 {
                     "msgtype": "stream",
                     "stream": {"id": stream_id, "finish": True, "content": ""},
-                }
+                },
+                ensure_ascii=False,
             )
             encrypted = self._crypt.encrypt_reply(
                 reply_payload, nonce, timestamp
@@ -628,7 +630,8 @@ class WeWorkBotAdapter(ChannelAdapter):
                 )
 
             reply_payload = json.dumps(
-                {"msgtype": "stream", "stream": reply_stream}
+                {"msgtype": "stream", "stream": reply_stream},
+                ensure_ascii=False,
             )
 
             # 清理 session
@@ -651,7 +654,8 @@ class WeWorkBotAdapter(ChannelAdapter):
                         "finish": False,
                         "content": session.content or "",
                     },
-                }
+                },
+                ensure_ascii=False,
             )
 
         encrypted = self._crypt.encrypt_reply(reply_payload, nonce, timestamp)
@@ -755,7 +759,8 @@ class WeWorkBotAdapter(ChannelAdapter):
                     "finish": False,
                     "content": "",
                 },
-            }
+            },
+            ensure_ascii=False,
         )
         encrypted = self._crypt.encrypt_reply(reply_payload, nonce, timestamp)
         return aiohttp.web.Response(
@@ -1345,8 +1350,9 @@ class WeWorkBotAdapter(ChannelAdapter):
         优先使用 Pillow，不可用时尝试直接使用原始数据。
         """
         try:
-            from PIL import Image
             import io
+
+            from PIL import Image
 
             img = Image.open(io.BytesIO(raw_data))
             # 转换为 RGB（移除 alpha 通道）
