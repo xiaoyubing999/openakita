@@ -536,28 +536,32 @@ class TaskExecutor:
                 logger.warning(f"Failed to render report markdown: {e}")
                 report_md = None
 
-            # 2.2 推送报告到最后活跃的 IM 通道（不限制时间）
+            # 2.2 推送报告到最后活跃的 IM 通道（不限制时间，逐个尝试）
             pushed = 0
             push_target = ""
             if report_md and self.gateway and getattr(self.gateway, "session_manager", None):
-                try:
-                    target = self._find_last_active_im_target()
-                    if target:
-                        channel, chat_id = target
+                report_date = getattr(report, "date", "") or datetime.now().strftime("%Y-%m-%d")
+                targets = self._find_all_im_targets()
+                for channel, chat_id in targets:
+                    try:
                         adapter = self.gateway.get_adapter(channel)
-                        if adapter and adapter.is_running:
-                            report_date = getattr(report, "date", "") or datetime.now().strftime("%Y-%m-%d")
-                            await self._send_report_chunks(
-                                adapter, chat_id, report_md, report_date
-                            )
-                            pushed = 1
-                            push_target = f"{channel}/{chat_id}"
+                        if not adapter or not adapter.is_running:
+                            continue
+                        await self._send_report_chunks(
+                            adapter, chat_id, report_md, report_date
+                        )
+                        pushed = 1
+                        push_target = f"{channel}/{chat_id}"
+                        break  # 发送成功，停止尝试
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to push selfcheck report via {channel}/{chat_id}: {e}"
+                        )
+                        continue  # 尝试下一个通道
 
-                    if pushed > 0:
-                        with contextlib.suppress(Exception):
-                            checker.mark_report_as_reported(getattr(report, "date", None))
-                except Exception as e:
-                    logger.error(f"Failed to push daily selfcheck report: {e}", exc_info=True)
+                if pushed > 0:
+                    with contextlib.suppress(Exception):
+                        checker.mark_report_as_reported(getattr(report, "date", None))
 
             # 3. 格式化结果
             push_info = push_target if pushed else "无可用通道（将在用户下次发消息时补推）"
@@ -583,62 +587,62 @@ class TaskExecutor:
             logger.error(f"Daily selfcheck failed: {e}")
             return False, str(e)
 
-    def _find_last_active_im_target(self) -> tuple[str, str] | None:
+    def _find_all_im_targets(self) -> list[tuple[str, str]]:
         """
-        找到最后活跃的 IM 通道（不限制时间）
+        找到所有可用的 IM 通道（按活跃度降序，去重）
 
-        优先从内存中的会话查找；如果内存为空（凌晨会话已过期被清理），
-        则从 sessions.json 持久化文件中读取。
+        优先从内存中的会话查找；然后从 sessions.json 持久化文件补充。
+        返回去重后的 (channel, chat_id) 列表，供调用方逐个尝试。
 
         Returns:
-            (channel, chat_id) 或 None
+            [(channel, chat_id), ...] 按活跃度降序
         """
         import json
         from datetime import datetime
 
+        seen: set[tuple[str, str]] = set()
+        targets: list[tuple[str, str]] = []
+
         # 1. 先从内存中的会话找
         sessions = self.gateway.session_manager.list_sessions()
         if sessions:
-            # 按 last_active 降序，取最近的
             sessions.sort(
                 key=lambda s: getattr(s, "last_active", datetime.min), reverse=True
             )
             for session in sessions:
                 if getattr(session, "state", None) and str(session.state.value) == "closed":
                     continue
-                adapter = self.gateway.get_adapter(session.channel)
-                if adapter and adapter.is_running:
-                    return session.channel, session.chat_id
+                pair = (session.channel, session.chat_id)
+                if pair not in seen:
+                    seen.add(pair)
+                    targets.append(pair)
 
-        # 2. 内存中没有可用会话，从 sessions.json 文件中读取
+        # 2. 从 sessions.json 文件补充
         sessions_file = self.gateway.session_manager.storage_path / "sessions.json"
-        if not sessions_file.exists():
-            return None
+        if sessions_file.exists():
+            try:
+                with open(sessions_file, encoding="utf-8") as f:
+                    raw_sessions = json.load(f)
 
-        try:
-            with open(sessions_file, encoding="utf-8") as f:
-                raw_sessions = json.load(f)
+                raw_sessions.sort(key=lambda s: s.get("last_active", ""), reverse=True)
 
-            # 按 last_active 降序排序
-            raw_sessions.sort(key=lambda s: s.get("last_active", ""), reverse=True)
+                for s in raw_sessions:
+                    channel = s.get("channel")
+                    chat_id = s.get("chat_id")
+                    state = s.get("state", "")
+                    if not channel or not chat_id or state == "closed":
+                        continue
+                    pair = (channel, chat_id)
+                    if pair not in seen:
+                        seen.add(pair)
+                        targets.append(pair)
+            except Exception as e:
+                logger.error(f"Failed to read sessions file for IM targets: {e}")
 
-            for s in raw_sessions:
-                channel = s.get("channel")
-                chat_id = s.get("chat_id")
-                state = s.get("state", "")
-                if not channel or not chat_id or state == "closed":
-                    continue
-                adapter = self.gateway.get_adapter(channel)
-                if adapter and adapter.is_running:
-                    logger.info(
-                        f"Found last active IM target from file: {channel}/{chat_id} "
-                        f"(last_active: {s.get('last_active', 'unknown')})"
-                    )
-                    return channel, chat_id
-        except Exception as e:
-            logger.error(f"Failed to read sessions file for IM target: {e}")
+        if targets:
+            logger.info(f"Found {len(targets)} IM target(s) for report push")
 
-        return None
+        return targets
 
     async def _send_report_chunks(
         self,

@@ -1272,19 +1272,14 @@ class MessageGateway:
 
     async def _maybe_deliver_pending_selfcheck_report(self, message: UnifiedMessage) -> None:
         """
-        检查并推送未送达的自检报告（每天最多执行一次）
+        检查并推送未送达的自检报告
 
         自检在凌晨 4:00 运行，但此时通常没有活跃会话（30 分钟超时），
         报告会以 reported=false 状态保存在 data/selfcheck/ 目录下。
-        当用户当天第一次发消息时，这里会把报告补推给用户。
+        当用户发消息时，这里会把未送达的报告补推给用户。
+
+        去重由报告 JSON 的 reported 字段保证，无需额外的日期锁。
         """
-        from datetime import date as date_type
-
-        today_str = date_type.today().isoformat()
-        if getattr(self, "_last_report_delivery_date", None) == today_str:
-            return  # 今天已经检查过了
-        self._last_report_delivery_date = today_str
-
         try:
             await self._deliver_pending_selfcheck_report(message)
         except Exception as e:
