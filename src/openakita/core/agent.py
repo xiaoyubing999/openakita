@@ -32,9 +32,6 @@ from ..config import settings
 from ..memory import MemoryManager
 
 # Prompt 编译管线 (v2)
-from ..prompt import build_system_prompt as build_system_prompt_v2
-from ..prompt.compiler import check_compiled_outdated, compile_all
-
 # 技能系统 (SKILL.md 规范)
 from ..skills import SkillCatalog, SkillLoader, SkillRegistry
 
@@ -65,7 +62,7 @@ from ..tools.mcp import mcp_client
 from ..tools.mcp_catalog import MCPCatalog
 from ..tools.shell import ShellTool
 from ..tools.web import WebTool
-from .agent_state import AgentState, TaskState, TaskStatus
+from .agent_state import AgentState
 from .brain import Brain, Context
 from .context_manager import ContextManager
 from .identity import Identity
@@ -76,7 +73,6 @@ from .response_handler import (
     ResponseHandler,
     clean_llm_response,
     strip_thinking_tags,
-    strip_tool_simulation_text,
 )
 from .skill_manager import SkillManager
 from .task_monitor import RETROSPECT_PROMPT, TaskMonitor
@@ -162,122 +158,6 @@ risks_or_ambiguities:
   - 未指定如何处理包含非数值数据的列
   - 未指定输出格式（打印到控制台还是保存到文件）
 ```"""
-
-def strip_thinking_tags(text: str) -> str:
-    """
-    移除响应中的内部标签内容
-
-    需要清理的标签包括：
-    - <thinking>...</thinking> - Claude extended thinking
-    - <think>...</think> - MiniMax/Qwen thinking 格式
-    - <minimax:tool_call>...</minimax:tool_call> - MiniMax 工具调用格式
-    - <<|tool_calls_section_begin|>>...<<|tool_calls_section_end|>> - Kimi K2 工具调用格式
-    - </thinking> - 残留的闭合标签
-
-    这些内容不应该展示给最终用户。
-    """
-    if not text:
-        return text
-
-    cleaned = text
-
-    # 移除 <thinking>...</thinking> 标签及其内容
-    cleaned = re.sub(r"<thinking>.*?</thinking>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-
-    # 移除 <think>...</think> 标签及其内容 (MiniMax/Qwen 格式)
-    cleaned = re.sub(r"<think>.*?</think>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-
-    # 移除 <minimax:tool_call>...</minimax:tool_call> 标签及其内容
-    cleaned = re.sub(
-        r"<minimax:tool_call>.*?</minimax:tool_call>\s*",
-        "",
-        cleaned,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    # 移除 Kimi K2 工具调用格式
-    cleaned = re.sub(
-        r"<<\|tool_calls_section_begin\|>>.*?<<\|tool_calls_section_end\|>>\s*",
-        "",
-        cleaned,
-        flags=re.DOTALL,
-    )
-
-    # 移除 <invoke>...</invoke> 标签（可能单独出现）
-    cleaned = re.sub(
-        r"<invoke\s+[^>]*>.*?</invoke>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE
-    )
-
-    # 移除残留的闭合标签
-    cleaned = re.sub(r"</thinking>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"</think>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"</minimax:tool_call>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"<<\|tool_calls_section_begin\|>>.*$", "", cleaned, flags=re.DOTALL
-    )  # 不完整的
-
-    # 移除可能的 XML 声明残留
-    cleaned = re.sub(r"<\?xml[^>]*\?>\s*", "", cleaned)
-
-    return cleaned.strip()
-
-
-def strip_tool_simulation_text(text: str) -> str:
-    """
-    移除 LLM 在文本中模拟工具调用的内容
-
-    当使用不支持原生工具调用的备用模型时，LLM 可能会在文本中
-    "模拟"工具调用，输出类似:
-    - get_skill_info("moltbook")
-    - run_shell:0{"command": "..."}
-    - read_file("path/to/file")
-
-    这些内容不应该展示给最终用户。
-    """
-    if not text:
-        return text
-
-    # 模式1: 函数调用风格 function_name("arg") 或 function_name(arg)
-    pattern1 = r"^[a-z_]+\s*\([^)]*\)\s*$"
-
-    # 模式2: 带序号的工具调用 tool_name:N{json} 或 tool_name:N(args)
-    pattern2 = r"^[a-z_]+:\d+[\{\(].*[\}\)]\s*$"
-
-    # 模式3: JSON 风格工具调用 {"tool": "name", ...}
-    pattern3 = r'^\{["\']?(tool|function|name)["\']?\s*:'
-
-    lines = text.split("\n")
-    cleaned_lines = []
-
-    for line in lines:
-        stripped = line.strip()
-        # 检查是否是模拟工具调用
-        is_tool_sim = (
-            re.match(pattern1, stripped, re.IGNORECASE)
-            or re.match(pattern2, stripped, re.IGNORECASE)
-            or re.match(pattern3, stripped, re.IGNORECASE)
-        )
-        if not is_tool_sim:
-            cleaned_lines.append(line)
-
-    return "\n".join(cleaned_lines).strip()
-
-
-def clean_llm_response(text: str) -> str:
-    """
-    清理 LLM 响应文本
-
-    依次应用:
-    1. strip_thinking_tags - 移除思考标签
-    2. strip_tool_simulation_text - 移除模拟工具调用
-    """
-    if not text:
-        return text
-
-    cleaned = strip_thinking_tags(text)
-    cleaned = strip_tool_simulation_text(cleaned)
-
-    return cleaned.strip()
 
 
 class Agent:

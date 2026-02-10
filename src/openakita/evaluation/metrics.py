@@ -47,7 +47,7 @@ class TraceMetrics:
     @classmethod
     def from_trace(cls, trace: Any) -> "TraceMetrics":
         """从 Trace 对象提取指标。"""
-        from ..tracing.tracer import SpanType, SpanStatus
+        from ..tracing.tracer import SpanStatus, SpanType
 
         metrics = cls(
             trace_id=trace.trace_id,
@@ -165,13 +165,6 @@ class EvalMetrics:
 
         # 回滚率
         rollbacks = sum(1 for r in results if r.metrics.rollback_count > 0)
-
-        # 工具错误统计
-        tool_error_counter: dict[str, int] = {}
-        for r in results:
-            for tool in r.metrics.tools_used:
-                # 简化: 用 tool_errors / total_tool_calls 近似
-                pass
 
         metrics = cls(
             total_traces=total,

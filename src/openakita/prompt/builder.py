@@ -238,9 +238,9 @@ def _build_runtime_section() -> str:
         )
 
     # 系统环境详细信息（供高频工具使用）
-    import sys as _sys
     import locale as _locale
     import shutil as _shutil
+    import sys as _sys
 
     python_version = _sys.version.split()[0]
     system_encoding = _sys.getdefaultencoding()

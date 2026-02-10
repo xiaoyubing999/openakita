@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .tracer import Span, SpanStatus, SpanType, Trace
+from .tracer import SpanStatus, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,9 @@ class TraceExporter(ABC):
         ...
 
     def shutdown(self) -> None:
-        """关闭导出器（释放资源）"""
-        pass
+        """关闭导出器（释放资源）- 子类可重写"""
+        # 默认实现不做任何事情，子类可以重写此方法释放资源
+        return None
 
 
 class FileExporter(TraceExporter):

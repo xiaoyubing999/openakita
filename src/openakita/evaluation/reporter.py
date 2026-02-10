@@ -91,37 +91,37 @@ class Reporter:
     ) -> str:
         """生成 Markdown 格式报告。"""
         lines = [
-            f"# Agent 评估报告",
-            f"",
+            "# Agent 评估报告",
+            "",
             f"**生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"**评估 Trace 数**: {metrics.total_traces}",
-            f"",
-            f"## 核心指标",
-            f"",
-            f"| 指标 | 值 |",
-            f"|------|------|",
+            "",
+            "## 核心指标",
+            "",
+            "| 指标 | 值 |",
+            "|------|------|",
             f"| 任务完成率 | {metrics.task_completion_rate:.1%} |",
             f"| 工具无错率 | {metrics.tool_selection_accuracy:.1%} |",
             f"| Judge 平均分 | {metrics.avg_judge_score:.2f}/1.0 |",
             f"| 平均迭代次数 | {metrics.avg_iterations:.1f} |",
             f"| 平均 Token | {metrics.avg_token_usage:,} |",
             f"| 平均延迟 | {metrics.avg_latency_ms:.0f}ms |",
-            f"",
-            f"## 异常指标",
-            f"",
-            f"| 指标 | 值 |",
-            f"|------|------|",
+            "",
+            "## 异常指标",
+            "",
+            "| 指标 | 值 |",
+            "|------|------|",
             f"| 循环检测率 | {metrics.loop_detection_rate:.1%} |",
             f"| 错误恢复率 | {metrics.error_recovery_rate:.1%} |",
             f"| 回滚触发率 | {metrics.rollback_rate:.1%} |",
-            f"",
+            "",
         ]
 
         # 失败案例分析
         failed = [r for r in results if not r.is_good()]
         if failed:
             lines.append(f"## 需要关注的案例 ({len(failed)} 个)")
-            lines.append(f"")
+            lines.append("")
             for r in failed[:10]:
                 tags_str = ", ".join(r.tags) if r.tags else "无标签"
                 lines.append(f"### Trace: {r.trace_id}")
@@ -129,10 +129,10 @@ class Reporter:
                 lines.append(f"- **Judge 评分**: {r.judge_score:.2f}")
                 lines.append(f"- **原因**: {r.judge_reasoning[:200]}")
                 if r.judge_suggestions:
-                    lines.append(f"- **建议**:")
+                    lines.append("- **建议**:")
                     for s in r.judge_suggestions[:3]:
                         lines.append(f"  - {s}")
-                lines.append(f"")
+                lines.append("")
 
         # 改进建议汇总
         all_suggestions: list[str] = []
@@ -142,11 +142,11 @@ class Reporter:
         if all_suggestions:
             # 简单去重
             unique = list(dict.fromkeys(all_suggestions))
-            lines.append(f"## 改进建议汇总")
-            lines.append(f"")
+            lines.append("## 改进建议汇总")
+            lines.append("")
             for i, s in enumerate(unique[:10], 1):
                 lines.append(f"{i}. {s}")
-            lines.append(f"")
+            lines.append("")
 
         return "\n".join(lines)
 
@@ -161,7 +161,7 @@ class Reporter:
             return None
 
         try:
-            with open(json_files[0], "r", encoding="utf-8") as f:
+            with open(json_files[0], encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             logger.warning(f"[Reporter] Failed to load report: {e}")

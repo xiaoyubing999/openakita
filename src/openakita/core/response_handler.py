@@ -8,7 +8,6 @@
 - 辅助判断函数
 """
 
-import asyncio
 import logging
 import re
 from typing import Any

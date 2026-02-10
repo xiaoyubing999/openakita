@@ -7,13 +7,11 @@ Trace -> TraceMetrics -> Judge -> EvalResult -> EvalMetrics
 
 import json
 import logging
-import os
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .judge import Judge, JudgeResult
+from .judge import Judge
 from .metrics import EvalMetrics, EvalResult, TraceMetrics
 
 logger = logging.getLogger(__name__)
@@ -132,7 +130,7 @@ class EvalRunner:
         max_traces: int = 50,
     ) -> list[Any]:
         """从文件加载 Trace 对象。"""
-        from ..tracing.tracer import Trace, Span, SpanType, SpanStatus
+        from ..tracing.tracer import Span, SpanStatus, SpanType, Trace
 
         traces_path = Path(self._traces_dir)
         if not traces_path.exists():
@@ -144,7 +142,7 @@ class EvalRunner:
                 break
 
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     data = json.load(f)
 
                 # 支持单个 trace 文件和多 trace 文件

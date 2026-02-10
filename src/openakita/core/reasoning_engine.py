@@ -660,12 +660,16 @@ class ReasoningEngine:
                     )
 
                     # 构建 tool_result 消息（其他工具结果 + ask_user 结果必须在同一条 user 消息中）
-                    def _build_ask_user_tool_results(ask_user_content: str) -> list[dict]:
+                    def _build_ask_user_tool_results(
+                        ask_user_content: str,
+                        _other_results: list[dict] = other_tool_results,
+                        _ask_id: str = ask_tool_id,
+                    ) -> list[dict]:
                         """构建包含所有 tool_result 的 user 消息 content"""
-                        results = list(other_tool_results)  # 其他工具的 tool_result
+                        results = list(_other_results)  # 其他工具的 tool_result
                         results.append({
                             "type": "tool_result",
-                            "tool_use_id": ask_tool_id,
+                            "tool_use_id": _ask_id,
                             "content": ask_user_content,
                         })
                         return results
@@ -768,7 +772,7 @@ class ReasoningEngine:
                     rollback_result = self._rollback(rb_reason)
                     if rollback_result:
                         working_messages, _ = rollback_result
-                        logger.info(f"[Rollback] 回滚成功，将用不同方法重新推理")
+                        logger.info("[Rollback] 回滚成功，将用不同方法重新推理")
                         continue
 
                 if state.cancelled:
@@ -1123,7 +1127,7 @@ class ReasoningEngine:
         self._switch_llm_endpoint(new_model, reason="task_monitor timeout fallback")
         task_monitor.switch_model(
             new_model,
-            f"任务超时后切换",
+            "任务超时后切换",
             reset_context=True,
         )
 
@@ -1176,7 +1180,7 @@ class ReasoningEngine:
         # 切换模型
         new_model = task_monitor.fallback_model
         self._switch_llm_endpoint(new_model, reason=f"LLM error fallback: {error}")
-        task_monitor.switch_model(new_model, f"LLM 调用失败后切换", reset_context=True)
+        task_monitor.switch_model(new_model, "LLM 调用失败后切换", reset_context=True)
 
         try:
             llm_client = getattr(self._brain, "_llm_client", None)

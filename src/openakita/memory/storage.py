@@ -171,7 +171,7 @@ class MemoryStorage:
 
             memories = []
             for row in rows:
-                memory = dict(zip(columns, row))
+                memory = dict(zip(columns, row, strict=False))
                 # 反序列化 JSON 字段
                 memory["tags"] = json.loads(memory.get("tags", "[]"))
                 memory["metadata"] = json.loads(memory.get("metadata", "{}"))
@@ -196,7 +196,7 @@ class MemoryStorage:
                 return None
 
             columns = [desc[0] for desc in cursor.description]
-            memory = dict(zip(columns, row))
+            memory = dict(zip(columns, row, strict=False))
             memory["tags"] = json.loads(memory.get("tags", "[]"))
             memory["metadata"] = json.loads(memory.get("metadata", "{}"))
             return memory
@@ -275,7 +275,7 @@ class MemoryStorage:
 
             memories = []
             for row in rows:
-                memory = dict(zip(columns, row))
+                memory = dict(zip(columns, row, strict=False))
                 memory["tags"] = json.loads(memory.get("tags", "[]"))
                 memory["metadata"] = json.loads(memory.get("metadata", "{}"))
                 memories.append(memory)

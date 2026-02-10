@@ -170,7 +170,6 @@ class Judge:
 
     def _format_trace_for_judge(self, trace: Any) -> str:
         """将 Trace 格式化为 Judge 可读的摘要。"""
-        from ..tracing.tracer import SpanType
 
         parts = []
         summary = trace.get_summary()
@@ -184,12 +183,12 @@ class Judge:
         parts.append(f"总 Output Tokens: {summary.get('total_output_tokens', 0)}")
 
         if trace.metadata:
-            parts.append(f"\n任务信息:")
+            parts.append("\n任务信息:")
             for k, v in trace.metadata.items():
                 parts.append(f"  {k}: {v}")
 
         # Span 详情
-        parts.append(f"\n执行时间线:")
+        parts.append("\n执行时间线:")
         for span in trace.spans[:30]:  # 限制长度
             status_icon = "✅" if span.status.value == "ok" else "❌"
             duration = f"{span.duration_ms:.0f}ms" if span.duration_ms else "?"

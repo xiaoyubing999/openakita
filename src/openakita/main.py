@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # 初始化追踪系统
 def _init_tracing() -> None:
     """根据配置初始化 Agent 追踪系统"""
+    from .tracing.exporter import ConsoleExporter, FileExporter
     from .tracing.tracer import AgentTracer, set_tracer
-    from .tracing.exporter import FileExporter, ConsoleExporter
 
     tracer = AgentTracer(enabled=settings.tracing_enabled)
     if settings.tracing_enabled:

@@ -10,13 +10,11 @@
 通过闭环反馈实现 Agent 的持续自我改进。
 """
 
-import asyncio
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from .metrics import EvalMetrics, EvalResult
@@ -121,7 +119,6 @@ class FeedbackAnalyzer:
 
         # 5. Judge 建议汇总
         all_suggestions: list[str] = []
-        all_patterns: list[str] = []
         for r in results:
             all_suggestions.extend(r.judge_suggestions)
 
@@ -368,7 +365,7 @@ class FeedbackOptimizer:
         existing = []
         if os.path.exists(feedback_path):
             try:
-                with open(feedback_path, "r", encoding="utf-8") as f:
+                with open(feedback_path, encoding="utf-8") as f:
                     existing = json.load(f)
                     if not isinstance(existing, list):
                         existing = [existing]
@@ -426,7 +423,7 @@ class FeedbackOptimizer:
         existing: list[dict] = []
         if os.path.exists(log_path):
             try:
-                with open(log_path, "r", encoding="utf-8") as f:
+                with open(log_path, encoding="utf-8") as f:
                     existing = json.load(f)
             except Exception:
                 pass
@@ -462,8 +459,8 @@ class DailyEvaluator:
         memory_file: str = "data/identity/MEMORY.md",
     ) -> None:
         from .judge import Judge
-        from .runner import EvalRunner
         from .reporter import Reporter
+        from .runner import EvalRunner
 
         self._judge = Judge(brain=brain)
         self._runner = EvalRunner(traces_dir=traces_dir, judge=self._judge)

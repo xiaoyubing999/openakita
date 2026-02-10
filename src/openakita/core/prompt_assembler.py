@@ -139,8 +139,8 @@ class PromptAssembler:
         Returns:
             编译后的系统提示词
         """
-        from ..prompt.compiler import check_compiled_outdated, compile_all
         from ..prompt.builder import build_system_prompt
+        from ..prompt.compiler import check_compiled_outdated, compile_all
         from ..prompt.retriever import retrieve_memory
 
         identity_dir = settings.identity_path
@@ -176,8 +176,8 @@ class PromptAssembler:
 
     def _build_compiled_sync(self, task_description: str = "", session_type: str = "cli") -> str:
         """同步版本：启动时构建初始系统提示词"""
-        from ..prompt.compiler import check_compiled_outdated, compile_all
         from ..prompt.builder import build_system_prompt
+        from ..prompt.compiler import check_compiled_outdated, compile_all
 
         identity_dir = settings.identity_path
 
