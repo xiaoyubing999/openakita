@@ -1074,8 +1074,10 @@ class WeWorkBotAdapter(ChannelAdapter):
                     )
                     return f"stream:{stream_id}"
 
-        # ── 策略 2: chat_id → chat_key 匹配 stream session ──
-        stream_id = self._find_stream_by_chat(chat_id)
+        # ── 策略 2: chat_id + user_id 匹配 stream session ──
+        # 群聊中需要 user_id 精确匹配，避免匹配到其他用户的 stream
+        user_id = message.metadata.get("channel_user_id") if message.metadata else None
+        stream_id = self._find_stream_by_chat(chat_id, user_id)
         if stream_id:
             session = self._stream_sessions.get(stream_id)
             if session:
@@ -1083,9 +1085,9 @@ class WeWorkBotAdapter(ChannelAdapter):
                 session.is_finished = True
                 session.last_updated_at = time.time()
                 logger.info(
-                    f"WeWorkBot: Stream {stream_id} (via chat_key) content "
-                    f"updated ({len(text)} chars), marked finished "
-                    f"(settle {STREAM_SETTLE_DELAY}s)"
+                    f"WeWorkBot: Stream {stream_id} (via chat_key, "
+                    f"user={user_id}) content updated ({len(text)} chars), "
+                    f"marked finished (settle {STREAM_SETTLE_DELAY}s)"
                 )
                 return f"stream:{stream_id}"
 
@@ -1098,8 +1100,25 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id, message.reply_to, text
         )
 
-    def _find_stream_by_chat(self, chat_id: str) -> str | None:
-        """按 chat_id 前缀查找活跃的 stream session"""
+    def _find_stream_by_chat(
+        self, chat_id: str, user_id: str | None = None
+    ) -> str | None:
+        """
+        查找活跃的 stream session
+
+        优先按 chat_key (chat_id:user_id) 精确匹配（群聊需要）。
+        无 user_id 时降级为 chat_id 前缀匹配（单聊兼容）。
+        """
+        if user_id:
+            # 精确匹配 — 群聊中每个用户有独立的 stream
+            chat_key = self._chat_key(chat_id, user_id)
+            sid = self._chat_streams.get(chat_key)
+            if sid:
+                session = self._stream_sessions.get(sid)
+                if session:
+                    return sid
+
+        # 降级: 前缀匹配（单聊中 chat_id == user_id，只有一个匹配）
         for key, sid in list(self._chat_streams.items()):
             if key.startswith(f"{chat_id}:"):
                 session = self._stream_sessions.get(sid)
@@ -1228,7 +1247,13 @@ class WeWorkBotAdapter(ChannelAdapter):
         if reply_to:
             stream_id = self._msgid_to_stream.get(reply_to)
         if not stream_id:
-            stream_id = self._find_stream_by_chat(chat_id)
+            # 群聊中需要 user_id 精确匹配
+            user_id = kwargs.get("channel_user_id") or (
+                kwargs.get("metadata", {}).get("channel_user_id")
+                if isinstance(kwargs.get("metadata"), dict)
+                else None
+            )
+            stream_id = self._find_stream_by_chat(chat_id, user_id)
 
         session = self._stream_sessions.get(stream_id) if stream_id else None
 

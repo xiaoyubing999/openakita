@@ -64,18 +64,21 @@ class IMChannelHandler:
         else:
             return f"❌ Unknown IM channel tool: {tool_name}"
 
-    def _get_adapter_and_chat_id(self) -> tuple[Optional["ChannelAdapter"], str | None, str | None]:
+    def _get_adapter_and_chat_id(
+        self,
+    ) -> tuple[Optional["ChannelAdapter"], str | None, str | None, str | None, str | None]:
         """
         获取当前 IM 会话的 adapter 和 chat_id
 
         Returns:
-            (adapter, chat_id, channel_name) 或 (None, None, None) 如果获取失败
+            (adapter, chat_id, channel_name, reply_to, channel_user_id)
+            或 (None, None, None, None, None) 如果获取失败
         """
         from ...core.im_context import get_im_session
 
         session = get_im_session()
         if not session:
-            return None, None, None
+            return None, None, None, None, None
 
         # 从 session metadata 获取 gateway 和当前消息
         gateway = session.get_metadata("_gateway")
@@ -83,7 +86,7 @@ class IMChannelHandler:
 
         if not gateway or not current_message:
             logger.warning("Missing gateway or current_message in session metadata")
-            return None, None, None
+            return None, None, None, None, None
 
         # 获取对应的 adapter
         channel = current_message.channel
@@ -94,9 +97,13 @@ class IMChannelHandler:
 
         if not adapter:
             logger.warning(f"Adapter not found for channel: {channel}")
-            return None, None, channel
+            return None, None, channel, None, None
 
-        return adapter, current_message.chat_id, channel
+        # 提取 reply_to (channel_message_id) 和 channel_user_id（群聊精确路由）
+        reply_to = getattr(current_message, "channel_message_id", None)
+        channel_user_id = getattr(current_message, "channel_user_id", None)
+
+        return adapter, current_message.chat_id, channel, reply_to, channel_user_id
 
     async def _deliver_artifacts(self, params: dict) -> str:
         """
@@ -106,7 +113,7 @@ class IMChannelHandler:
         import json
         import re
 
-        adapter, chat_id, channel = self._get_adapter_and_chat_id()
+        adapter, chat_id, channel, reply_to, channel_user_id = self._get_adapter_and_chat_id()
         if not adapter:
             if channel:
                 return json.dumps(
@@ -196,7 +203,10 @@ class IMChannelHandler:
                     if receipt["status"] != "delivered":
                         receipt["error_code"] = "send_failed"
                 elif art_type == "image":
-                    msg = await self._send_image(adapter, chat_id, path, caption, channel)
+                    msg = await self._send_image(
+                        adapter, chat_id, path, caption, channel,
+                        reply_to=reply_to, channel_user_id=channel_user_id,
+                    )
                     receipt["status"] = "delivered" if msg.startswith("✅") else "failed"
                     receipt["message"] = msg
                     m = re.search(r"message_id=([^)]+)\)", msg)
@@ -286,7 +296,14 @@ class IMChannelHandler:
             return f"❌ 当前平台 ({channel}) 不支持发送文件"
 
     async def _send_image(
-        self, adapter: "ChannelAdapter", chat_id: str, image_path: str, caption: str, channel: str
+        self,
+        adapter: "ChannelAdapter",
+        chat_id: str,
+        image_path: str,
+        caption: str,
+        channel: str,
+        reply_to: str | None = None,
+        channel_user_id: str | None = None,
     ) -> str:
         """发送图片"""
         # 检查文件是否存在
@@ -295,7 +312,11 @@ class IMChannelHandler:
 
         # 优先使用 send_image，失败则降级到 send_file
         try:
-            message_id = await adapter.send_image(chat_id, image_path, caption)
+            message_id = await adapter.send_image(
+                chat_id, image_path, caption,
+                reply_to=reply_to,
+                channel_user_id=channel_user_id,
+            )
             logger.info(f"[IM] Sent image to {channel}:{chat_id}: {image_path}")
             return f"✅ 已发送图片: {image_path} (message_id={message_id})"
         except NotImplementedError:

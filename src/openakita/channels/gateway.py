@@ -1224,13 +1224,18 @@ class MessageGateway:
 
         # 发送每个部分（带重试）
         for i, text in enumerate(messages):
+            # 合并 metadata，注入 channel_user_id 用于群聊精确路由
+            outgoing_meta = dict(original.metadata) if original.metadata else {}
+            if original.channel_user_id:
+                outgoing_meta["channel_user_id"] = original.channel_user_id
+
             outgoing = OutgoingMessage.text(
                 chat_id=original.chat_id,
                 text=text,
                 reply_to=original.channel_message_id if i == 0 else None,
                 thread_id=original.thread_id,
                 parse_mode="markdown",  # 启用 Markdown 格式
-                metadata=original.metadata,  # 透传原始消息元数据 (session_webhook, is_group 等)
+                metadata=outgoing_meta,  # 透传元数据 + channel_user_id
             )
 
             # 重试最多 3 次
