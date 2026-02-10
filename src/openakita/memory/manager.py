@@ -12,6 +12,7 @@
 - 会话结束: 保存新记忆到 memories.json 和 ChromaDB
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -161,6 +162,18 @@ class MemoryManager:
             os.replace(str(tmp), str(self.memories_file))
         except Exception as e:
             logger.error(f"Failed to save memories: {e}")
+
+    async def _save_memories_async(self) -> None:
+        """异步保存记忆（在线程池中执行同步 I/O）"""
+        await asyncio.to_thread(self._save_memories)
+
+    async def add_memory_async(self, memory: "Memory") -> str:
+        """异步添加记忆"""
+        return await asyncio.to_thread(self.add_memory, memory)
+
+    async def get_injection_context_async(self, task_description: str = "") -> str:
+        """异步获取记忆注入上下文"""
+        return await asyncio.to_thread(self.get_injection_context, task_description)
 
     # ==================== 会话管理 ====================
 

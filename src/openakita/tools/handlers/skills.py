@@ -166,7 +166,11 @@ class SkillsHandler:
         subdir = params.get("subdir")
         extra_files = params.get("extra_files", [])
 
-        result = await self.agent._install_skill(source, name, subdir, extra_files)
+        # 优先使用 SkillManager（重构后新模块），fallback 到 agent._install_skill
+        if hasattr(self.agent, 'skill_manager'):
+            result = await self.agent.skill_manager.install_skill(source, name, subdir, extra_files)
+        else:
+            result = await self.agent._install_skill(source, name, subdir, extra_files)
         return result
 
     def _load_skill(self, params: dict) -> str:

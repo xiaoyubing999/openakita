@@ -403,6 +403,10 @@ class SessionManager:
                 with contextlib.suppress(Exception):
                     temp_file.unlink()
 
+    async def _save_sessions_async(self) -> None:
+        """异步保存会话（在线程池中执行同步 I/O）"""
+        await asyncio.to_thread(self._save_sessions)
+
     # ==================== 会话操作快捷方法 ====================
 
     def add_message(

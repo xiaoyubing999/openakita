@@ -36,6 +36,10 @@ from .definitions.base import infer_category
 logger = logging.getLogger(__name__)
 
 
+# 高频工具白名单 - 直接提供完整 schema 给 LLM API，跳过渐进式披露
+HIGH_FREQ_TOOLS = {"run_shell", "read_file", "write_file", "list_directory"}
+
+
 class ToolCatalog:
     """
     系统工具目录
@@ -44,6 +48,9 @@ class ToolCatalog:
     支持渐进式披露：
     - Level 1: 工具清单 (name + short_description)
     - Level 2: 完整定义 (description + input_schema)
+
+    高频工具 (run_shell, read_file, write_file, list_directory) 直接以完整
+    schema 注入 LLM tools 参数，无需经过 get_tool_info 中间步骤。
     """
 
     # 工具清单模板
@@ -94,12 +101,16 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
         self._tools = {t["name"]: t for t in tools}
         self._cached_catalog: str | None = None
 
-    def generate_catalog(self) -> str:
+    def generate_catalog(self, exclude_high_freq: bool = True) -> str:
         """
         生成工具清单（Level 1）
 
         从工具定义的 category 字段自动聚合分类，按 CATEGORY_ORDER 排序输出。
         新增工具只要有 category 字段就会自动出现，无需修改此处代码。
+
+        Args:
+            exclude_high_freq: 是否排除高频工具（默认排除，因为它们已通过
+                LLM tools 参数直接注入完整 schema，不需要在文本清单中重复）
 
         Returns:
             格式化的工具清单字符串
@@ -112,6 +123,9 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
         uncategorized: list[tuple[str, dict]] = []
 
         for name, tool in self._tools.items():
+            # 高频工具已在 tools 参数中全量提供，跳过以节省 token
+            if exclude_high_freq and name in HIGH_FREQ_TOOLS:
+                continue
             cat = tool.get("category")
             if not cat:
                 cat = infer_category(name)  # fallback 到 base.py 的推断
@@ -155,6 +169,31 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
 
         logger.info(f"Generated tool catalog with {len(self._tools)} tools")
         return catalog
+
+    def get_direct_tool_schemas(self) -> list[dict]:
+        """
+        获取高频工具的完整 schema，用于直接注入 LLM tools 参数。
+
+        这些工具（run_shell, read_file, write_file, list_directory）
+        跳过渐进式披露，直接以 {name, description, input_schema} 提供给 LLM。
+
+        Returns:
+            高频工具的完整 schema 列表
+        """
+        schemas = []
+        for tool_name in HIGH_FREQ_TOOLS:
+            tool = self._tools.get(tool_name)
+            if tool:
+                schemas.append({
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "input_schema": tool.get("input_schema", {}),
+                })
+        return schemas
+
+    def is_high_freq_tool(self, tool_name: str) -> bool:
+        """判断是否为高频工具"""
+        return tool_name in HIGH_FREQ_TOOLS
 
     def _format_category_section(
         self, display_name: str, tools: list[tuple[str, dict]]
@@ -205,18 +244,19 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
 
         return first_line
 
-    def get_catalog(self, refresh: bool = False) -> str:
+    def get_catalog(self, refresh: bool = False, exclude_high_freq: bool = True) -> str:
         """
         获取工具清单
 
         Args:
             refresh: 是否强制刷新
+            exclude_high_freq: 是否排除高频工具（默认排除）
 
         Returns:
             工具清单字符串
         """
         if refresh or self._cached_catalog is None:
-            return self.generate_catalog()
+            return self.generate_catalog(exclude_high_freq=exclude_high_freq)
         return self._cached_catalog
 
     def get_tool_info(self, tool_name: str) -> dict | None:

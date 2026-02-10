@@ -267,28 +267,38 @@ class RalphLoop:
             )
 
     async def _load_progress(self) -> None:
-        """从 MEMORY.md 加载进度"""
+        """从 MEMORY.md 加载进度（在线程池中执行，避免阻塞事件循环）"""
+        import asyncio
+
+        await asyncio.to_thread(self._load_progress_sync)
+
+    def _load_progress_sync(self) -> None:
+        """同步加载进度"""
         try:
             if self.memory_path.exists():
                 self.memory_path.read_text(encoding="utf-8")
-                # 解析 MEMORY.md 提取任务状态
-                # 这里简化处理，实际应该解析 Markdown
                 logger.debug("Progress loaded from MEMORY.md")
         except Exception as e:
             logger.warning(f"Failed to load progress: {e}")
 
     async def _save_progress(self) -> None:
-        """保存进度到 MEMORY.md"""
+        """保存进度到 MEMORY.md（在线程池中执行，避免阻塞事件循环）"""
+        import asyncio
+
+        if not self._current_task:
+            return
+        await asyncio.to_thread(self._save_progress_sync)
+
+    def _save_progress_sync(self) -> None:
+        """同步保存进度"""
         if not self._current_task:
             return
 
         try:
-            # 读取现有内容
             content = ""
             if self.memory_path.exists():
                 content = self.memory_path.read_text(encoding="utf-8")
 
-            # 更新 Active Task 部分
             task = self._current_task
             session_line = f"- **Session**: {task.session_id}\n" if task.session_id else ""
             task_info = f"""### Active Task
@@ -300,7 +310,6 @@ class RalphLoop:
 - **最后更新**: {datetime.now().isoformat()}
 """
 
-            # 简单替换 Active Task 部分
             if "### Active Task" in content:
                 start = content.find("### Active Task")
                 end = content.find("###", start + 1)
@@ -310,7 +319,6 @@ class RalphLoop:
                     end = len(content)
                 content = content[:start] + task_info + content[end:]
             else:
-                # 在 Current Task Progress 后插入
                 insert_pos = content.find("## Current Task Progress")
                 if insert_pos != -1:
                     insert_pos = content.find("\n", insert_pos) + 1

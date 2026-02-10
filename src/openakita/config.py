@@ -215,6 +215,10 @@ class Settings(BaseSettings):
 
     # === 多 Agent 协同配置 ===
     orchestration_enabled: bool = Field(default=False, description="是否启用多 Agent 协同")
+    orchestration_mode: str = Field(
+        default="single",
+        description="编排模式: single(单Agent) | handoff(进程内Handoff) | master-worker(ZMQ跨进程)",
+    )
     orchestration_bus_address: str = Field(
         default="tcp://127.0.0.1:5555", description="ZMQ 总线地址"
     )
@@ -225,6 +229,15 @@ class Settings(BaseSettings):
     orchestration_max_workers: int = Field(default=5, description="最大 Worker 数量")
     orchestration_heartbeat_interval: int = Field(default=5, description="Worker 心跳间隔（秒）")
     orchestration_health_check_interval: int = Field(default=10, description="健康检查间隔（秒）")
+
+    # === 追踪配置 ===
+    tracing_enabled: bool = Field(default=False, description="是否启用 Agent 追踪")
+    tracing_export_dir: str = Field(default="data/traces", description="追踪导出目录")
+    tracing_console_export: bool = Field(default=False, description="是否同时导出到控制台")
+
+    # === 评估配置 ===
+    evaluation_enabled: bool = Field(default=False, description="是否启用每日自动评估")
+    evaluation_output_dir: str = Field(default="data/evaluation", description="评估报告输出目录")
 
     model_config = {
         "env_file": ".env",

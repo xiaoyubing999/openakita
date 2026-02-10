@@ -65,10 +65,22 @@ from ..tools.mcp import mcp_client
 from ..tools.mcp_catalog import MCPCatalog
 from ..tools.shell import ShellTool
 from ..tools.web import WebTool
+from .agent_state import AgentState, TaskState, TaskStatus
 from .brain import Brain, Context
+from .context_manager import ContextManager
 from .identity import Identity
+from .prompt_assembler import PromptAssembler
 from .ralph import RalphLoop, Task, TaskResult
+from .reasoning_engine import ReasoningEngine
+from .response_handler import (
+    ResponseHandler,
+    clean_llm_response,
+    strip_thinking_tags,
+    strip_tool_simulation_text,
+)
+from .skill_manager import SkillManager
 from .task_monitor import RETROSPECT_PROMPT, TaskMonitor
+from .tool_executor import ToolExecutor
 from .user_profile import get_profile_manager
 
 _DESKTOP_AVAILABLE = False
@@ -408,7 +420,53 @@ class Agent:
             self._tool_handler_locks[hn] = asyncio.Lock()
         self._task_monitor_lock = asyncio.Lock()
 
-        logger.info(f"Agent '{self.name}' created")
+        # ==================== Phase 2: 新增子模块 ====================
+        # 结构化状态管理
+        self.agent_state = AgentState()
+
+        # 工具执行引擎（委托自 _execute_tool / _execute_tool_calls_batch）
+        self.tool_executor = ToolExecutor(
+            handler_registry=self.handler_registry,
+            max_parallel=max(1, settings.tool_max_parallel),
+        )
+
+        # 上下文管理器（委托自 _compress_context 等）
+        self.context_manager = ContextManager(brain=self.brain)
+
+        # 响应处理器（委托自 _verify_task_completion 等）
+        self.response_handler = ResponseHandler(
+            brain=self.brain,
+            memory_manager=self.memory_manager,
+        )
+
+        # 技能管理器（委托自 _install_skill / _load_installed_skills 等）
+        self.skill_manager = SkillManager(
+            skill_registry=self.skill_registry,
+            skill_loader=self.skill_loader,
+            skill_catalog=self.skill_catalog,
+            shell_tool=self.shell_tool,
+        )
+
+        # 提示词组装器（委托自 _build_system_prompt 等）
+        self.prompt_assembler = PromptAssembler(
+            tool_catalog=self.tool_catalog,
+            skill_catalog=self.skill_catalog,
+            mcp_catalog=self.mcp_catalog,
+            memory_manager=self.memory_manager,
+            profile_manager=self.profile_manager,
+            brain=self.brain,
+        )
+
+        # 推理引擎（替代 _chat_with_tools_and_context）
+        self.reasoning_engine = ReasoningEngine(
+            brain=self.brain,
+            tool_executor=self.tool_executor,
+            context_manager=self.context_manager,
+            response_handler=self.response_handler,
+            agent_state=self.agent_state,
+        )
+
+        logger.info(f"Agent '{self.name}' created (with refactored sub-modules)")
 
     def _get_tool_handler_name(self, tool_name: str) -> str | None:
         """获取工具对应的 handler 名称（用于互斥/并发策略）"""
@@ -1698,22 +1756,9 @@ search_github → install_skill → 使用
 
     def _build_system_prompt_compiled_sync(self, task_description: str = "", session_type: str = "cli") -> str:
         """同步版本：启动时构建初始系统提示词（此时事件循环可能未就绪）"""
-        identity_dir = settings.identity_path
-
-        if check_compiled_outdated(identity_dir):
-            logger.info("Compiled identity files outdated, recompiling...")
-            compile_all(identity_dir)
-
-        return build_system_prompt_v2(
-            identity_dir=identity_dir,
-            tools_enabled=True,
-            tool_catalog=self.tool_catalog,
-            skill_catalog=self.skill_catalog,
-            mcp_catalog=self.mcp_catalog,
-            memory_manager=self.memory_manager,
-            task_description=task_description,
-            include_tools_guide=True,
-            session_type=session_type,
+        # 委托给 PromptAssembler
+        return self.prompt_assembler._build_compiled_sync(
+            task_description, session_type=session_type
         )
 
     async def _build_system_prompt_compiled(self, task_description: str = "", session_type: str = "cli") -> str:
@@ -1730,40 +1775,9 @@ search_github → install_skill → 使用
         Returns:
             编译后的系统提示词
         """
-        from ..prompt.retriever import retrieve_memory
-
-        identity_dir = settings.identity_path
-
-        # 检查编译产物是否过期
-        if check_compiled_outdated(identity_dir):
-            logger.info("Compiled identity files outdated, recompiling...")
-            compile_all(identity_dir)
-
-        # 异步预取记忆搜索结果（避免在 build_system_prompt_v2 内部同步阻塞）
-        precomputed_memory = ""
-        if self.memory_manager and task_description:
-            try:
-                precomputed_memory = await asyncio.to_thread(
-                    retrieve_memory,
-                    query=task_description,
-                    memory_manager=self.memory_manager,
-                    max_tokens=400,
-                )
-            except Exception as e:
-                logger.warning(f"Async memory retrieval failed: {e}")
-
-        # 使用新管线构建提示词（传入预计算的记忆，跳过内部同步搜索）
-        return build_system_prompt_v2(
-            identity_dir=identity_dir,
-            tools_enabled=True,
-            tool_catalog=self.tool_catalog,
-            skill_catalog=self.skill_catalog,
-            mcp_catalog=self.mcp_catalog,
-            memory_manager=self.memory_manager,
-            task_description=task_description,
-            include_tools_guide=True,
-            session_type=session_type,
-            precomputed_memory=precomputed_memory,
+        # 委托给 PromptAssembler
+        return await self.prompt_assembler.build_system_prompt_compiled(
+            task_description, session_type=session_type
         )
 
     def _generate_tools_text(self) -> str:
@@ -3214,24 +3228,57 @@ NEXT: 建议的下一步（如有）"""
         session_type: str = "cli",
     ) -> str:
         """
-        使用指定的消息上下文进行对话（支持工具调用）
+        使用指定的消息上下文进行对话（委托给 ReasoningEngine）
 
-        这是 _chat_with_tools 的变体，使用传入的 messages 而不是 self._context.messages
-
-        安全模型切换策略：
-        1. 超时或错误时先重试 3 次
-        2. 重试次数用尽后才切换到备用模型
-        3. 切换时废弃已有的工具调用历史，从用户原始请求开始重新处理
+        Phase 2 重构: 保留 system prompt / task_description 的构建逻辑，
+        将核心推理循环委托给 self.reasoning_engine.run()。
 
         Args:
             messages: 对话消息列表
-            use_session_prompt: 是否使用 Session 专用的 System Prompt（不包含全局 Active Task）
-            task_monitor: 任务监控器（可选，用于跟踪执行时间和超时切换模型）
+            use_session_prompt: 是否使用 Session 专用的 System Prompt
+            task_monitor: 任务监控器
+            session_type: 会话类型 ("cli" 或 "im")
 
         Returns:
             最终响应文本
         """
-        max_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
+        # === 构建 System Prompt ===
+        task_description = (getattr(self, "_current_task_query", "") or "").strip()
+        if not task_description:
+            task_description = self._get_last_user_request(messages).strip()
+
+        if use_session_prompt:
+            system_prompt = await self._build_system_prompt_compiled(
+                task_description=task_description,
+                session_type=session_type,
+            )
+        else:
+            system_prompt = self._context.system
+
+        # 注入 TaskDefinition
+        task_def = (getattr(self, "_current_task_definition", "") or "").strip()
+        if task_def:
+            system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
+
+        base_system_prompt = system_prompt
+        conversation_id = getattr(self, "_current_conversation_id", None) or getattr(
+            self, "_current_session_id", None
+        )
+
+        # === 委托给 ReasoningEngine ===
+        return await self.reasoning_engine.run(
+            messages,
+            tools=self._tools,
+            system_prompt=system_prompt,
+            base_system_prompt=base_system_prompt,
+            task_description=task_description,
+            task_monitor=task_monitor,
+            session_type=session_type,
+            conversation_id=conversation_id,
+        )
+
+        # ==================== 以下为旧代码（保留参考，后续完全清理） ====================
+        max_iterations = settings.max_iterations
 
         # === 关键：保存原始用户消息，用于模型切换时重置上下文 ===
         # 只提取“人类用户消息”（不包含 tool_result 证据链），并保留多模态 content（list blocks）

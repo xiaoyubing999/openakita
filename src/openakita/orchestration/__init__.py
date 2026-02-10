@@ -1,11 +1,18 @@
 """
 多 Agent 协同工作框架
 
-本模块实现基于 ZeroMQ 的多进程 Agent 协同机制:
-- AgentRegistry: Agent 注册中心，管理所有活跃 Agent
-- AgentBus: ZMQ 通信总线，处理进程间通信
-- MasterAgent: 主协调器，任务分发和监督
-- WorkerAgent: 工作进程，执行具体任务
+本模块提供两种 Agent 协同模式:
+
+1. Master-Worker (ZMQ 重量级): 基于 ZeroMQ 的跨进程/跨机器协同
+   - AgentRegistry: Agent 注册中心，管理所有活跃 Agent
+   - AgentBus: ZMQ 通信总线，处理进程间通信
+   - MasterAgent: 主协调器，任务分发和监督
+   - WorkerAgent: 工作进程，执行具体任务
+
+2. Handoff (轻量级): 进程内 Agent 切换，参考 OpenAI Agents SDK 设计
+   - HandoffAgent: 具有特定能力的 Agent 角色
+   - HandoffTarget: 描述何时以及如何委托给其他 Agent
+   - HandoffOrchestrator: 管理 Agent 间的切换和消息路由
 
 架构:
     ┌─────────────────────────────────────────┐
@@ -40,6 +47,7 @@
 """
 
 from .bus import AgentBus, BusConfig
+from .handoff import HandoffAgent, HandoffOrchestrator, HandoffTarget
 from .master import MasterAgent
 from .messages import (
     AgentInfo,
@@ -66,4 +74,8 @@ __all__ = [
     "MasterAgent",
     "WorkerAgent",
     "AgentMonitor",
+    # Handoff 模式
+    "HandoffAgent",
+    "HandoffTarget",
+    "HandoffOrchestrator",
 ]

@@ -3,11 +3,17 @@ Prompt Budget - Token 预算裁剪模块
 
 控制各部分的 token 预算，确保系统提示词不超出限制。
 
-预算分配:
-- identity_budget: 600 tokens (soul + agent.core + agent.tooling + policies)
-- catalogs_budget: 1500 tokens (tools + skills + mcp 清单)
+预算分配（基于运行时实测数据）:
+- identity_budget: 1600 tokens (soul + agent.core + agent.tooling + policies)
+  - policies 独占 50%（实测 627 tokens），其余三部分各 ~17%
+- catalogs_budget: 12000 tokens (tools 33% + skills 55% + mcp 10%)
+  - tools: ~4000 tokens（含 Desktop Tools，排除高频工具）
+  - skills: ~6600 tokens（index 全量 + detail 全量，60+ skills）
+  - mcp: ~1200 tokens
 - user_budget: 300 tokens (user.summary + runtime_facts)
-- memory_budget: 400 tokens (retriever 输出)
+- memory_budget: 500 tokens (retriever 输出)
+
+总预算约 ~15000 tokens，占 128k 上下文约 11.7%。
 """
 
 import logging
@@ -24,13 +30,13 @@ class BudgetConfig:
     """Token 预算配置"""
 
     # 各部分预算（tokens）
-    identity_budget: int = 600  # soul + agent.core + agent.tooling + policies
-    catalogs_budget: int = 1200  # tools + skills + mcp 清单（降噪：预算更紧）
-    user_budget: int = 300  # user.summary + runtime_facts
-    memory_budget: int = 500  # retriever 输出（更偏向“记忆可见性”）
+    identity_budget: int = 1600   # soul + agent.core + agent.tooling + policies(627)
+    catalogs_budget: int = 12000  # tools(33%) + skills(55%) + mcp(10%) 全量注入
+    user_budget: int = 300        # user.summary + runtime_facts
+    memory_budget: int = 500      # retriever 输出
 
     # 总预算（作为硬限制）
-    total_budget: int = 3000
+    total_budget: int = 15000
 
     # 裁剪优先级（数字越小越先被裁剪）
     # 高优先级的内容会在预算不足时保留
@@ -92,19 +98,20 @@ def apply_budget(
     truncate_strategy: str = "end",
 ) -> BudgetResult:
     """
-    对内容应用 token 预算
+    对内容应用 token 预算（观测模式）
+
+    当前截断已关闭，仅记录实际 token 占用：
+    - 在预算内：INFO 级别
+    - 超出预算：WARNING 级别（含超出比例）
 
     Args:
         content: 原始内容
-        budget_tokens: 预算 token 数
+        budget_tokens: 预算 token 数（仅用于日志对比）
         section_name: 区域名称（用于日志）
-        truncate_strategy: 截断策略
-            - "end": 截断末尾
-            - "start": 截断开头（保留最新）
-            - "middle": 保留首尾，截断中间
+        truncate_strategy: 截断策略（当前未启用）
 
     Returns:
-        BudgetResult 对象
+        BudgetResult 对象（内容原样返回，不截断）
     """
     if not content:
         return BudgetResult(
@@ -116,38 +123,25 @@ def apply_budget(
 
     original_tokens = estimate_tokens(content)
 
-    # 预算充足，不需要裁剪
+    # 仅观测，不截断 —— 记录实际 token 占用
     if original_tokens <= budget_tokens:
-        return BudgetResult(
-            content=content,
-            original_tokens=original_tokens,
-            final_tokens=original_tokens,
-            truncated=False,
+        logger.info(
+            f"[Budget] {section_name}: {original_tokens} tokens "
+            f"(budget: {budget_tokens}, headroom: {budget_tokens - original_tokens})"
+        )
+    else:
+        overflow = original_tokens - budget_tokens
+        pct = overflow / budget_tokens * 100 if budget_tokens > 0 else float("inf")
+        logger.warning(
+            f"[Budget] {section_name}: {original_tokens} tokens "
+            f"EXCEEDS budget {budget_tokens} by {overflow} (+{pct:.0f}%)"
         )
 
-    # 需要裁剪
-    logger.info(f"Truncating {section_name}: {original_tokens} -> {budget_tokens} tokens")
-
-    # 估算目标字符数
-    target_chars = budget_tokens * CHARS_PER_TOKEN
-
-    if truncate_strategy == "end":
-        truncated_content = _truncate_end(content, target_chars)
-    elif truncate_strategy == "start":
-        truncated_content = _truncate_start(content, target_chars)
-    elif truncate_strategy == "middle":
-        truncated_content = _truncate_middle(content, target_chars)
-    else:
-        truncated_content = _truncate_end(content, target_chars)
-
-    final_tokens = estimate_tokens(truncated_content)
-
     return BudgetResult(
-        content=truncated_content,
+        content=content,
         original_tokens=original_tokens,
-        final_tokens=final_tokens,
-        truncated=True,
-        truncation_info=f"{section_name}: {original_tokens} -> {final_tokens} tokens",
+        final_tokens=original_tokens,
+        truncated=False,
     )
 
 
@@ -224,13 +218,13 @@ def apply_budget_to_sections(
 
     # 按区域分配预算
     budget_map = {
-        "soul": config.identity_budget // 4,
-        "agent_core": config.identity_budget // 4,
-        "agent_tooling": config.identity_budget // 4,
-        "policies": config.identity_budget // 4,
-        "tools": config.catalogs_budget // 2,
-        "skills": config.catalogs_budget // 3,
-        "mcp": config.catalogs_budget // 6,
+        "soul": config.identity_budget // 6,
+        "agent_core": config.identity_budget // 6,
+        "agent_tooling": config.identity_budget // 6,
+        "policies": config.identity_budget // 2,         # policies 占 50%（实测最大）
+        "tools": config.catalogs_budget // 3,            # 33%
+        "skills": config.catalogs_budget * 55 // 100,    # 55%
+        "mcp": config.catalogs_budget // 10,             # 10%
         "user": config.user_budget // 2,
         "runtime_facts": config.user_budget // 2,
         "memory": config.memory_budget,
@@ -263,11 +257,16 @@ def apply_budget_to_sections(
         results[name] = result
         total_tokens += result.final_tokens
 
-    # 检查总预算
+    # 汇总日志
     if total_tokens > config.total_budget:
         logger.warning(
-            f"Total tokens ({total_tokens}) exceeds budget ({config.total_budget}), "
-            f"further truncation may be needed"
+            f"[Budget] TOTAL: {total_tokens} tokens "
+            f"EXCEEDS budget {config.total_budget} by {total_tokens - config.total_budget}"
+        )
+    else:
+        logger.info(
+            f"[Budget] TOTAL: {total_tokens} tokens "
+            f"(budget: {config.total_budget}, headroom: {config.total_budget - total_tokens})"
         )
 
     return results

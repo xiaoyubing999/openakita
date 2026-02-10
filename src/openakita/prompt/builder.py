@@ -163,31 +163,31 @@ def _build_identity_section(
     parts.append("你是 OpenAkita，一个全能自进化AI助手。")
     parts.append("")
 
-    # Soul summary
+    # Soul summary (~17%)
     if compiled.get("soul"):
-        soul_result = apply_budget(compiled["soul"], budget_tokens // 4, "soul")
+        soul_result = apply_budget(compiled["soul"], budget_tokens // 6, "soul")
         parts.append(soul_result.content)
         parts.append("")
 
-    # Agent core
+    # Agent core (~17%)
     if compiled.get("agent_core"):
-        core_result = apply_budget(compiled["agent_core"], budget_tokens // 4, "agent_core")
+        core_result = apply_budget(compiled["agent_core"], budget_tokens // 6, "agent_core")
         parts.append(core_result.content)
         parts.append("")
 
-    # Agent tooling (only if tools enabled)
+    # Agent tooling (~17%, only if tools enabled)
     if tools_enabled and compiled.get("agent_tooling"):
         tooling_result = apply_budget(
-            compiled["agent_tooling"], budget_tokens // 4, "agent_tooling"
+            compiled["agent_tooling"], budget_tokens // 6, "agent_tooling"
         )
         parts.append(tooling_result.content)
         parts.append("")
 
-    # Policies
+    # Policies (~50%，实测 627 tokens，是 identity 中最大的部分)
     policies_path = identity_dir / "prompts" / "policies.md"
     if policies_path.exists():
         policies = policies_path.read_text(encoding="utf-8")
-        policies_result = apply_budget(policies, budget_tokens // 4, "policies")
+        policies_result = apply_budget(policies, budget_tokens // 2, "policies")
         parts.append(policies_result.content)
 
     return "\n".join(parts)
@@ -237,16 +237,45 @@ def _build_runtime_section() -> str:
             "简单系统查询（进程/服务/文件列表）可直接使用 PowerShell cmdlet。"
         )
 
+    # 系统环境详细信息（供高频工具使用）
+    import sys as _sys
+    import locale as _locale
+    import shutil as _shutil
+
+    python_version = _sys.version.split()[0]
+    system_encoding = _sys.getdefaultencoding()
+    try:
+        default_locale = _locale.getdefaultlocale()
+        locale_str = f"{default_locale[0]}, {default_locale[1]}" if default_locale[0] else "unknown"
+    except Exception:
+        locale_str = "unknown"
+
+    shell_type = "PowerShell" if platform.system() == "Windows" else "bash"
+
+    # 检测 PATH 中的关键工具
+    path_tools = []
+    for cmd in ("git", "python", "node", "pip", "npm", "docker", "curl"):
+        if _shutil.which(cmd):
+            path_tools.append(cmd)
+    path_tools_str = ", ".join(path_tools) if path_tools else "无"
+
     return f"""## 运行环境
 
 - **当前时间**: {current_time}
-- **操作系统**: {platform.system()} {platform.release()}
+- **操作系统**: {platform.system()} {platform.release()} ({platform.machine()})
 - **当前工作目录**: {os.getcwd()}
 - **Identity 目录**: {identity_path}
   - SOUL.md, AGENT.md, USER.md, MEMORY.md 均在此目录
 - **临时目录**: data/temp/{shell_hint}
 
-## 工具可用性（建议 32）
+### 系统环境
+- **Python 版本**: {python_version}
+- **系统编码**: {system_encoding}
+- **默认语言环境**: {locale_str}
+- **Shell**: {shell_type}
+- **PATH 可用工具**: {path_tools_str}
+
+## 工具可用性
 {tool_status_text}
 
 ⚠️ **重要**：服务重启后浏览器、变量、连接等状态会丢失，执行任务前必须通过工具检查实时状态。
@@ -311,17 +340,19 @@ def _build_catalogs_section(
     """构建 Catalogs 层（工具/技能/MCP 清单）"""
     parts = []
 
-    # 工具清单（预算的 50%）
+    # 工具清单（预算的 33%）
+    # 高频工具 (run_shell, read_file, write_file, list_directory) 已通过
+    # LLM tools 参数直接注入完整 schema，文本清单默认排除以节省 token
     if tool_catalog:
-        tools_text = tool_catalog.get_catalog()
-        tools_result = apply_budget(tools_text, budget_tokens // 2, "tools")
+        tools_text = tool_catalog.get_catalog()  # exclude_high_freq=True by default
+        tools_result = apply_budget(tools_text, budget_tokens // 3, "tools")
         parts.append(tools_result.content)
 
-    # 技能清单（预算的 33%）
+    # 技能清单（预算的 55%）
     if skill_catalog:
         # === Skills 披露策略：全量索引 + 预算内详情 ===
         # 目标：即使预算不足，也要保证“技能名称全量可见”，避免清单被截断成半截。
-        skills_budget = budget_tokens // 3
+        skills_budget = budget_tokens * 55 // 100
         skills_index = skill_catalog.get_index_catalog()
 
         # 给索引预留空间；剩余预算给详细列表（name + 1-line description）
@@ -340,11 +371,11 @@ def _build_catalogs_section(
 
         parts.append("\n\n".join([skills_index, skills_rule, skills_detail_result.content]).strip())
 
-    # MCP 清单（预算的 17%）
+    # MCP 清单（预算的 10%）
     if mcp_catalog:
         mcp_text = mcp_catalog.get_catalog()
         if mcp_text:
-            mcp_result = apply_budget(mcp_text, budget_tokens // 6, "mcp")
+            mcp_result = apply_budget(mcp_text, budget_tokens // 10, "mcp")
             parts.append(mcp_result.content)
 
     # 工具使用指南（可选，向后兼容）
