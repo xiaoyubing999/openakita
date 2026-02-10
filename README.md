@@ -308,6 +308,10 @@ Join our community for help, discussions, and updates:
 
 MIT License — See [LICENSE](LICENSE)
 
+This project includes third-party skills licensed under Apache 2.0 and other
+open-source licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for
+details.
+
 ---
 
 <p align="center">

@@ -327,6 +327,9 @@ FEISHU_APP_SECRET=your-app-secret
 
 MIT License — 详见 [LICENSE](LICENSE)
 
+本项目包含 Apache 2.0 等开源许可证下的第三方技能。详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ---
 
 <p align="center">
