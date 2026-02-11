@@ -65,6 +65,7 @@ class ModelInfo(BaseModel):
     provider: str
     model: str
     status: str = "unknown"
+    has_api_key: bool = False
 
 
 class SkillInfoResponse(BaseModel):

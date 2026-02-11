@@ -29,12 +29,19 @@ async def list_channels(request: Request):
     if gateway is None:
         return JSONResponse(content={"channels": channels})
 
-    adapters = getattr(gateway, "_adapters", None) or getattr(gateway, "adapters", [])
+    # _adapters is a dict {name: adapter} in MessageGateway
+    adapters_dict = getattr(gateway, "_adapters", None) or {}
+    adapters_list = getattr(gateway, "adapters", [])
+    if isinstance(adapters_dict, dict):
+        adapter_items = list(adapters_dict.items())
+    else:
+        adapter_items = [(getattr(a, "name", f"adapter_{i}"), a) for i, a in enumerate(adapters_list)]
     session_mgr = getattr(agent, "_session_manager", None) or getattr(agent, "session_manager", None)
 
-    for adapter in adapters:
-        name = getattr(adapter, "name", None) or getattr(adapter, "channel_type", "unknown")
-        status = "online" if getattr(adapter, "is_connected", False) else "offline"
+    for adapter_name, adapter in adapter_items:
+        name = adapter_name or getattr(adapter, "name", None) or getattr(adapter, "channel_type", "unknown")
+        # ChannelAdapter base class has is_running property (backed by _running flag)
+        status = "online" if getattr(adapter, "is_running", False) or getattr(adapter, "_running", False) else "offline"
         session_count = 0
         last_active = None
         if session_mgr:

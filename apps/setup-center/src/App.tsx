@@ -498,7 +498,8 @@ export function App() {
   const [imHealth, setImHealth] = useState<Record<string, {
     status: string; error: string | null; lastCheckedAt: string | null;
   }>>({});
-  const [healthChecking, setHealthChecking] = useState<string | null>(null); // "all" | endpoint name | IM channel id
+  const [healthChecking, setHealthChecking] = useState<string | null>(null); // "all" | endpoint name
+  const [imChecking, setImChecking] = useState(false);
 
   // unified env draft (full coverage)
   const [envDraft, setEnvDraft] = useState<EnvMap>({});
@@ -1889,9 +1890,20 @@ export function App() {
                 baseUrl: "",
                 model: String(m?.model || ""),
                 keyEnv: "",
-                keyPresent: true, // If model is listed, key is working
+                keyPresent: m?.has_api_key === true,
               })).filter((e: any) => e.name);
-              if (list.length > 0) setEndpointSummary(list);
+              if (list.length > 0) {
+                setEndpointSummary(list);
+                // Also populate endpointHealth from /api/models status
+                const healthFromModels: Record<string, any> = {};
+                for (const m of models) {
+                  const n = String(m?.name || m?.endpoint || "");
+                  if (!n) continue;
+                  const s = String(m?.status || "unknown");
+                  healthFromModels[n] = { status: s, latencyMs: null, error: s === "unhealthy" ? "endpoint unhealthy" : null };
+                }
+                setEndpointHealth((prev: any) => ({ ...healthFromModels, ...prev }));
+              }
               httpOk = true;
             }
           } catch { /* ignore */ }
@@ -2031,11 +2043,63 @@ export function App() {
       } catch {
         setServiceStatus(null);
       }
+      // Auto-fetch IM channel status from running service
+      if (serviceAlive) {
+        try {
+          const imRes = await fetch(`${apiBaseUrl}/api/im/channels`, { signal: AbortSignal.timeout(5000) });
+          if (imRes.ok) {
+            const imData = await imRes.json();
+            const channels = imData.channels || [];
+            const h: Record<string, { status: string; error: string | null; lastCheckedAt: string | null }> = {};
+            for (const c of channels) {
+              h[c.channel || c.name] = { status: c.status || "unknown", error: c.error || null, lastCheckedAt: c.last_checked_at || null };
+            }
+            if (Object.keys(h).length > 0) setImHealth(h);
+          }
+        } catch { /* ignore - IM status is optional */ }
+      }
     } catch (e) {
       setStatusError(String(e));
     } finally {
       setStatusLoading(false);
     }
+  }
+
+  /** Stop the running service: try API shutdown first, then PID kill, then verify. */
+  async function doStopService(wsId?: string | null) {
+    const id = wsId || currentWorkspaceId || workspaces[0]?.id;
+    if (!id) throw new Error("No workspace");
+    // 1. Try graceful shutdown via HTTP API (works even for externally started services)
+    let apiShutdownOk = false;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/shutdown`, { method: "POST", signal: AbortSignal.timeout(2000) });
+      apiShutdownOk = res.ok; // true if endpoint exists and responded 200
+    } catch { /* network error or timeout — service might already be down */ }
+    if (apiShutdownOk) {
+      // Wait for the process to exit after graceful shutdown
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    // 2. PID-based kill as fallback (handles locally started services)
+    try {
+      const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_stop", { workspaceId: id });
+      setServiceStatus(ss);
+    } catch { /* PID file might not exist for externally started services */ }
+    // 3. Quick verify — is the port freed?
+    await new Promise((r) => setTimeout(r, 300));
+    let stillAlive = false;
+    try {
+      await fetch(`${apiBaseUrl}/api/health`, { signal: AbortSignal.timeout(1500) });
+      stillAlive = true;
+    } catch { /* Good — service is down */ }
+    if (stillAlive) {
+      // Service stubbornly alive — show warning
+      setError(t("status.stopFailed"));
+    }
+    // Final status
+    try {
+      const final_ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", { workspaceId: id });
+      setServiceStatus(final_ss);
+    } catch { /* ignore */ }
   }
 
   async function refreshServiceLog(workspaceId: string) {
@@ -2225,15 +2289,27 @@ export function App() {
                   } catch (e) { setError(String(e)); } finally { setBusy(null); }
                 }} disabled={!!busy}>{t("topbar.start")}</button>
               )}
-              {serviceStatus?.running && effectiveWsId && (
+              {serviceStatus?.running && effectiveWsId && (<>
                 <button className="btnSmall btnSmallDanger" onClick={async () => {
-                  setBusy(t("common.loading")); setError(null);
+                  setBusy(t("status.stopping")); setError(null);
                   try {
-                    const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_stop", { workspaceId: effectiveWsId });
-                    setServiceStatus(ss);
+                    await doStopService(effectiveWsId);
                   } catch (e) { setError(String(e)); } finally { setBusy(null); }
                 }} disabled={!!busy}>{t("status.stop")}</button>
-              )}
+                <button className="btnSmall" onClick={async () => {
+                  setBusy(t("status.restarting")); setError(null);
+                  try {
+                    await doStopService(effectiveWsId);
+                    // Start
+                    const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_start", { venvDir, workspaceId: effectiveWsId });
+                    setServiceStatus(ss);
+                    await new Promise((r) => setTimeout(r, 600));
+                    const real = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", { workspaceId: effectiveWsId });
+                    setServiceStatus(real);
+                    if (real.running) await refreshStatus();
+                  } catch (e) { setError(String(e)); } finally { setBusy(null); }
+                }} disabled={!!busy}>{t("status.restart")}</button>
+              </>)}
             </div>
           </div>
 
@@ -2345,7 +2421,7 @@ export function App() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <span className="statusCardLabel">{t("status.imChannels")}</span>
               <button className="btnSmall" onClick={async () => {
-                setHealthChecking("im-all");
+                setImChecking(true);
                 try {
                   const healthUrl = serviceStatus?.running ? apiBaseUrl : null;
                   if (healthUrl) {
@@ -2360,20 +2436,23 @@ export function App() {
                   } else {
                     setError(t("status.needServiceRunning"));
                   }
-                } catch (err) { setError(String(err)); } finally { setHealthChecking(null); }
-              }} disabled={!!healthChecking || !!busy}>
-                {healthChecking === "im-all" ? "..." : t("status.checkAll")}
+                } catch (err) { setError(String(err)); } finally { setImChecking(false); }
+              }} disabled={imChecking || !!busy}>
+                {imChecking ? "..." : t("status.checkAll")}
               </button>
             </div>
             {imStatus.map((c) => {
               const channelId = c.k.replace("_ENABLED", "").toLowerCase();
               const ih = imHealth[channelId];
-              const dot = !c.enabled ? "disabled" : ih ? (ih.status === "healthy" ? "healthy" : "unhealthy") : c.ok ? "unknown" : "degraded";
+              const isOnline = ih && (ih.status === "healthy" || ih.status === "online");
+              // If imHealth has data for this channel, trust it over envDraft (handles remote mode)
+              const effectiveEnabled = ih ? true : c.enabled;
+              const dot = !effectiveEnabled ? "disabled" : ih ? (isOnline ? "healthy" : "unhealthy") : c.ok ? "unknown" : "degraded";
               return (
                 <div key={c.k} className="imStatusRow">
                   <span className={"healthDot " + dot} />
                   <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{c.name}</span>
-                  <span className="imStatusLabel">{!c.enabled ? t("status.disabled") : ih ? (ih.status === "healthy" ? t("status.online") : t("status.offline")) : c.ok ? t("status.configured") : t("status.keyMissing")}</span>
+                  <span className="imStatusLabel">{!effectiveEnabled ? t("status.disabled") : ih ? (isOnline ? t("status.online") : t("status.offline")) : c.ok ? t("status.configured") : t("status.keyMissing")}</span>
                 </div>
               );
             })}

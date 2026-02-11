@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import sys
 from typing import Any
 
 from fastapi import FastAPI
@@ -65,6 +68,19 @@ def create_app(agent: Any = None) -> FastAPI:
             "api_version": "1.0.0",
             "status": "running",
         }
+
+    @app.post("/api/shutdown")
+    async def shutdown():
+        """Gracefully shut down the OpenAkita service process."""
+        logger.info("Shutdown requested via API")
+
+        async def _delayed_exit():
+            await asyncio.sleep(0.5)
+            logger.info("Exiting process via shutdown API")
+            os._exit(0)
+
+        asyncio.create_task(_delayed_exit())
+        return {"status": "shutting_down"}
 
     return app
 
