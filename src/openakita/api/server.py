@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routes import chat, chat_models, health, skills, upload
+from .routes import chat, chat_models, config, health, im, skills, upload
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,9 @@ def create_app(agent: Any = None) -> FastAPI:
     # Mount routes
     app.include_router(chat.router)
     app.include_router(chat_models.router)
+    app.include_router(config.router)
     app.include_router(health.router)
+    app.include_router(im.router)
     app.include_router(skills.router)
     app.include_router(upload.router)
 
@@ -86,6 +88,7 @@ async def start_api_server(agent: Any = None, host: str = API_HOST, port: int = 
         port=port,
         log_level="warning",
         access_log=False,
+        log_config=None,  # 关键：禁止 uvicorn 调用 dictConfig 覆盖根日志器
     )
     server = uvicorn.Server(config)
 

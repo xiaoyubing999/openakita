@@ -3,8 +3,10 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
+import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig } from "../icons";
 
 // ─── 配置表单自动生成 ───
 
@@ -18,6 +20,7 @@ function SkillConfigForm({
   onEnvChange: (fn: (prev: EnvMap) => EnvMap) => void;
 }) {
   const [secretShown, setSecretShown] = useState<Record<string, boolean>>({});
+  const { t } = useTranslation();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "8px 0" }}>
@@ -72,7 +75,7 @@ function SkillConfigForm({
                   type={isSecret && !shown ? "password" : "text"}
                   value={value}
                   onChange={(e) => onEnvChange((m) => envSet(m, field.key, e.target.value))}
-                  placeholder={field.type === "secret" ? "输入密钥..." : String(field.default ?? "")}
+                  placeholder={field.type === "secret" ? t("skills.secretPlaceholder") : String(field.default ?? "")}
                   style={{ flex: 1 }}
                 />
                 {isSecret && (
@@ -81,7 +84,7 @@ function SkillConfigForm({
                     onClick={() => setSecretShown((s) => ({ ...s, [field.key]: !s[field.key] }))}
                     style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "transparent", cursor: "pointer", fontSize: 12 }}
                   >
-                    {shown ? "隐藏" : "显示"}
+                    {shown ? t("skills.hide") : t("skills.show")}
                   </button>
                 )}
               </div>
@@ -121,17 +124,18 @@ function SkillCard({
     : configComplete
       ? "rgba(16,185,129,1)"
       : "rgba(245,158,11,1)";
+  const { t } = useTranslation();
   const statusText = skill.enabled === false
-    ? "已禁用"
+    ? t("skills.disabled")
     : configComplete
-      ? "已配置"
-      : "缺少配置";
+      ? t("skills.configComplete")
+      : t("skills.configIncomplete");
 
   return (
     <div className="card" style={{ marginTop: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ width: 36, height: 36, borderRadius: 10, background: skill.system ? "rgba(14,165,233,0.1)" : "rgba(124,58,237,0.1)", display: "grid", placeItems: "center", fontSize: 18, flexShrink: 0 }}>
-          {skill.system ? "⚙" : "⚡"}
+          {skill.system ? <IconGear size={18} /> : <IconZap size={18} />}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -140,7 +144,7 @@ function SkillCard({
               <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: 3, background: statusColor, marginRight: 4 }} />
               {statusText}
             </span>
-            <span style={{ fontSize: 11, opacity: 0.5 }}>{skill.system ? "系统技能" : "外部技能"}</span>
+            <span style={{ fontSize: 11, opacity: 0.5 }}>{skill.system ? t("skills.system") : t("skills.external")}</span>
           </div>
           <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {skill.description}
@@ -154,14 +158,14 @@ function SkillCard({
               onChange={onToggleEnabled}
               style={{ width: 16, height: 16 }}
             />
-            启用
+            {t("skills.enabled")}
           </label>
           {hasConfig && (
             <button
               onClick={onToggleExpand}
               style={{ padding: "4px 10px", borderRadius: 8, border: "1px solid var(--line)", background: expanded ? "rgba(14,165,233,0.08)" : "transparent", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
             >
-              {expanded ? "收起" : "配置"}
+              {expanded ? t("chat.collapse") : t("skills.configure")}
             </button>
           )}
         </div>
@@ -176,7 +180,7 @@ function SkillCard({
             disabled={saving}
             style={{ marginTop: 10, fontSize: 13, padding: "6px 20px" }}
           >
-            {saving ? "保存中..." : "保存配置到 .env"}
+            {saving ? t("skills.saving") : t("skills.saveConfig")}
           </button>
         </div>
       )}
@@ -195,19 +199,20 @@ function MarketplaceSkillCard({
   onInstall: () => void;
   installing: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="card" style={{ marginTop: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(124,58,237,0.08)", display: "grid", placeItems: "center", fontSize: 18, flexShrink: 0 }}>
-          📦
+          <IconPackage size={18} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontWeight: 800, fontSize: 14 }}>{skill.name}</span>
-            {skill.installed && <span className="pill" style={{ fontSize: 11, borderColor: "rgba(16,185,129,0.25)" }}>已安装</span>}
-            {skill.stars != null && <span style={{ fontSize: 11, opacity: 0.5 }}>⭐ {skill.stars}</span>}
+            {skill.installed && <span className="pill" style={{ fontSize: 11, borderColor: "rgba(16,185,129,0.25)" }}>{t("skills.installed")}</span>}
+            {skill.stars != null && <span style={{ fontSize: 11, opacity: 0.5, display: "inline-flex", alignItems: "center", gap: 4 }}><IconStar size={11} />{skill.stars}</span>}
           </div>
-          <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2 }}>{skill.description}</div>
+          <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{skill.description}</div>
           <div style={{ fontSize: 11, opacity: 0.4, marginTop: 2 }}>by {skill.author}</div>
           {skill.tags && skill.tags.length > 0 && (
             <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
@@ -225,7 +230,7 @@ function MarketplaceSkillCard({
           disabled={skill.installed || installing}
           style={{ fontSize: 12, padding: "6px 14px", flexShrink: 0 }}
         >
-          {installing ? "安装中..." : skill.installed ? "已安装" : "安装"}
+          {installing ? t("common.loading") : skill.installed ? t("skills.installed") : t("skills.install")}
         </button>
       </div>
     </div>
@@ -257,6 +262,7 @@ export function SkillManager({
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketSearch, setMarketSearch] = useState("");
   const [installing, setInstalling] = useState<string | null>(null);
+  const { t } = useTranslation();
 
   // ── 加载已安装技能 ──
   const loadSkills = useCallback(async () => {
@@ -430,14 +436,14 @@ export function SkillManager({
           onClick={() => setTab("installed")}
           style={{ fontSize: 13, padding: "6px 20px" }}
         >
-          已安装 ({skillsWithConfig.length})
+          {t("skills.installed")} ({skillsWithConfig.length})
         </button>
         <button
           className={tab === "marketplace" ? "btnPrimary" : ""}
           onClick={() => setTab("marketplace")}
           style={{ fontSize: 13, padding: "6px 20px" }}
         >
-          浏览市场
+          {t("skills.marketplace")}
         </button>
         <div style={{ flex: 1 }} />
         <button
@@ -445,7 +451,7 @@ export function SkillManager({
           disabled={loading}
           style={{ fontSize: 12, padding: "6px 14px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer" }}
         >
-          {loading ? "加载中..." : "刷新"}
+          {loading ? t("common.loading") : t("topbar.refresh")}
         </button>
       </div>
 
@@ -454,12 +460,12 @@ export function SkillManager({
       {/* 已安装技能 */}
       {tab === "installed" && (
         <div style={{ display: "grid", gap: 10 }}>
-          {loading && skillsWithConfig.length === 0 && <div className="cardHint">正在加载技能列表...</div>}
+          {loading && skillsWithConfig.length === 0 && <div className="cardHint">{t("skills.loading")}</div>}
           {!loading && skillsWithConfig.length === 0 && (
             <div className="card" style={{ textAlign: "center", padding: "30px 20px" }}>
-              <div style={{ fontSize: 36, marginBottom: 8 }}>⚡</div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>暂无已安装技能</div>
-              <div className="help">请先在安装步骤中完成 openakita 安装，或从市场安装技能</div>
+              <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}><IconZap size={36} /></div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t("skills.noSkills")}</div>
+              <div className="help">{t("skills.noSkillsHint")}</div>
             </div>
           )}
           {skillsWithConfig.map((skill) => (
@@ -485,12 +491,12 @@ export function SkillManager({
             <input
               value={marketSearch}
               onChange={(e) => setMarketSearch(e.target.value)}
-              placeholder="搜索技能..."
+              placeholder={t("skills.searchPlaceholder")}
               style={{ width: "100%", fontSize: 14 }}
             />
           </div>
           <div style={{ display: "grid", gap: 10 }}>
-            {marketLoading && <div className="cardHint">正在加载市场技能...</div>}
+            {marketLoading && <div className="cardHint">{t("common.loading")}</div>}
             {filteredMarketplace.map((skill) => (
               <MarketplaceSkillCard
                 key={skill.name}

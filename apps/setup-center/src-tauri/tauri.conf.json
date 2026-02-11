@@ -29,7 +29,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenAkita Setup Center",
+        "title": "OpenAkita",
         "width": 1100,
         "height": 760,
         "resizable": true

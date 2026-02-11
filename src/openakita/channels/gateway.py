@@ -844,6 +844,11 @@ class MessageGateway:
         session_key = self._get_session_key(message)
         user_text = message.plain_text.strip() if message.plain_text else ""
 
+        logger.info(
+            f"[IM] <<< 收到消息: channel={message.channel}, user={message.user_id}, "
+            f"text=\"{user_text[:100]}\""
+        )
+
         try:
             # 标记会话开始处理
             async with self._interrupt_lock:
@@ -912,6 +917,10 @@ class MessageGateway:
             self.session_manager.mark_dirty()  # 触发保存
 
             # 9. 发送响应
+            logger.info(
+                f"[IM] >>> 回复完成: channel={message.channel}, user={message.user_id}, "
+                f"len={len(response_text)}, preview=\"{response_text[:80]}\""
+            )
             await self._send_response(message, response_text)
 
             # 10. 处理剩余的中断消息

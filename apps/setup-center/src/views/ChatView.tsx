@@ -2,6 +2,7 @@
 // 支持流式 MD 渲染、思考内容折叠、Plan/Todo、斜杠命令、多模态、多 Agent、端点选择
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -17,6 +18,14 @@ import type {
   EndpointSummary,
 } from "../types";
 import { genId, formatTime, formatDate } from "../utils";
+import {
+  IconSend, IconPaperclip, IconMic, IconStopCircle,
+  IconPlan, IconPlus, IconMenu, IconStop, IconX,
+  IconCheck, IconLoader, IconCircle, IconPlay, IconMinus,
+  IconChevronDown, IconMessageCircle, IconChevronRight,
+  IconImage, IconRefresh, IconClipboard, IconTrash, IconZap,
+  IconMask, IconBot, IconUsers, IconHelp,
+} from "../icons";
 
 // ─── SSE 事件处理 ───
 
@@ -37,6 +46,7 @@ type StreamEvent =
 // ─── 子组件 ───
 
 function ThinkingBlock({ content, defaultOpen }: { content: string; defaultOpen?: boolean }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen ?? false);
   return (
     <div className="thinkingBlock">
@@ -45,8 +55,8 @@ function ThinkingBlock({ content, defaultOpen }: { content: string; defaultOpen?
         onClick={() => setOpen((v) => !v)}
         style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6, padding: "6px 0", userSelect: "none" }}
       >
-        <span style={{ fontSize: 12, opacity: 0.5, transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▶</span>
-        <span style={{ fontWeight: 700, fontSize: 13, opacity: 0.6 }}>思考过程</span>
+        <span style={{ fontSize: 12, opacity: 0.5, transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s", display: "inline-flex", alignItems: "center" }}><IconChevronRight size={12} /></span>
+        <span style={{ fontWeight: 700, fontSize: 13, opacity: 0.6 }}>{t("chat.thinkingBlock")}</span>
       </div>
       {open && (
         <div style={{ padding: "8px 12px", background: "rgba(124,58,237,0.04)", borderRadius: 10, fontSize: 13, lineHeight: 1.6, opacity: 0.75, whiteSpace: "pre-wrap" }}>
@@ -58,8 +68,13 @@ function ThinkingBlock({ content, defaultOpen }: { content: string; defaultOpen?
 }
 
 function ToolCallBlock({ tc }: { tc: ChatToolCall }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const statusIcon = tc.status === "done" ? "✓" : tc.status === "error" ? "✗" : tc.status === "running" ? "⟳" : "…";
+  const statusIcon =
+    tc.status === "done" ? <IconCheck size={14} /> :
+    tc.status === "error" ? <IconX size={14} /> :
+    tc.status === "running" ? <IconLoader size={14} /> :
+    <IconCircle size={10} />;
   const statusColor = tc.status === "done" ? "var(--ok)" : tc.status === "error" ? "var(--danger)" : "var(--brand)";
   return (
     <div style={{ margin: "6px 0", border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
@@ -67,19 +82,19 @@ function ToolCallBlock({ tc }: { tc: ChatToolCall }) {
         onClick={() => setOpen((v) => !v)}
         style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "rgba(14,165,233,0.04)", userSelect: "none" }}
       >
-        <span style={{ color: statusColor, fontWeight: 800 }}>{statusIcon}</span>
-        <span style={{ fontWeight: 700, fontSize: 13 }}>工具调用：{tc.tool}</span>
-        <span style={{ fontSize: 11, opacity: 0.5, marginLeft: "auto" }}>{open ? "收起" : "展开"}</span>
+        <span style={{ color: statusColor, fontWeight: 800, display: "inline-flex", alignItems: "center" }}>{statusIcon}</span>
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{t("chat.toolCallLabel")}{tc.tool}</span>
+        <span style={{ fontSize: 11, opacity: 0.5, marginLeft: "auto" }}>{open ? t("chat.collapse") : t("chat.expand")}</span>
       </div>
       {open && (
         <div style={{ padding: "8px 12px", fontSize: 12, background: "rgba(255,255,255,0.5)" }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>参数：</div>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>{t("chat.args")}</div>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11 }}>
             {JSON.stringify(tc.args, null, 2)}
           </pre>
           {tc.result != null && (
             <>
-              <div style={{ fontWeight: 700, marginTop: 8, marginBottom: 4 }}>结果：</div>
+              <div style={{ fontWeight: 700, marginTop: 8, marginBottom: 4 }}>{t("chat.result")}</div>
               <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11, maxHeight: 200, overflow: "auto" }}>
                 {tc.result}
               </pre>
@@ -92,13 +107,14 @@ function ToolCallBlock({ tc }: { tc: ChatToolCall }) {
 }
 
 function PlanBlock({ plan }: { plan: ChatPlan }) {
+  const { t } = useTranslation();
   const completed = plan.steps.filter((s) => s.status === "completed").length;
   const total = plan.steps.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
     <div style={{ margin: "8px 0", border: "1px solid rgba(14,165,233,0.2)", borderRadius: 12, padding: "12px 14px", background: "rgba(14,165,233,0.03)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontWeight: 800, fontSize: 14 }}>计划：{plan.taskSummary}</span>
+        <span style={{ fontWeight: 800, fontSize: 14 }}>{t("chat.planLabel")}{plan.taskSummary}</span>
         <span style={{ fontSize: 12, opacity: 0.6 }}>{completed}/{total} ({pct}%)</span>
       </div>
       <div style={{ height: 4, borderRadius: 2, background: "rgba(14,165,233,0.12)", overflow: "hidden", marginBottom: 10 }}>
@@ -112,12 +128,16 @@ function PlanBlock({ plan }: { plan: ChatPlan }) {
 }
 
 function PlanStepItem({ step, idx }: { step: ChatPlanStep; idx: number }) {
-  const icon = step.status === "completed" ? "✓" : step.status === "in_progress" ? "▶" : step.status === "skipped" ? "—" : "○";
+  const icon =
+    step.status === "completed" ? <IconCheck size={14} /> :
+    step.status === "in_progress" ? <IconPlay size={12} /> :
+    step.status === "skipped" ? <IconMinus size={14} /> :
+    <IconCircle size={10} />;
   const color =
     step.status === "completed" ? "rgba(16,185,129,1)" : step.status === "in_progress" ? "var(--brand)" : step.status === "skipped" ? "var(--muted)" : "var(--muted)";
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "4px 0", fontSize: 13 }}>
-      <span style={{ color, fontWeight: 800, minWidth: 16, textAlign: "center" }}>{icon}</span>
+      <span style={{ color, fontWeight: 800, minWidth: 16, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{icon}</span>
       <div style={{ flex: 1 }}>
         <span style={{ opacity: step.status === "skipped" ? 0.5 : 1 }}>{idx + 1}. {step.description}</span>
         {step.result && <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>{step.result}</div>}
@@ -127,12 +147,13 @@ function PlanStepItem({ step, idx }: { step: ChatPlanStep; idx: number }) {
 }
 
 function AskUserBlock({ ask, onAnswer }: { ask: ChatAskUser; onAnswer: (answer: string) => void }) {
+  const { t } = useTranslation();
   const [input, setInput] = useState("");
   if (ask.answered) {
     return (
       <div style={{ margin: "8px 0", padding: "10px 14px", borderRadius: 10, background: "rgba(14,165,233,0.06)", border: "1px solid rgba(14,165,233,0.15)" }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{ask.question}</div>
-        <div style={{ fontSize: 13, opacity: 0.7 }}>已回答：{ask.answer}</div>
+        <div style={{ fontSize: 13, opacity: 0.7 }}>{t("chat.answered")}{ask.answer}</div>
       </div>
     );
   }
@@ -157,12 +178,12 @@ function AskUserBlock({ ask, onAnswer }: { ask: ChatAskUser; onAnswer: (answer: 
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="输入回答..."
+            placeholder={t("chat.askPlaceholder")}
             style={{ flex: 1, fontSize: 13 }}
             onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) { onAnswer(input.trim()); setInput(""); } }}
           />
           <button className="btnPrimary" onClick={() => { if (input.trim()) { onAnswer(input.trim()); setInput(""); } }} style={{ fontSize: 13, padding: "6px 16px" }}>
-            发送
+            {t("chat.submitAnswer")}
           </button>
         </div>
       )}
@@ -178,11 +199,11 @@ function AttachmentPreview({ att }: { att: ChatAttachment }) {
       </div>
     );
   }
-  const icon = att.type === "voice" ? "🎤" : att.type === "image" ? "🖼" : "📎";
+  const icon = att.type === "voice" ? <IconMic size={14} /> : att.type === "image" ? <IconImage size={14} /> : <IconPaperclip size={14} />;
   const sizeStr = att.size ? `${(att.size / 1024).toFixed(1)} KB` : "";
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 12, margin: "4px 4px 4px 0" }}>
-      <span>{icon}</span>
+      <span style={{ display: "inline-flex", alignItems: "center" }}>{icon}</span>
       <span style={{ fontWeight: 600 }}>{att.name}</span>
       {sizeStr && <span style={{ opacity: 0.5 }}>{sizeStr}</span>}
     </div>
@@ -239,7 +260,17 @@ function SlashCommandPanel({
             borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.06)",
           }}
         >
-          <span style={{ fontSize: 16, opacity: 0.7 }}>{cmd.icon || "/"}</span>
+          <span style={{ fontSize: 16, opacity: 0.7, display: "inline-flex", alignItems: "center" }}>
+            {cmd.id === "model" ? <IconRefresh size={16} /> :
+             cmd.id === "plan" ? <IconClipboard size={16} /> :
+             cmd.id === "clear" ? <IconTrash size={16} /> :
+             cmd.id === "skill" ? <IconZap size={16} /> :
+             cmd.id === "persona" ? <IconMask size={16} /> :
+             cmd.id === "agent" ? <IconBot size={16} /> :
+             cmd.id === "agents" ? <IconUsers size={16} /> :
+             cmd.id === "help" ? <IconHelp size={16} /> :
+             <span style={{ fontSize: 14 }}>/</span>}
+          </span>
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>/{cmd.id} <span style={{ fontWeight: 400, opacity: 0.6 }}>{cmd.label}</span></div>
             <div style={{ fontSize: 12, opacity: 0.5 }}>{cmd.description}</div>
@@ -348,7 +379,8 @@ export function ChatView({
   onStartService: () => void;
   apiBaseUrl?: string;
 }) {
-  // ── 状态 ──
+  const { t } = useTranslation();
+  // ── State ──
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -363,6 +395,8 @@ export function ChatView({
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
 
   const [isRecording, setIsRecording] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -402,9 +436,21 @@ export function ChatView({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // ── 点击外部关闭模型菜单 ──
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [modelMenuOpen]);
+
   // ── 斜杠命令定义 ──
   const slashCommands: SlashCommand[] = useMemo(() => [
-    { id: "model", label: "切换模型", description: "选择使用的 LLM 端点", icon: "🔄", action: (args) => {
+    { id: "model", label: "切换模型", description: "选择使用的 LLM 端点", action: (args) => {
       if (args && endpoints.find((e) => e.name === args)) {
         setSelectedEndpoint(args);
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `已切换到端点: ${args}`, timestamp: Date.now() }]);
@@ -413,39 +459,39 @@ export function ChatView({
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `可用端点: ${names.join(", ")}\n用法: /model <端点名>`, timestamp: Date.now() }]);
       }
     }},
-    { id: "plan", label: "计划模式", description: "开启/关闭 Plan 模式，先计划再执行", icon: "📋", action: () => {
+    { id: "plan", label: "计划模式", description: "开启/关闭 Plan 模式，先计划再执行", action: () => {
       setPlanMode((v) => {
         const next = !v;
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: next ? "已开启 Plan 模式" : "已关闭 Plan 模式", timestamp: Date.now() }]);
         return next;
       });
     }},
-    { id: "clear", label: "清空对话", description: "清除当前对话的所有消息", icon: "🗑", action: () => { setMessages([]); } },
-    { id: "skill", label: "使用技能", description: "调用已安装的技能（发送 /skill:<技能名> 触发）", icon: "⚡", action: (args) => {
+    { id: "clear", label: "清空对话", description: "清除当前对话的所有消息", action: () => { setMessages([]); } },
+    { id: "skill", label: "使用技能", description: "调用已安装的技能（发送 /skill:<技能名> 触发）", action: (args) => {
       if (args) {
         setInputText(`请使用技能「${args}」来帮我：`);
       } else {
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "用法: /skill <技能名>，如 /skill web-search。在消息中提及技能名即可触发。", timestamp: Date.now() }]);
       }
     }},
-    { id: "persona", label: "切换角色", description: "切换 Agent 的人格预设", icon: "🎭", action: (args) => {
+    { id: "persona", label: "切换角色", description: "切换 Agent 的人格预设", action: (args) => {
       if (args) {
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `角色切换请在「设置 → Agent 系统」中修改 PERSONA_NAME 为 "${args}"`, timestamp: Date.now() }]);
       } else {
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "可用角色: default, business, tech_expert, butler, girlfriend, boyfriend, family, jarvis\n用法: /persona <角色ID>", timestamp: Date.now() }]);
       }
     }},
-    { id: "agent", label: "切换 Agent", description: "在多 Agent 间切换（handoff 模式）", icon: "🤖", action: (args) => {
+    { id: "agent", label: "切换 Agent", description: "在多 Agent 间切换（handoff 模式）", action: (args) => {
       if (args) {
         setInputText(`请切换到 Agent「${args}」来处理接下来的任务。`);
       } else {
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "用法: /agent <Agent名称>。在 handoff 模式下，AI 会自动在 Agent 间切换。", timestamp: Date.now() }]);
       }
     }},
-    { id: "agents", label: "查看 Agent 列表", description: "显示可用的 Agent 列表", icon: "👥", action: () => {
+    { id: "agents", label: "查看 Agent 列表", description: "显示可用的 Agent 列表", action: () => {
       setMessages((prev) => [...prev, { id: genId(), role: "system", content: "Agent 列表取决于 handoff 配置。当前可通过 /agent <名称> 手动请求切换。", timestamp: Date.now() }]);
     }},
-    { id: "help", label: "帮助", description: "显示可用命令列表", icon: "❓", action: () => {
+    { id: "help", label: "帮助", description: "显示可用命令列表", action: () => {
       setMessages((prev) => [...prev, {
         id: genId(),
         role: "system",
@@ -926,16 +972,11 @@ export function ChatView({
   if (!serviceRunning) {
     return (
       <div className="card" style={{ textAlign: "center", padding: "60px 40px" }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>💬</div>
-        <div className="cardTitle">AI 聊天助手</div>
+        <div style={{ fontSize: 48, marginBottom: 16 }}><IconMessageCircle size={48} /></div>
+        <div className="cardTitle">{t("chat.title")}</div>
         <div className="cardHint" style={{ marginTop: 8, marginBottom: 20 }}>
-          聊天功能需要后台服务（openakita serve）运行中。
-          <br />
-          请先启动服务后再使用。
+          {t("chat.serviceHint")}
         </div>
-        <button className="btnPrimary" onClick={onStartService}>
-          启动服务
-        </button>
       </div>
     );
   }
@@ -957,7 +998,7 @@ export function ChatView({
         >
           <div style={{ padding: "14px 14px 10px", borderBottom: "1px solid var(--line)" }}>
             <button className="btnPrimary" onClick={newConversation} style={{ width: "100%", fontSize: 13 }}>
-              + 新对话
+              <IconPlus size={12} /> {t("chat.newConversation")}
             </button>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: "8px 6px" }}>
@@ -980,13 +1021,13 @@ export function ChatView({
                   {conv.title}
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
-                  {formatDate(conv.timestamp)} · {conv.messageCount} 条消息
+                  {formatDate(conv.timestamp)} · {t("im.messageCount", { count: conv.messageCount })}
                 </div>
               </div>
             ))}
             {conversations.length === 0 && (
               <div style={{ padding: 16, textAlign: "center", opacity: 0.4, fontSize: 13 }}>
-                暂无对话
+                {t("common.noData")}
               </div>
             )}
           </div>
@@ -995,38 +1036,19 @@ export function ChatView({
 
       {/* 主聊天区 */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        {/* 顶栏 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderBottom: "1px solid var(--line)", flexShrink: 0 }}>
+        {/* Chat top bar */}
+        <div className="chatTopBar">
           <button
             onClick={() => setSidebarOpen((v) => !v)}
-            style={{ padding: "4px 8px", borderRadius: 8, border: "1px solid var(--line)", background: sidebarOpen ? "rgba(14,165,233,0.08)" : "transparent", cursor: "pointer", fontSize: 14 }}
-            title="对话历史"
+            className="chatTopBarBtn"
+            style={{ background: sidebarOpen ? "rgba(14,165,233,0.08)" : "transparent" }}
+            title={t("chat.newConversation")}
           >
-            ☰
+            <IconMenu size={16} />
           </button>
-
-          {/* 端点选择 */}
-          <select
-            value={selectedEndpoint}
-            onChange={(e) => setSelectedEndpoint(e.target.value)}
-            style={{ fontSize: 13, padding: "4px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "rgba(255,255,255,0.7)" }}
-          >
-            <option value="auto">Auto（自动选择/回退）</option>
-            {endpoints.map((ep) => (
-              <option key={ep.name} value={ep.name}>
-                {ep.name} — {ep.model}
-                {ep.health ? (ep.health.status === "healthy" ? " ●" : ep.health.status === "unhealthy" ? " ○" : "") : ""}
-              </option>
-            ))}
-          </select>
-
           <div style={{ flex: 1 }} />
-
-          <button
-            onClick={newConversation}
-            style={{ padding: "4px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 700 }}
-          >
-            + 新对话
+          <button onClick={newConversation} className="chatTopBarBtn">
+            <IconPlus size={14} /> <span>{t("chat.newConversation")}</span>
           </button>
         </div>
 
@@ -1034,9 +1056,9 @@ export function ChatView({
         <div style={{ flex: 1, overflow: "auto", padding: "16px 20px", minHeight: 0 }}>
           {messages.length === 0 && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.4 }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>💬</div>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>开始聊天</div>
-              <div style={{ fontSize: 13, marginTop: 4 }}>输入消息或使用 / 命令</div>
+              <div style={{ marginBottom: 12 }}><IconMessageCircle size={48} /></div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{t("chat.emptyTitle")}</div>
+              <div style={{ fontSize: 13, marginTop: 4 }}>{t("chat.emptyDesc")}</div>
             </div>
           )}
           {messages.map((msg) => (
@@ -1070,16 +1092,16 @@ export function ChatView({
                     lineHeight: 1,
                   }}
                 >
-                  ✕
+                  <IconX size={10} />
                 </button>
               </div>
             ))}
           </div>
         )}
 
-        {/* 输入区 */}
-        <div style={{ padding: "12px 16px", borderTop: "1px solid var(--line)", flexShrink: 0, position: "relative" }}>
-          {/* 斜杠命令面板 */}
+        {/* Cursor-style unified input box */}
+        <div className="chatInputArea">
+          {/* Slash command panel */}
           {slashOpen && (
             <SlashCommandPanel
               commands={slashCommands}
@@ -1093,119 +1115,95 @@ export function ChatView({
             />
           )}
 
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-            {/* 附件按钮 */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              style={{ padding: "8px", borderRadius: 8, border: "1px solid var(--line)", background: "transparent", cursor: "pointer", fontSize: 16, flexShrink: 0 }}
-              title="添加附件（图片/文件/语音）"
-            >
-              📎
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/*,audio/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv"
-              style={{ display: "none" }}
-              onChange={handleFileSelect}
+          <div className={`chatInputBox ${planMode ? "chatInputBoxPlan" : ""}`}>
+            {/* Top row: compact model picker */}
+            <div className="chatInputTop" ref={modelMenuRef} style={{ position: "relative" }}>
+              <button
+                className="chatModelPickerBtn"
+                onClick={() => setModelMenuOpen((v) => !v)}
+              >
+                <span className="chatModelPickerLabel">
+                  {selectedEndpoint === "auto"
+                    ? t("chat.selectModel")
+                    : (() => { const ep = endpoints.find(e => e.name === selectedEndpoint); return ep ? ep.model : selectedEndpoint; })()}
+                </span>
+                <IconChevronDown size={12} />
+              </button>
+              {modelMenuOpen && (
+                <div className="chatModelMenu">
+                  <div
+                    className={`chatModelMenuItem ${selectedEndpoint === "auto" ? "chatModelMenuItemActive" : ""}`}
+                    onClick={() => { setSelectedEndpoint("auto"); setModelMenuOpen(false); }}
+                  >
+                    {t("chat.selectModel")}
+                  </div>
+                  {endpoints.map((ep) => (
+                    <div
+                      key={ep.name}
+                      className={`chatModelMenuItem ${selectedEndpoint === ep.name ? "chatModelMenuItemActive" : ""}`}
+                      onClick={() => { setSelectedEndpoint(ep.name); setModelMenuOpen(false); }}
+                    >
+                      <span style={{ fontWeight: 600 }}>{ep.model}</span>
+                      <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{ep.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Textarea */}
+            <textarea
+              ref={inputRef}
+              value={inputText}
+              onChange={handleInputChange}
+              onKeyDown={handleInputKeyDown}
+              onPaste={handlePaste}
+              placeholder={planMode ? `Plan ${t("chat.planMode")}` : t("chat.placeholder")}
+              rows={1}
+              className="chatInputTextarea"
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = Math.min(el.scrollHeight, 120) + "px";
+              }}
             />
 
-            {/* 语音录制按钮 */}
-            <button
-              onClick={toggleRecording}
-              style={{
-                padding: "8px",
-                borderRadius: 8,
-                border: `1px solid ${isRecording ? "rgba(239,68,68,0.4)" : "var(--line)"}`,
-                background: isRecording ? "rgba(239,68,68,0.1)" : "transparent",
-                cursor: "pointer",
-                fontSize: 16,
-                flexShrink: 0,
-                animation: isRecording ? "pulse 1.5s infinite" : "none",
-              }}
-              title={isRecording ? "停止录音" : "开始录音"}
-            >
-              {isRecording ? "⏹" : "🎤"}
-            </button>
+            {/* Bottom toolbar */}
+            <div className="chatInputToolbar">
+              <div className="chatInputToolbarLeft">
+                <button onClick={() => fileInputRef.current?.click()} className="chatInputIconBtn" title={t("chat.attach")}>
+                  <IconPaperclip size={16} />
+                </button>
+                <input ref={fileInputRef} type="file" multiple accept="image/*,audio/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv" style={{ display: "none" }} onChange={handleFileSelect} />
 
-            {/* 输入框 */}
-            <div style={{ flex: 1, position: "relative" }}>
-              <textarea
-                ref={inputRef}
-                value={inputText}
-                onChange={handleInputChange}
-                onKeyDown={handleInputKeyDown}
-                onPaste={handlePaste}
-                placeholder={planMode ? "Plan 模式 — 描述任务，AI 会先制定计划再执行..." : "输入消息... (Enter 发送, Shift+Enter 换行, / 命令)"}
-                rows={1}
-                style={{
-                  width: "100%",
-                  resize: "none",
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: `1px solid ${planMode ? "rgba(124,58,237,0.3)" : "var(--line)"}`,
-                  background: planMode ? "rgba(124,58,237,0.03)" : "rgba(255,255,255,0.7)",
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                  fontFamily: "inherit",
-                  maxHeight: 120,
-                  overflow: "auto",
-                }}
-                onInput={(e) => {
-                  const el = e.currentTarget;
-                  el.style.height = "auto";
-                  el.style.height = Math.min(el.scrollHeight, 120) + "px";
-                }}
-              />
+                <button onClick={toggleRecording} className={`chatInputIconBtn ${isRecording ? "chatInputIconBtnDanger" : ""}`} title={isRecording ? t("chat.stopRecording") : t("chat.voice")}>
+                  {isRecording ? <IconStopCircle size={16} /> : <IconMic size={16} />}
+                </button>
+
+                <button onClick={() => setPlanMode((v) => !v)} className={`chatInputIconBtn ${planMode ? "chatInputIconBtnActive" : ""}`} title={t("chat.planMode")}>
+                  <IconPlan size={16} />
+                  <span style={{ fontSize: 11, marginLeft: 2 }}>Plan</span>
+                </button>
+              </div>
+
+              <div className="chatInputToolbarRight">
+                {isStreaming ? (
+                  <button onClick={stopStreaming} className="chatInputSendBtn chatInputStopBtn" title={t("chat.stopGeneration")}>
+                    <IconStop size={14} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => sendMessage()}
+                    className="chatInputSendBtn"
+                    disabled={!inputText.trim() && pendingAttachments.length === 0}
+                    title={t("chat.send")}
+                  >
+                    <IconSend size={14} />
+                  </button>
+                )}
+              </div>
             </div>
-
-            {/* Plan 模式切换 */}
-            <button
-              onClick={() => setPlanMode((v) => !v)}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 8,
-                border: `1px solid ${planMode ? "rgba(124,58,237,0.4)" : "var(--line)"}`,
-                background: planMode ? "rgba(124,58,237,0.1)" : "transparent",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-                color: planMode ? "rgba(124,58,237,1)" : "var(--muted)",
-                flexShrink: 0,
-              }}
-              title="Plan 模式：开启后 AI 会先制定计划再执行"
-            >
-              Plan
-            </button>
-
-            {/* 发送/停止按钮 */}
-            {isStreaming ? (
-              <button
-                onClick={stopStreaming}
-                className="btnDanger"
-                style={{ padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 700, flexShrink: 0 }}
-              >
-                停止
-              </button>
-            ) : (
-              <button
-                onClick={() => sendMessage()}
-                className="btnPrimary"
-                style={{ padding: "8px 16px", borderRadius: 10, fontSize: 13, fontWeight: 700, flexShrink: 0 }}
-                disabled={!inputText.trim() && pendingAttachments.length === 0}
-              >
-                发送
-              </button>
-            )}
           </div>
-
-          {/* 端点提醒 */}
-          {selectedEndpoint !== "auto" && (
-            <div style={{ fontSize: 11, opacity: 0.5, marginTop: 6, paddingLeft: 40 }}>
-              指定端点模式：使用 {selectedEndpoint}，出错不自动回退
-            </div>
-          )}
         </div>
       </div>
     </div>

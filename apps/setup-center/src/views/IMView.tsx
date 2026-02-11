@@ -1,0 +1,243 @@
+// ─── IMView: IM Channel Viewer (read-only) ───
+
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  IconIM, IconMessageCircle, IconRefresh, IconFile, IconImage, IconVolume,
+  DotGreen, DotGray,
+} from "../icons";
+
+type IMChannel = {
+  channel: string;
+  name: string;
+  status: "online" | "offline";
+  sessionCount: number;
+  lastActive: string | null;
+};
+
+type IMSession = {
+  sessionId: string;
+  channel: string;
+  chatId: string | null;
+  userId: string | null;
+  state: string;
+  lastActive: string;
+  messageCount: number;
+  lastMessage: string | null;
+};
+
+type IMMessage = {
+  role: string;
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+const API_BASE = "http://127.0.0.1:18900";
+
+export function IMView({ serviceRunning }: { serviceRunning: boolean }) {
+  const { t } = useTranslation();
+  const [channels, setChannels] = useState<IMChannel[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<IMSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<IMMessage[]>([]);
+  const [totalMessages, setTotalMessages] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchChannels = useCallback(async () => {
+    if (!serviceRunning) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/im/channels`);
+      if (res.ok) {
+        const data = await res.json();
+        setChannels(data.channels || []);
+      }
+    } catch { /* ignore */ }
+  }, [serviceRunning]);
+
+  const fetchSessions = useCallback(async (channel: string) => {
+    if (!serviceRunning) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/im/sessions?channel=${encodeURIComponent(channel)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(data.sessions || []);
+      }
+    } catch { /* ignore */ }
+  }, [serviceRunning]);
+
+  const fetchMessages = useCallback(async (sessionId: string, limit = 50, offset = 0) => {
+    if (!serviceRunning) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/im/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}&offset=${offset}`);
+      if (res.ok) {
+        const data = await res.json();
+        setMessages(data.messages || []);
+        setTotalMessages(data.total || 0);
+      }
+    } catch { /* ignore */ }
+  }, [serviceRunning]);
+
+  useEffect(() => {
+    fetchChannels();
+  }, [fetchChannels]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    if (!serviceRunning) return;
+    pollRef.current = setInterval(() => {
+      fetchChannels();
+      if (selectedChannel) fetchSessions(selectedChannel);
+      if (selectedSessionId) fetchMessages(selectedSessionId);
+    }, 30000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [serviceRunning, selectedChannel, selectedSessionId, fetchChannels, fetchSessions, fetchMessages]);
+
+  const handleSelectChannel = useCallback((ch: string) => {
+    setSelectedChannel(ch);
+    setSelectedSessionId(null);
+    setMessages([]);
+    fetchSessions(ch);
+  }, [fetchSessions]);
+
+  const handleSelectSession = useCallback((sid: string) => {
+    setSelectedSessionId(sid);
+    fetchMessages(sid);
+  }, [fetchMessages]);
+
+  if (!serviceRunning) {
+    return (
+      <div className="imViewEmpty">
+        <IconIM size={48} />
+        <div style={{ marginTop: 12, fontWeight: 600 }}>{t("im.channels")}</div>
+        <div style={{ marginTop: 4, opacity: 0.5, fontSize: 13 }}>{t("topbar.stopped")}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="imView">
+      {/* Left panel: channels + sessions */}
+      <div className="imLeft">
+        <div className="imSectionTitle">
+          <span>{t("im.channels")}</span>
+          <button className="imRefreshBtn" onClick={fetchChannels} title={t("topbar.refresh")}><IconRefresh size={13} /></button>
+        </div>
+        <div className="imChannelList">
+          {channels.length === 0 && (
+            <div className="imEmptyHint">{t("im.noChannels")}</div>
+          )}
+          {channels.map((ch) => (
+            <div
+              key={ch.channel}
+              className={`imChannelItem ${selectedChannel === ch.channel ? "imChannelItemActive" : ""}`}
+              onClick={() => handleSelectChannel(ch.channel)}
+              role="button"
+              tabIndex={0}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {ch.status === "online" ? <DotGreen /> : <DotGray />}
+                <span className="imChannelName">{ch.name}</span>
+              </div>
+              <span className="imChannelCount">{ch.sessionCount}</span>
+            </div>
+          ))}
+        </div>
+
+        {selectedChannel && (
+          <>
+            <div className="imSectionTitle" style={{ marginTop: 8 }}>
+              <span>{t("im.sessions")}</span>
+            </div>
+            <div className="imSessionList">
+              {sessions.length === 0 && (
+                <div className="imEmptyHint">{t("im.noSessions")}</div>
+              )}
+              {sessions.map((s) => (
+                <div
+                  key={s.sessionId}
+                  className={`imSessionItem ${selectedSessionId === s.sessionId ? "imSessionItemActive" : ""}`}
+                  onClick={() => handleSelectSession(s.sessionId)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="imSessionId">{s.userId || s.chatId || s.sessionId.slice(0, 12)}</div>
+                  <div className="imSessionMeta">
+                    {s.messageCount} {t("im.messages")} · {s.lastActive ? new Date(s.lastActive).toLocaleTimeString() : ""}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Right panel: messages */}
+      <div className="imRight">
+        {!selectedSessionId ? (
+          <div className="imViewEmpty">
+            <IconMessageCircle size={40} />
+            <div style={{ marginTop: 8, opacity: 0.5, fontSize: 13 }}>{t("im.noMessages")}</div>
+          </div>
+        ) : (
+          <div className="imMessages">
+            <div className="imMessagesHeader">
+              <span>{t("im.messages")} ({totalMessages})</span>
+            </div>
+            <div className="imMessagesList">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`imMsg ${msg.role === "user" ? "imMsgUser" : "imMsgBot"}`}>
+                  <div className="imMsgRole">
+                    {msg.role === "user" ? t("im.user") : msg.role === "system" ? t("im.system") : t("im.bot")}
+                    <span className="imMsgTime">{msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ""}</span>
+                  </div>
+                  <div className="imMsgContent">
+                    <MediaContent content={msg.content} />
+                  </div>
+                </div>
+              ))}
+              {messages.length === 0 && (
+                <div className="imEmptyHint">{t("im.noMessages")}</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Render media references in IM messages
+function MediaContent({ content }: { content: string }) {
+  // Simple heuristic: detect [图片: ...] or [语音转文字: ...] or [文件: ...] patterns
+  const mediaPattern = /\[(图片|语音转文字|语音|文件|image|voice|file)[:\uff1a]\s*([^\]]*)\]/gi;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = mediaPattern.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(<span key={lastIndex}>{content.slice(lastIndex, match.index)}</span>);
+    }
+    const type = match[1].toLowerCase();
+    const ref = match[2];
+    const isImage = type.includes("图片") || type === "image";
+    const isVoice = type.includes("语音") || type === "voice";
+
+    parts.push(
+      <span key={match.index} className="imMediaCard">
+        {isImage ? <IconImage size={14} /> : isVoice ? <IconVolume size={14} /> : <IconFile size={14} />}
+        <span>{ref || match[0]}</span>
+      </span>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < content.length) {
+    parts.push(<span key={lastIndex}>{content.slice(lastIndex)}</span>);
+  }
+
+  return <>{parts.length > 0 ? parts : content}</>;
+}

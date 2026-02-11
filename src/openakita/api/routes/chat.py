@@ -26,8 +26,21 @@ async def _stream_chat(
 ) -> AsyncIterator[str]:
     """Generate SSE events from agent processing."""
 
+    _reply_chars = 0  # 统计回复字符数
+    _reply_preview = ""  # 回复预览
+
     def _sse(event_type: str, data: dict | None = None) -> str:
+        nonlocal _reply_chars, _reply_preview
         payload = {"type": event_type, **(data or {})}
+        # 统计文本增量
+        if event_type == "text_delta" and data and "content" in data:
+            chunk = data["content"]
+            _reply_chars += len(chunk)
+            if len(_reply_preview) < 120:
+                _reply_preview += chunk
+        elif event_type == "done":
+            preview = _reply_preview[:100].replace("\n", " ")
+            logger.info(f"[Chat API] 回复完成: {_reply_chars}字 | \"{preview}{'...' if _reply_chars > 100 else ''}\"")
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     try:
@@ -183,6 +196,17 @@ async def chat(request: Request, body: ChatRequest):
     - done
     """
     agent = getattr(request.app.state, "agent", None)
+
+    # 记录聊天请求，方便在终端里追踪 Setup Center 的对话
+    msg_preview = (body.message or "")[:100]
+    att_count = len(body.attachments) if body.attachments else 0
+    logger.info(
+        f"[Chat API] 收到消息: \"{msg_preview}\""
+        + (f" (+{att_count}个附件)" if att_count else "")
+        + (f" | endpoint={body.endpoint}" if body.endpoint else "")
+        + (" | plan_mode" if body.plan_mode else "")
+        + (f" | conv={body.conversation_id}" if body.conversation_id else "")
+    )
 
     return StreamingResponse(
         _stream_chat(body, agent),
