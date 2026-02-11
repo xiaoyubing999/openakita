@@ -224,6 +224,10 @@ class ToolExecutor:
 
                 result_str = str(result) if result is not None else "操作已完成"
 
+                # 终端输出工具返回结果（便于调试与观察）
+                _preview = result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"
+                logger.info(f"[Tool] {tool_name} → {_preview}")
+
                 # 捕获交付回执
                 if capture_delivery_receipts and tool_name == "deliver_artifacts" and result_str:
                     try:
@@ -241,6 +245,7 @@ class ToolExecutor:
                 tool_error = classify_error(e, tool_name=tool_name)
                 result_str = tool_error.to_tool_result()
                 logger.error(f"Tool batch execution error: {tool_name}: {e}")
+                logger.info(f"[Tool] {tool_name} ❌ 错误: {result_str[:500]}{'...' if len(result_str) > 500 else ''}")
 
             elapsed = time.time() - t0
 

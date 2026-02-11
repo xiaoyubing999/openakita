@@ -471,6 +471,10 @@ class Agent:
 
                 result_str = str(result) if result is not None else "操作已完成"
 
+                # 终端输出工具返回结果（便于调试与观察）
+                _preview = result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"
+                logger.info(f"[Tool] {tool_name} → {_preview}")
+
                 if capture_delivery_receipts and tool_name == "deliver_artifacts" and result_str:
                     try:
                         import json as _json
@@ -491,6 +495,7 @@ class Agent:
             except Exception as e:
                 success = False
                 result_str = str(e)
+                logger.info(f"[Tool] {tool_name} ❌ 错误: {result_str}")
                 out = {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
