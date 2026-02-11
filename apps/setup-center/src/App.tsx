@@ -4260,44 +4260,7 @@ export function App() {
   function renderStepContent() {
     if (!info) return <div className="card">加载中...</div>;
     if (view === "status") return renderStatus();
-    if (view === "chat") {
-      return (
-        <ChatView
-          serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl}
-          endpoints={chatEndpoints}
-          onStartService={async () => {
-            const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
-            if (!effectiveWsId) {
-              setError("未找到工作区（请先创建/选择一个工作区）");
-              return;
-            }
-            setBusy("启动后台服务...");
-            setError(null);
-            try {
-              const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_start", {
-                venvDir,
-                workspaceId: effectiveWsId,
-              });
-              setServiceStatus(ss);
-              await new Promise((r) => setTimeout(r, 600));
-              const real = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", {
-                workspaceId: effectiveWsId,
-              });
-              setServiceStatus(real);
-              if (!real.running) {
-                setError("后台服务未能保持运行。请先完成安装向导。");
-              } else {
-                await refreshStatus();
-              }
-            } catch (e) {
-              setError(String(e));
-            } finally {
-              setBusy(null);
-            }
-          }}
-        />
-      );
-    }
+    if (view === "chat") return null;  // ChatView 始终挂载，不在此渲染
     if (view === "skills") {
       return (
         <SkillManager
@@ -4306,6 +4269,8 @@ export function App() {
           envDraft={envDraft}
           onEnvChange={setEnvDraft}
           onSaveEnvKeys={saveEnvKeysExternal}
+          apiBaseUrl={apiBaseUrl}
+          serviceRunning={!!serviceStatus?.running}
         />
       );
     }
@@ -4494,7 +4459,44 @@ export function App() {
           </div>
         </div>
 
-        <div className={view === "chat" ? "contentChat" : "content"}>
+        {/* ChatView 始终挂载，切走时隐藏以保留聊天记录 */}
+        <div className="contentChat" style={{ display: view === "chat" ? undefined : "none" }}>
+          <ChatView
+            serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl}
+            endpoints={chatEndpoints}
+            onStartService={async () => {
+              const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
+              if (!effectiveWsId) {
+                setError("未找到工作区（请先创建/选择一个工作区）");
+                return;
+              }
+              setBusy("启动后台服务...");
+              setError(null);
+              try {
+                const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_start", {
+                  venvDir,
+                  workspaceId: effectiveWsId,
+                });
+                setServiceStatus(ss);
+                await new Promise((r) => setTimeout(r, 600));
+                const real = await invoke<{ running: boolean; pid: number | null; pidFile: string }>("openakita_service_status", {
+                  workspaceId: effectiveWsId,
+                });
+                setServiceStatus(real);
+                if (!real.running) {
+                  setError("后台服务未能保持运行。请先完成安装向导。");
+                } else {
+                  await refreshStatus();
+                }
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setBusy(null);
+              }
+            }}
+          />
+        </div>
+        <div className="content" style={{ display: view !== "chat" ? undefined : "none" }}>
           {renderStepContent()}
         </div>
 

@@ -234,10 +234,13 @@ export type SkillInfo = {
 };
 
 export type MarketplaceSkill = {
+  id: string;         // e.g. "vercel-labs/agent-skills/vercel-react-best-practices"
+  skillId: string;    // e.g. "vercel-react-best-practices"
   name: string;
   description: string;
-  author: string;
-  url: string;
+  author: string;     // source repo owner
+  url: string;        // install URL: "owner/repo@skill"
+  installs?: number;
   stars?: number;
   tags?: string[];
   installed?: boolean;

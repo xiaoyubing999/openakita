@@ -93,6 +93,60 @@ class FilesystemHandler:
         else:
             return f"❌ Unknown filesystem tool: {tool_name}"
 
+    @staticmethod
+    def _fix_windows_python_c(command: str) -> str:
+        """Windows 多行 python -c 修复。
+
+        Windows cmd.exe 无法正确处理 python -c "..." 中的换行符，
+        会导致 Python 只执行第一行（通常是 import），stdout 为空。
+        检测到多行 python -c 时，自动写入临时 .py 文件后执行。
+        """
+        import tempfile
+
+        stripped = command.strip()
+
+        # 匹配 python -c "..." 或 python -c '...' 或 python - <<'EOF'
+        # 只处理包含换行的情况
+        m = re.match(
+            r'^python(?:3)?(?:\.exe)?\s+-c\s+["\'](.+)["\']$',
+            stripped,
+            re.DOTALL,
+        )
+        if not m:
+            # 也匹配 heredoc 形式：python - <<'PY' ... PY
+            m2 = re.match(
+                r"^python(?:3)?(?:\.exe)?\s+-\s*<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1$",
+                stripped,
+                re.DOTALL,
+            )
+            if m2:
+                code = m2.group(2)
+            else:
+                return command
+        else:
+            code = m.group(1)
+
+        # 只有多行才需要修复
+        if "\n" not in code:
+            return command
+
+        # 写入临时文件
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".py",
+            prefix="oa_shell_",
+            dir=tempfile.gettempdir(),
+            delete=False,
+            encoding="utf-8",
+        )
+        tmp.write(code)
+        tmp.close()
+
+        logger.info(
+            "[Windows fix] Multiline python -c → temp file: %s", tmp.name
+        )
+        return f'python "{tmp.name}"'
+
     async def _run_shell(self, params: dict) -> str:
         """执行 Shell 命令"""
         command = params["command"]
@@ -114,6 +168,13 @@ class FilesystemHandler:
                 except re.error:
                     # 忽略无效 regex
                     continue
+
+        # Windows 多行 python -c 修复：
+        # Windows cmd.exe 无法正确处理 python -c 中的换行符，导致 stdout 为空。
+        # 自动将多行 python -c 命令写入临时文件后执行。
+        import platform
+        if platform.system() == "Windows":
+            command = self._fix_windows_python_c(command)
 
         result = await self.agent.shell_tool.run(
             command,

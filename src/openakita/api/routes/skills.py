@@ -1,5 +1,5 @@
 """
-Skills route: GET /api/skills, POST /api/skills/config
+Skills route: GET /api/skills, POST /api/skills/config, GET /api/skills/marketplace
 
 技能列表与配置管理。
 """
@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, Request
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+SKILLS_SH_API = "https://skills.sh/api/search"
 
 
 @router.get("/api/skills")
@@ -62,3 +65,32 @@ async def update_skill_config(request: Request):
 
     # TODO: Apply config to the skill and persist to .env
     return {"status": "ok", "skill": skill_name, "config": config}
+
+
+@router.get("/api/skills/marketplace")
+async def search_marketplace(q: str = "agent"):
+    """Proxy to skills.sh search API (bypasses CORS for desktop app)."""
+    from openakita.llm.providers.proxy_utils import (
+        get_proxy_config,
+        get_httpx_transport,
+    )
+
+    try:
+        client_kwargs: dict = {"timeout": 15, "follow_redirects": True}
+
+        # 复用项目的代理和 IPv4 设置
+        proxy = get_proxy_config()
+        if proxy:
+            client_kwargs["proxy"] = proxy
+
+        transport = get_httpx_transport()
+        if transport:
+            client_kwargs["transport"] = transport
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get(SKILLS_SH_API, params={"q": q})
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.warning("skills.sh API error: %s", e)
+        return {"skills": [], "count": 0, "error": str(e)}

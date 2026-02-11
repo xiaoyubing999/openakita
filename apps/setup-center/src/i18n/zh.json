@@ -80,10 +80,12 @@
     "external": "外部技能",
     "enabled": "启用",
     "disabled": "已禁用",
-    "searchPlaceholder": "搜索技能...",
+    "searchPlaceholder": "搜索技能 (如 react, testing, deploy...)",
     "secretPlaceholder": "输入密钥...",
     "hide": "隐藏",
-    "show": "显示"
+    "show": "显示",
+    "noResults": "没有匹配的技能，换个关键词试试",
+    "poweredBy": "技能市场由 skills.sh 提供"
   },
   "status": {
     "title": "系统状态",

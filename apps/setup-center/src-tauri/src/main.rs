@@ -530,7 +530,8 @@ fn main() {
             openakita_uninstall_skill,
             openakita_list_marketplace,
             openakita_get_skill_config,
-            fetch_pypi_versions
+            fetch_pypi_versions,
+            http_get_json
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1950,6 +1951,33 @@ async fn fetch_pypi_versions(package: String, index_url: Option<String>) -> Resu
         });
 
         Ok(serde_json::to_string(&versions).unwrap_or_else(|_| "[]".into()))
+    })
+    .await
+}
+
+/// Generic HTTP GET JSON proxy – bypasses CORS for the webview.
+/// Returns the response body as a JSON string.
+#[tauri::command]
+async fn http_get_json(url: String) -> Result<String, String> {
+    spawn_blocking_result(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("openakita-desktop/1.0")
+            .build()
+            .map_err(|e| format!("HTTP client error: {e}"))?;
+
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("HTTP GET failed ({}): {}", url, e))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP GET failed ({}): {}", url, e))?;
+
+        let text = resp
+            .text()
+            .map_err(|e| format!("read response body failed: {e}"))?;
+
+        Ok(text)
     })
     .await
 }

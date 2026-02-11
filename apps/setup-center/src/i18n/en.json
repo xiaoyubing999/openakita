@@ -80,10 +80,12 @@
     "external": "External",
     "enabled": "Enabled",
     "disabled": "Disabled",
-    "searchPlaceholder": "Search skills...",
+    "searchPlaceholder": "Search skills (e.g. react, testing, deploy...)",
     "secretPlaceholder": "Enter key...",
     "hide": "Hide",
-    "show": "Show"
+    "show": "Show",
+    "noResults": "No matching skills found, try different keywords",
+    "poweredBy": "Marketplace powered by skills.sh"
   },
   "status": {
     "title": "System Status",
