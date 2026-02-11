@@ -265,10 +265,21 @@ class FeishuAdapter(ChannelAdapter):
                     self._handle_message_async(msg_dict, sender_dict),
                     self._main_loop,
                 )
-                # 避免静默失败
-                fut.add_done_callback(lambda f: f.exception())
+                # 添加回调以捕获跨线程投递中的异常，避免静默丢失消息
+                def _on_dispatch_done(f: "asyncio.futures.Future") -> None:
+                    try:
+                        f.result()
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to dispatch Feishu message to main loop: {e}",
+                            exc_info=True,
+                        )
+                fut.add_done_callback(_on_dispatch_done)
             else:
                 # 兜底：没有主 loop 时，直接在当前线程创建临时 loop 执行
+                logger.warning(
+                    "Main event loop not available, dispatching message in temporary loop"
+                )
                 asyncio.run(self._handle_message_async(msg_dict, sender_dict))
 
         except Exception as e:
@@ -571,19 +582,22 @@ class FeishuAdapter(ChannelAdapter):
             raise ValueError("Media has no file_id")
 
         # 根据类型选择下载接口
-        if media.is_image:
+        message_id = media.extra.get("message_id", "")
+        if media.is_image and not message_id:
+            # 仅用于下载机器人自己上传的图片（无 message_id）
             request = lark_oapi.api.im.v1.GetImageRequest.builder().image_key(media.file_id).build()
 
             response = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self._client.im.v1.image.get(request)
             )
         else:
-            message_id = media.extra.get("message_id", "")
+            # 用户消息中的图片/音频/视频/文件，统一走 MessageResource 接口
+            resource_type = "image" if media.is_image else "file"
             request = (
                 lark_oapi.api.im.v1.GetMessageResourceRequest.builder()
                 .message_id(message_id)
                 .file_key(media.file_id)
-                .type("file")
+                .type(resource_type)
                 .build()
             )
 

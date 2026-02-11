@@ -265,10 +265,23 @@ class DingTalkAdapter(ChannelAdapter):
 
         # 从 Stream 线程投递到主事件循环
         if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._emit_message(unified), self._main_loop
             )
+            # 添加回调以捕获跨线程投递中的异常，避免静默丢失消息
+            def _on_emit_done(f: "asyncio.futures.Future") -> None:
+                try:
+                    f.result()
+                except Exception as e:
+                    logger.error(
+                        f"Failed to dispatch DingTalk message to main loop: {e}",
+                        exc_info=True,
+                    )
+            future.add_done_callback(_on_emit_done)
         else:
+            logger.warning(
+                "Main event loop not available, dispatching message in current loop"
+            )
             await self._emit_message(unified)
 
     async def _parse_message_content(
@@ -282,18 +295,34 @@ class DingTalkAdapter(ChannelAdapter):
             return MessageContent(text=text)
 
         elif msg_type == "picture":
-            # SDK 解析的图片消息
-            download_code = raw_data.get("content", {}).get("pictureDownloadCode", "")
+            # 图片消息：content 可能是 dict 或 JSON 字符串
+            content_raw = raw_data.get("content", {})
+            if isinstance(content_raw, str):
+                try:
+                    content_raw = json.loads(content_raw)
+                except (json.JSONDecodeError, TypeError):
+                    content_raw = {}
+
+            # 字段名: SDK 使用 downloadCode，部分版本可能用 pictureDownloadCode
+            download_code = (
+                content_raw.get("downloadCode", "")
+                or content_raw.get("pictureDownloadCode", "")
+            )
+
             if not download_code:
-                # 尝试从 chatbotMessage 解析
+                # 兜底：尝试从 SDK ChatbotMessage 解析
                 try:
                     incoming = dingtalk_stream.ChatbotMessage.from_dict(raw_data)
                     if hasattr(incoming, "image_content") and incoming.image_content:
                         download_code = getattr(
                             incoming.image_content, "download_code", ""
-                        )
-                except Exception:
-                    pass
+                        ) or ""
+                except Exception as e:
+                    logger.warning(f"DingTalk: failed to parse picture via SDK: {e}")
+
+            if not download_code:
+                logger.warning("DingTalk: picture message has no downloadCode")
+                return MessageContent(text="[图片: 无法获取下载码]")
 
             media = MediaFile.create(
                 filename=f"dingtalk_image_{download_code[:8]}.jpg",
@@ -304,15 +333,22 @@ class DingTalkAdapter(ChannelAdapter):
 
         elif msg_type == "richText":
             # 富文本消息：提取文本和图片
-            rich_text = raw_data.get("content", {}).get("richText", [])
+            content_raw = raw_data.get("content", {})
+            if isinstance(content_raw, str):
+                try:
+                    content_raw = json.loads(content_raw)
+                except (json.JSONDecodeError, TypeError):
+                    content_raw = {}
+            rich_text = content_raw.get("richText", [])
             text_parts = []
             images = []
 
             for section in rich_text:
                 if "text" in section:
                     text_parts.append(section["text"])
-                if "pictureDownloadCode" in section:
-                    code = section["pictureDownloadCode"]
+                # 兼容两种字段名
+                code = section.get("downloadCode") or section.get("pictureDownloadCode")
+                if code:
                     media = MediaFile.create(
                         filename=f"dingtalk_richimg_{code[:8]}.jpg",
                         mime_type="image/jpeg",
@@ -328,6 +364,11 @@ class DingTalkAdapter(ChannelAdapter):
         elif msg_type == "audio":
             # 语音消息 - SDK 不解析，从 raw_data 手动提取
             audio_content = raw_data.get("content", {})
+            if isinstance(audio_content, str):
+                try:
+                    audio_content = json.loads(audio_content)
+                except (json.JSONDecodeError, TypeError):
+                    audio_content = {}
             download_code = audio_content.get("downloadCode", "")
             duration = audio_content.get("duration", 0)
 
@@ -342,6 +383,11 @@ class DingTalkAdapter(ChannelAdapter):
         elif msg_type == "video":
             # 视频消息 - SDK 不解析
             video_content = raw_data.get("content", {})
+            if isinstance(video_content, str):
+                try:
+                    video_content = json.loads(video_content)
+                except (json.JSONDecodeError, TypeError):
+                    video_content = {}
             download_code = video_content.get("downloadCode", "")
             duration = video_content.get("duration", 0)
 
@@ -356,6 +402,11 @@ class DingTalkAdapter(ChannelAdapter):
         elif msg_type == "file":
             # 文件消息 - SDK 不解析
             file_content = raw_data.get("content", {})
+            if isinstance(file_content, str):
+                try:
+                    file_content = json.loads(file_content)
+                except (json.JSONDecodeError, TypeError):
+                    file_content = {}
             download_code = file_content.get("downloadCode", "")
             file_name = file_content.get("fileName", "unknown_file")
 
@@ -982,11 +1033,10 @@ class DingTalkAdapter(ChannelAdapter):
         if not media.file_id:
             raise ValueError("Media has no file_id (downloadCode)")
 
-        await self._refresh_token()
-
         # 使用钉钉新版文件下载 API（POST 方法，新版 token）
+        token = await self._refresh_token()
         url = f"{self.API_NEW}/robot/messageFiles/download"
-        headers = {"x-acs-dingtalk-access-token": await self._refresh_token()}
+        headers = {"x-acs-dingtalk-access-token": token}
         body = {"downloadCode": media.file_id, "robotCode": self.config.app_key}
 
         response = await self._http_client.post(url, headers=headers, json=body)
@@ -994,6 +1044,10 @@ class DingTalkAdapter(ChannelAdapter):
 
         download_url = result.get("downloadUrl")
         if not download_url:
+            logger.error(
+                f"DingTalk download API failed: status={response.status_code}, "
+                f"body={result}, file_id={media.file_id[:16]}..."
+            )
             raise RuntimeError(
                 f"Failed to get download URL: {result.get('message', 'Unknown')}"
             )
