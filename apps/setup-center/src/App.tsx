@@ -684,6 +684,39 @@ export function App() {
     return d;
   }, [info, currentWorkspaceId, canUsePython, openakitaInstalled, savedEndpoints.length]);
 
+  // 当 done 集合更新时，自动推进 maxReachedStepIdx
+  // 核心步骤（welcome ~ llm）全完成后，解锁所有后续步骤（IM/工具/Agent/完成都是可选的）
+  useEffect(() => {
+    const coreSteps: StepId[] = ["welcome", "workspace", "python", "install", "llm"];
+    const allCoreDone = coreSteps.every((id) => done.has(id));
+    if (allCoreDone) {
+      // 所有核心步骤完成 -> 解锁全部步骤
+      setMaxReachedStepIdx((prev) => {
+        const next = Math.max(prev, steps.length - 1);
+        localStorage.setItem("openakita_maxStep", String(next));
+        return next;
+      });
+    } else {
+      // 否则，推进到最后一个连续完成步骤的下一步
+      let maxDoneIdx = -1;
+      for (let i = 0; i < steps.length; i++) {
+        if (done.has(steps[i].id)) {
+          maxDoneIdx = i;
+        } else {
+          break;
+        }
+      }
+      if (maxDoneIdx >= 0) {
+        const target = Math.min(maxDoneIdx + 1, steps.length - 1);
+        setMaxReachedStepIdx((prev) => {
+          const next = Math.max(prev, target);
+          localStorage.setItem("openakita_maxStep", String(next));
+          return next;
+        });
+      }
+    }
+  }, [done, steps]);
+
   // Keep boolean flags in sync with the visible status string (best-effort).
   useEffect(() => {
     if (!venvStatus) return;
