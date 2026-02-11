@@ -1688,10 +1688,11 @@ async fn openakita_list_providers(venv_dir: String) -> Result<String, String> {
 async fn openakita_list_skills(venv_dir: String, workspace_id: String) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         run_python_module_json(
             &venv_dir,
             "openakita.setup_center.bridge",
-            &["list-skills", "--workspace-dir", wd.to_string_lossy().as_ref()],
+            &["list-skills", "--workspace-dir", &wd_str],
             &[],
         )
     })
@@ -1759,10 +1760,11 @@ async fn openakita_health_check_endpoint(
 ) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         let mut args = vec![
             "health-check-endpoint",
             "--workspace-dir",
-            wd.to_string_lossy().as_ref(),
+            &wd_str,
         ];
         let ep_name_str;
         if let Some(ref name) = endpoint_name {
@@ -1785,10 +1787,11 @@ async fn openakita_health_check_im(
 ) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         let mut args = vec![
             "health-check-im",
             "--workspace-dir",
-            wd.to_string_lossy().as_ref(),
+            &wd_str,
         ];
         let ch_str;
         if let Some(ref ch) = channel {
@@ -1810,10 +1813,11 @@ async fn openakita_install_skill(
 ) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         let args = vec![
             "install-skill",
             "--workspace-dir",
-            wd.to_string_lossy().as_ref(),
+            &wd_str,
             "--url",
             &url,
         ];
@@ -1831,10 +1835,11 @@ async fn openakita_uninstall_skill(
 ) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         let args = vec![
             "uninstall-skill",
             "--workspace-dir",
-            wd.to_string_lossy().as_ref(),
+            &wd_str,
             "--skill-name",
             &skill_name,
         ];
@@ -1864,10 +1869,11 @@ async fn openakita_get_skill_config(
 ) -> Result<String, String> {
     spawn_blocking_result(move || {
         let wd = workspace_dir(&workspace_id);
+        let wd_str = wd.to_string_lossy().to_string();
         let args = vec![
             "get-skill-config",
             "--workspace-dir",
-            wd.to_string_lossy().as_ref(),
+            &wd_str,
             "--skill-name",
             &skill_name,
         ];

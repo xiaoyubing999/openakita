@@ -653,11 +653,11 @@ export function ChatView({
                 break;
               case "plan_step_updated":
                 if (currentPlan) {
-                  const newSteps = [...currentPlan.steps];
+                  const newSteps: ChatPlanStep[] = [...currentPlan.steps];
                   if (newSteps[event.stepIdx]) {
                     newSteps[event.stepIdx] = { ...newSteps[event.stepIdx], status: event.status as ChatPlanStep["status"] };
                   }
-                  currentPlan = { ...currentPlan, steps: newSteps };
+                  currentPlan = { ...currentPlan, steps: newSteps } as ChatPlan;
                 }
                 break;
               case "ask_user":

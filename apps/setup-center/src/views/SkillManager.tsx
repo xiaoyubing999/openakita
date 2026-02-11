@@ -290,7 +290,7 @@ export function SkillManager({
   }, [loadSkills]);
 
   // ── 检查配置是否完整（纯函数，不依赖于状态） ──
-  function checkConfigComplete(config: SkillConfigField[] | null, env: EnvMap): boolean {
+  function checkConfigComplete(config: SkillConfigField[] | null | undefined, env: EnvMap): boolean {
     if (!config || config.length === 0) return true;
     return config.filter((f) => f.required).every((f) => {
       const v = env[f.key];
