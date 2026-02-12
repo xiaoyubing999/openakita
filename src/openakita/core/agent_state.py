@@ -57,6 +57,7 @@ _VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.REASONING,
         TaskStatus.VERIFYING,
         TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
     },
     TaskStatus.VERIFYING: {
         TaskStatus.COMPLETED,
