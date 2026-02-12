@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
 
 
-class ModelSource(str, Enum):
+class ModelSource(StrEnum):
     AUTO = "auto"
     HUGGINGFACE = "huggingface"
     HF_MIRROR = "hf-mirror"

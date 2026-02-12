@@ -84,7 +84,7 @@ async def _check_with_timeout(name: str, provider, timeout: float = 30) -> Healt
         return await asyncio.wait_for(
             _check_endpoint_readonly(name, provider), timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return HealthResult(
             name=name,
             status="unhealthy",

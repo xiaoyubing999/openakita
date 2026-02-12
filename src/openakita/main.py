@@ -8,7 +8,6 @@ OpenAkita CLI 入口
 
 import asyncio
 import logging
-import sys
 
 import typer
 from rich.console import Console

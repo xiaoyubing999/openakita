@@ -2560,6 +2560,24 @@ export function App() {
   }
 
   /**
+   * 比较两个语义化版本号，返回：
+   *  1  — a > b
+   *  0  — a == b
+   * -1  — a < b
+   * 仅比较 major.minor.patch 数字部分，忽略预发布后缀。
+   */
+  function compareSemver(a: string, b: string): number {
+    const parse = (v: string) => v.replace(/^v/, "").split(".").map((s) => parseInt(s, 10) || 0);
+    const pa = parse(a);
+    const pb = parse(b);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] ?? 0) > (pb[i] ?? 0)) return 1;
+      if ((pa[i] ?? 0) < (pb[i] ?? 0)) return -1;
+    }
+    return 0;
+  }
+
+  /**
    * 检查 GitHub 是否有新版本发布。
    *
    * 缓存策略（localStorage）：
@@ -2585,7 +2603,7 @@ export function App() {
           if (Date.now() - ts < SUCCESS_TTL) {
             // Still within cache window — show notification if newer
             const dismissed = localStorage.getItem(dismissKey);
-            if (tag && tag !== desktopVersion && dismissed !== tag) {
+            if (tag && compareSemver(tag, desktopVersion) > 0 && dismissed !== tag) {
               setNewRelease({
                 latest: tag,
                 current: desktopVersion,
@@ -2630,7 +2648,7 @@ export function App() {
       localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), tag: tagName }));
       localStorage.removeItem(failKey);
 
-      if (tagName && tagName !== desktopVersion) {
+      if (tagName && compareSemver(tagName, desktopVersion) > 0) {
         const dismissed = localStorage.getItem(dismissKey);
         if (dismissed !== tagName) {
           setNewRelease({

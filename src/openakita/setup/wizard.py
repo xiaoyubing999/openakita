@@ -667,7 +667,7 @@ Press Ctrl+C at any time to cancel.
                 break
 
         console.print("Embedding model options:\n")
-        for num, model_id, desc in models_list:
+        for num, _model_id, desc in models_list:
             marker = " ← recommended" if num == default_model_choice else ""
             console.print(f"  [{num}] {desc}{marker}")
         console.print()
