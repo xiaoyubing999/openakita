@@ -349,6 +349,27 @@ class TelegramAdapter(ChannelAdapter):
         # 初始化
         await self._app.initialize()
 
+        # 自动注册机器人命令菜单（Telegram 的 / 命令提示）
+        try:
+            from telegram import BotCommand
+
+            bot_commands = [
+                BotCommand("start", "开始使用 / 配对验证"),
+                BotCommand("status", "查看配对状态"),
+                BotCommand("unpair", "取消配对"),
+                BotCommand("model", "查看当前模型"),
+                BotCommand("switch", "临时切换模型"),
+                BotCommand("priority", "调整模型优先级"),
+                BotCommand("restore", "恢复默认模型"),
+                BotCommand("cancel", "取消当前操作"),
+            ]
+            await self._bot.set_my_commands(bot_commands)
+            logger.info(
+                f"[Telegram] 已注册 {len(bot_commands)} 个机器人命令到菜单"
+            )
+        except Exception as e:
+            logger.warning(f"[Telegram] 注册命令菜单失败（不影响使用）: {e}")
+
         # 启动
         if self.webhook_url:
             # Webhook 模式
