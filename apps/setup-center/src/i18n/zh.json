@@ -384,7 +384,9 @@
     "compiler": "提示词编译模型",
     "compilerHint": "用于预处理指令的轻量模型，建议使用快速小模型",
     "addCompiler": "添加编译端点",
-    "noCompiler": "未配置编译端点"
+    "noCompiler": "未配置编译端点",
+    "apiKeyEnv": "API Key 环境变量名",
+    "customProvider": "自定义服务商"
   },
   "welcome": {
     "title": "配置向导",
@@ -408,7 +410,9 @@
     "confirm": "确认",
     "delete": "删除",
     "search": "搜索",
-    "noData": "暂无数据"
+    "noData": "暂无数据",
+    "optional": "可选",
+    "confirmDeleteMsg": "确定要删除"
   },
   "connect": {
     "title": "连接远程服务",

@@ -6,19 +6,21 @@
 
 from .anthropic import AnthropicRegistry
 from .base import ModelInfo, ProviderInfo, ProviderRegistry
-from .dashscope import DashScopeRegistry
+from .dashscope import DashScopeInternationalRegistry, DashScopeRegistry
 from .deepseek import DeepSeekRegistry
 from .kimi import KimiChinaRegistry, KimiInternationalRegistry
 from .minimax import MiniMaxChinaRegistry, MiniMaxInternationalRegistry
 from .openai import OpenAIRegistry
 from .openrouter import OpenRouterRegistry
-from .siliconflow import SiliconFlowRegistry
+from .siliconflow import SiliconFlowInternationalRegistry, SiliconFlowRegistry
+from .volcengine import VolcEngineRegistry
 
 # 所有注册表
 ALL_REGISTRIES = [
     AnthropicRegistry(),
     OpenAIRegistry(),
     DashScopeRegistry(),
+    DashScopeInternationalRegistry(),
     KimiChinaRegistry(),
     KimiInternationalRegistry(),
     MiniMaxChinaRegistry(),
@@ -26,6 +28,8 @@ ALL_REGISTRIES = [
     DeepSeekRegistry(),
     OpenRouterRegistry(),
     SiliconFlowRegistry(),
+    SiliconFlowInternationalRegistry(),
+    VolcEngineRegistry(),
 ]
 
 # 按 slug 索引
@@ -51,6 +55,7 @@ __all__ = [
     "AnthropicRegistry",
     "OpenAIRegistry",
     "DashScopeRegistry",
+    "DashScopeInternationalRegistry",
     "KimiChinaRegistry",
     "KimiInternationalRegistry",
     "MiniMaxChinaRegistry",
@@ -58,6 +63,8 @@ __all__ = [
     "DeepSeekRegistry",
     "OpenRouterRegistry",
     "SiliconFlowRegistry",
+    "SiliconFlowInternationalRegistry",
+    "VolcEngineRegistry",
     "ALL_REGISTRIES",
     "get_registry",
     "list_providers",

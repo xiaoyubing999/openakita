@@ -384,7 +384,9 @@
     "compiler": "Prompt Compiler Model",
     "compilerHint": "Lightweight model for preprocessing, use a fast small model",
     "addCompiler": "Add Compiler Endpoint",
-    "noCompiler": "No compiler endpoints configured"
+    "noCompiler": "No compiler endpoints configured",
+    "apiKeyEnv": "API Key Env Var Name",
+    "customProvider": "Custom Provider"
   },
   "welcome": {
     "title": "Setup Guide",
@@ -408,7 +410,9 @@
     "confirm": "Confirm",
     "delete": "Delete",
     "search": "Search",
-    "noData": "No data"
+    "noData": "No data",
+    "optional": "optional",
+    "confirmDeleteMsg": "Are you sure you want to delete"
   },
   "connect": {
     "title": "Connect to Remote Service",

@@ -12,7 +12,7 @@ class AnthropicRegistry(ProviderRegistry):
     """Anthropic 注册表"""
 
     info = ProviderInfo(
-        name="Anthropic",
+        name="Anthropic (Official / Compatible)",
         slug="anthropic",
         api_type="anthropic",
         default_base_url="https://api.anthropic.com",

@@ -1,7 +1,11 @@
 """
-阿里云 DashScope 服务商注册表
+阿里云 DashScope (百炼) 服务商注册表
 
 采用混合方案：API 获取模型列表 + 预置能力表补充能力信息
+
+说明：
+- 国内区: https://dashscope.aliyuncs.com/compatible-mode/v1
+- 国际区: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 """
 
 import httpx
@@ -9,19 +13,29 @@ import httpx
 from ..capabilities import infer_capabilities
 from .base import ModelInfo, ProviderInfo, ProviderRegistry
 
+# 预置模型列表（国内/国际共用）
+_PRESET_MODELS = [
+    "qwen3-max",
+    "qwen3-max-preview",
+    "qwen3-plus",
+    "qwen3-coder-plus",
+    "qwen-max",
+    "qwen-max-latest",
+    "qwen-plus",
+    "qwen-plus-latest",
+    "qwen-turbo",
+    "qwen-turbo-latest",
+    "qwen-vl-max",
+    "qwen-vl-max-latest",
+    "qwen-vl-plus",
+    "qwen-vl-plus-latest",
+    "qwq-plus",
+    "qwq-32b",
+]
 
-class DashScopeRegistry(ProviderRegistry):
-    """阿里云 DashScope 注册表"""
 
-    info = ProviderInfo(
-        name="阿里云 DashScope",
-        slug="dashscope",
-        api_type="openai",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        api_key_env_suggestion="DASHSCOPE_API_KEY",
-        supports_model_list=True,
-        supports_capability_api=False,  # API 不返回能力信息，需要预置表
-    )
+class _DashScopeBase(ProviderRegistry):
+    """DashScope 基类（国内/国际共用逻辑）"""
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
         """
@@ -34,9 +48,6 @@ class DashScopeRegistry(ProviderRegistry):
         """
         async with httpx.AsyncClient(timeout=30) as client:
             try:
-                # Prefer OpenAI-compatible model list for DashScope:
-                #   GET https://dashscope.aliyuncs.com/compatible-mode/v1/models
-                # This matches what Setup Center uses and what users see in practice.
                 resp = await client.get(
                     f"{self.info.default_base_url}/models",
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -68,35 +79,45 @@ class DashScopeRegistry(ProviderRegistry):
                 return self._get_preset_models()
 
     def get_model_capabilities(self, model_id: str) -> dict:
-        """
-        获取模型能力（覆盖基类方法）
-
-        优先级: 预置能力表(dashscope) > 跨服务商匹配 > 模型名推断 > 默认值
-        """
+        """获取模型能力"""
         return infer_capabilities(model_id, provider_slug="dashscope")
 
-    def _get_preset_models(self) -> list[ModelInfo]:
+    @staticmethod
+    def _get_preset_models() -> list[ModelInfo]:
         """返回预置模型列表"""
-        preset = [
-            "qwen-max",
-            "qwen-max-latest",
-            "qwen-plus",
-            "qwen-plus-latest",
-            "qwen-turbo",
-            "qwen-turbo-latest",
-            "qwen-vl-max",
-            "qwen-vl-max-latest",
-            "qwen-vl-plus",
-            "qwen-vl-plus-latest",
-            "qwq-plus",
-            "qwq-32b",
-        ]
-
         return [
             ModelInfo(
                 id=model_id,
                 name=model_id,
                 capabilities=infer_capabilities(model_id, provider_slug="dashscope"),
             )
-            for model_id in preset
+            for model_id in _PRESET_MODELS
         ]
+
+
+class DashScopeRegistry(_DashScopeBase):
+    """阿里云 DashScope 注册表（中国区）"""
+
+    info = ProviderInfo(
+        name="阿里云 DashScope（中国区）",
+        slug="dashscope",
+        api_type="openai",
+        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key_env_suggestion="DASHSCOPE_API_KEY",
+        supports_model_list=True,
+        supports_capability_api=False,
+    )
+
+
+class DashScopeInternationalRegistry(_DashScopeBase):
+    """阿里云 DashScope 注册表（国际区）"""
+
+    info = ProviderInfo(
+        name="Alibaba DashScope (International)",
+        slug="dashscope-intl",
+        api_type="openai",
+        default_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        api_key_env_suggestion="DASHSCOPE_API_KEY",
+        supports_model_list=True,
+        supports_capability_api=False,
+    )

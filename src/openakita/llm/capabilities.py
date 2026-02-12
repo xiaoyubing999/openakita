@@ -524,6 +524,24 @@ MODEL_CAPABILITIES = {
     "siliconflow": {
         # 硅基流动 - 主要提供开源模型
     },
+    "volcengine": {
+        # 火山引擎 (Volcengine / 火山方舟 Ark) - 字节跳动
+        "doubao-seed-1-6": {"text": True, "vision": True, "video": False, "tools": True, "thinking": True},
+        "doubao-1-5-pro-256k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-1-5-pro-32k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-1-5-lite-32k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-1-5-vision-pro-32k": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False},
+        "doubao-pro-256k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-pro-32k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-pro-4k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-lite-128k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-lite-32k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-lite-4k": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+        "doubao-vision-pro-32k": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False},
+        "doubao-vision-lite-32k": {"text": True, "vision": True, "video": False, "tools": False, "thinking": False},
+        "deepseek-r1": {"text": True, "vision": False, "video": False, "tools": False, "thinking": True},
+        "deepseek-v3": {"text": True, "vision": False, "video": False, "tools": True, "thinking": False},
+    },
     "yunwu": {
         # 云雾 API - 中转服务
     },
@@ -535,6 +553,7 @@ URL_TO_PROVIDER = {
     "api.openai.com": "openai",
     "api.anthropic.com": "anthropic",
     "dashscope.aliyuncs.com": "dashscope",
+    "dashscope-intl.aliyuncs.com": "dashscope",
     "api.deepseek.com": "deepseek",
     "api.moonshot.cn": "moonshot",
     "api.minimax.chat": "minimax",
@@ -542,7 +561,9 @@ URL_TO_PROVIDER = {
     "generativelanguage.googleapis.com": "google",
     "openrouter.ai": "openrouter",
     "api.siliconflow.cn": "siliconflow",
+    "api.siliconflow.com": "siliconflow",
     "yunwu.ai": "yunwu",
+    "ark.cn-beijing.volces.com": "volcengine",
 }
 
 

@@ -130,22 +130,59 @@ fn list_service_pids() -> Vec<ServicePidEntry> {
     out
 }
 
-fn stop_service_pid_entry(ent: &ServicePidEntry) -> Result<(), String> {
-    if is_pid_running(ent.pid) {
-        kill_pid(ent.pid)?;
+/// 尝试通过 HTTP API 优雅关闭 Python 服务（POST /api/shutdown），
+/// 然后等待进程退出。如果 API 调用失败或超时则回退到 kill。
+fn graceful_stop_pid(pid: u32) -> Result<(), String> {
+    if !is_pid_running(pid) {
+        return Ok(());
+    }
+
+    // 第一步：尝试通过 HTTP API 触发优雅关闭
+    let api_ok = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()
+        .and_then(|client| {
+            client
+                .post("http://127.0.0.1:18900/api/shutdown")
+                .send()
+                .ok()
+        })
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    if api_ok {
+        // API 调用成功，给 Python 最多 5 秒优雅退出时间
+        for _ in 0..25 {
+            if !is_pid_running(pid) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // 第二步：进程仍然存活，强制 kill
+    if is_pid_running(pid) {
+        kill_pid(pid)?;
         // 等待最多 2s 确认退出
         for _ in 0..10 {
-            if !is_pid_running(ent.pid) {
+            if !is_pid_running(pid) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        if is_pid_running(ent.pid) {
-            return Err(format!(
-                "pid {} still running (workspace={})",
-                ent.pid, ent.workspace_id
-            ));
-        }
+    }
+
+    if is_pid_running(pid) {
+        Err(format!("pid {} still running after graceful + forced stop", pid))
+    } else {
+        Ok(())
+    }
+}
+
+fn stop_service_pid_entry(ent: &ServicePidEntry) -> Result<(), String> {
+    if is_pid_running(ent.pid) {
+        graceful_stop_pid(ent.pid)?;
     }
     let _ = fs::remove_file(PathBuf::from(&ent.pid_file));
     Ok(())
@@ -300,13 +337,16 @@ fn kill_openakita_orphans() -> Vec<u32> {
             win::CloseHandle(snap);
         }
 
-        // Step 2: 对每个 python 进程用 wmic 查命令行（只返回 ASCII 字段，无编码问题）
+        // Step 2: 对每个 python 进程查命令行，判断是否是 openakita serve 进程
+        // 使用 PowerShell Get-CimInstance 替代已废弃的 wmic（Windows 11 已移除 wmic）
         for ppid in python_pids {
-            let mut c = Command::new("cmd");
+            let mut c = Command::new("powershell");
             c.args([
-                "/C",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
                 &format!(
-                    "wmic process where \"ProcessId={}\" get CommandLine /value",
+                    "(Get-CimInstance Win32_Process -Filter 'ProcessId={}').CommandLine",
                     ppid
                 ),
             ]);
@@ -324,9 +364,29 @@ fn kill_openakita_orphans() -> Vec<u32> {
     }
     #[cfg(not(windows))]
     {
-        let _ = Command::new("pkill")
+        // 优先使用 pkill（大多数 Linux 发行版和 macOS 都有）
+        let pkill_ok = Command::new("pkill")
             .args(["-f", "openakita.*serve"])
-            .status();
+            .status()
+            .is_ok();
+
+        if !pkill_ok {
+            // pkill 不存在时的 fallback：使用 ps + grep + kill
+            if let Ok(out) = Command::new("sh")
+                .args(["-c", "ps aux | grep '[o]penakita.*serve' | awk '{print $2}'"])
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        let _ = Command::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .status();
+                        killed.push(pid);
+                    }
+                }
+            }
+        }
     }
     killed
 }
@@ -709,19 +769,7 @@ fn openakita_service_stop(workspace_id: String) -> Result<ServiceStatus, String>
         .and_then(|s| s.trim().parse::<u32>().ok());
     if let Some(pid) = pid {
         // 强制杀干净：如果杀不掉，要显式报错（避免 UI 显示“已停止”但后台仍残留）。
-        if is_pid_running(pid) {
-            kill_pid(pid)?;
-            // 等待最多 2s 确认退出
-            for _ in 0..10 {
-                if !is_pid_running(pid) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            if is_pid_running(pid) {
-                return Err(format!("failed to stop service: pid {pid} still running"));
-            }
-        }
+        graceful_stop_pid(pid).map_err(|e| format!("failed to stop service: {e}"))?;
     }
     let _ = fs::remove_file(&pid_file);
     Ok(ServiceStatus {
@@ -924,9 +972,11 @@ fn workspace_file_path(workspace_id: &str, relative: &str) -> Result<PathBuf, St
     if rel.is_absolute() {
         return Err("relative path must not be absolute".into());
     }
-    // Prevent path traversal.
-    if relative.contains("..") {
-        return Err("relative path must not contain ..".into());
+    // Prevent path traversal: use Path::components to reliably detect ".." segments
+    // (more robust than string matching, handles edge cases like "foo/..bar" correctly).
+    use std::path::Component;
+    if rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("relative path must not contain parent directory references (..)".into());
     }
     Ok(base.join(rel))
 }

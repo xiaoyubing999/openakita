@@ -12,7 +12,7 @@ class OpenAIRegistry(ProviderRegistry):
     """OpenAI 注册表"""
 
     info = ProviderInfo(
-        name="OpenAI",
+        name="OpenAI (Official / Compatible)",
         slug="openai",
         api_type="openai",
         default_base_url="https://api.openai.com/v1",

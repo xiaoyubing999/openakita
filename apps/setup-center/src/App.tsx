@@ -328,6 +328,12 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [dangerAck, setDangerAck] = useState(false);
 
+  // ── Generic confirm dialog ──
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  function askConfirm(message: string, onConfirm: () => void) {
+    setConfirmDialog({ message, onConfirm });
+  }
+
   // Ensure boot overlay is removed once React actually mounts.
   useEffect(() => {
     try {
@@ -1247,7 +1253,7 @@ export function App() {
   }
 
   async function doSaveCompilerEndpoint() {
-    if (!currentWorkspaceId) {
+    if (!currentWorkspaceId && dataMode !== "remote") {
       setError("请先创建/选择一个当前工作区");
       return;
     }
@@ -1267,10 +1273,20 @@ export function App() {
     setError(null);
     try {
       // Write API key to .env
-      await invoke("workspace_update_env", {
-        workspaceId: currentWorkspaceId,
-        entries: [{ key: compilerApiKeyEnv.trim(), value: compilerApiKeyValue.trim() }],
-      });
+      if (dataMode === "remote") {
+        try {
+          await fetch(`${apiBaseUrl}/api/config/env`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ entries: [{ key: compilerApiKeyEnv.trim(), value: compilerApiKeyValue.trim() }] }),
+          });
+        } catch { /* ignore */ }
+      } else {
+        await invoke("workspace_update_env", {
+          workspaceId: currentWorkspaceId,
+          entries: [{ key: compilerApiKeyEnv.trim(), value: compilerApiKeyValue.trim() }],
+        });
+      }
       setEnvDraft((e) => envSet(e, compilerApiKeyEnv.trim(), compilerApiKeyValue.trim()));
 
       // Read existing JSON
@@ -1307,16 +1323,13 @@ export function App() {
       base.compiler_endpoints.push(endpoint);
       base.compiler_endpoints.sort((a: any, b: any) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
 
-      await invoke("workspace_write_file", {
-        workspaceId: currentWorkspaceId,
-        relativePath: "data/llm_endpoints.json",
-        content: JSON.stringify(base, null, 2) + "\n",
-      });
+      await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(base, null, 2) + "\n");
 
       // Reset form
       setCompilerModel("");
       setCompilerApiKeyValue("");
       setCompilerEndpointName("");
+      setCompilerBaseUrl("");
       setNotice(`编译端点 ${name} 已保存`);
       await loadSavedEndpoints();
     } catch (e) {
@@ -1327,7 +1340,7 @@ export function App() {
   }
 
   async function doDeleteCompilerEndpoint(epName: string) {
-    if (!currentWorkspaceId) return;
+    if (!currentWorkspaceId && dataMode !== "remote") return;
     setBusy("删除编译端点...");
     setError(null);
     try {
@@ -1341,11 +1354,7 @@ export function App() {
         .filter((e: any) => String(e?.name || "") !== epName)
         .map((e: any, i: number) => ({ ...e, priority: i + 1 }));
 
-      await invoke("workspace_write_file", {
-        workspaceId: currentWorkspaceId,
-        relativePath: "data/llm_endpoints.json",
-        content: JSON.stringify(base, null, 2) + "\n",
-      });
+      await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(base, null, 2) + "\n");
       setNotice(`编译端点 ${epName} 已删除`);
       await loadSavedEndpoints();
     } catch (e) {
@@ -2852,7 +2861,7 @@ export function App() {
                   <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                     {savedEndpoints[0]?.name !== e.name && <button className="btnIcon" onClick={() => doSetPrimaryEndpoint(e.name)} disabled={!!busy} title={t("llm.setPrimary")}><IconChevronUp size={14} /></button>}
                     <button className="btnIcon" onClick={() => doStartEditEndpoint(e.name)} disabled={!!busy} title={t("llm.edit")}><IconEdit size={14} /></button>
-                    <button className="btnIcon btnIconDanger" onClick={() => doDeleteEndpoint(e.name)} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
+                    <button className="btnIcon btnIconDanger" onClick={() => askConfirm(`${t("common.confirmDeleteMsg")} "${e.name}"?`, () => doDeleteEndpoint(e.name))} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
                   </span>
                 </div>
               ))}
@@ -2883,7 +2892,7 @@ export function App() {
                     <span style={{ fontWeight: 700, fontSize: 13 }}>{e.name}</span>
                     <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 8 }}>{e.model} · {e.provider}</span>
                   </div>
-                  <button className="btnIcon btnIconDanger" onClick={() => doDeleteCompilerEndpoint(e.name)} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
+                  <button className="btnIcon btnIconDanger" onClick={() => askConfirm(`${t("common.confirmDeleteMsg")} "${e.name}"?`, () => doDeleteCompilerEndpoint(e.name))} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
                 </div>
               ))}
             </div>
@@ -3060,19 +3069,35 @@ export function App() {
                 <select value={compilerProviderSlug} onChange={(e) => {
                   const slug = e.target.value;
                   setCompilerProviderSlug(slug);
-                  const p = providers.find((x) => x.slug === slug);
-                  if (p) {
-                    setCompilerApiType((p.api_type as any) || "openai");
-                    setCompilerBaseUrl(p.default_base_url || "");
-                    const suggested = p.api_key_env_suggestion || envKeyFromSlug(p.slug);
-                    const used = new Set(Object.keys(envDraft || {}));
-                    for (const ep of [...savedEndpoints, ...savedCompilerEndpoints]) { if (ep.api_key_env) used.add(ep.api_key_env); }
-                    setCompilerApiKeyEnv(nextEnvKeyName(suggested, used));
+                  if (slug === "__custom__") {
+                    setCompilerApiType("openai");
+                    setCompilerBaseUrl("");
+                    setCompilerApiKeyEnv("CUSTOM_COMPILER_API_KEY");
+                  } else {
+                    const p = providers.find((x) => x.slug === slug);
+                    if (p) {
+                      setCompilerApiType((p.api_type as any) || "openai");
+                      setCompilerBaseUrl(p.default_base_url || "");
+                      const suggested = p.api_key_env_suggestion || envKeyFromSlug(p.slug);
+                      const used = new Set(Object.keys(envDraft || {}));
+                      for (const ep of [...savedEndpoints, ...savedCompilerEndpoints]) { if (ep.api_key_env) used.add(ep.api_key_env); }
+                      setCompilerApiKeyEnv(nextEnvKeyName(suggested, used));
+                    }
                   }
                 }}>
                   <option value="">--</option>
                   {providers.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
+                  <option value="__custom__">{t("llm.customProvider")}</option>
                 </select>
+              </div>
+              <div className="dialogSection">
+                <div className="dialogLabel">{t("llm.baseUrl")}</div>
+                <input value={compilerBaseUrl} onChange={(e) => setCompilerBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" />
+                <div className="cardHint" style={{ fontSize: 11, marginTop: 2 }}>{t("llm.baseUrlHint")}</div>
+              </div>
+              <div className="dialogSection">
+                <div className="dialogLabel">{t("llm.apiKeyEnv")}</div>
+                <input value={compilerApiKeyEnv} onChange={(e) => setCompilerApiKeyEnv(e.target.value)} placeholder="MY_API_KEY" />
               </div>
               <div className="dialogSection">
                 <div className="dialogLabel">API Key</div>
@@ -3090,9 +3115,13 @@ export function App() {
                     <div className="dialogLabel">{t("status.model")}</div>
                     <SearchSelect value={compilerModel} onChange={(v) => setCompilerModel(v)} options={compilerModels.map((m) => m.id)} placeholder="qwen-turbo / gpt-4o-mini" disabled={!!busy} />
                   </div>
+                  <div className="dialogSection">
+                    <div className="dialogLabel">{t("llm.endpointName")} <span style={{ color: "var(--muted)", fontSize: 11 }}>({t("common.optional")})</span></div>
+                    <input value={compilerEndpointName} onChange={(e) => setCompilerEndpointName(e.target.value)} placeholder={`compiler-${compilerProviderSlug || "custom"}-${compilerModel || "model"}`} />
+                  </div>
                   <div className="dialogFooter">
                     <button className="btnSmall" onClick={() => setAddCompDialogOpen(false)}>{t("common.cancel")}</button>
-                    <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveCompilerEndpoint(); setAddCompDialogOpen(false); }} disabled={!compilerModel.trim() || !compilerApiKeyEnv.trim() || !compilerApiKeyValue.trim() || !currentWorkspaceId || !!busy}>
+                    <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveCompilerEndpoint(); setAddCompDialogOpen(false); }} disabled={!compilerModel.trim() || !compilerApiKeyEnv.trim() || !compilerApiKeyValue.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
                       {t("llm.addEndpoint")}
                     </button>
                   </div>
@@ -4544,6 +4573,19 @@ export function App() {
                     setError(t("connect.fail"));
                   } finally { setBusy(null); }
                 }}>{t("connect.confirm")}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Generic confirm dialog ── */}
+        {confirmDialog && (
+          <div className="modalOverlay" onClick={() => setConfirmDialog(null)}>
+            <div className="modalContent" style={{ maxWidth: 380, padding: 24 }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>{confirmDialog.message}</div>
+              <div className="dialogFooter" style={{ justifyContent: "flex-end" }}>
+                <button className="btnSmall" onClick={() => setConfirmDialog(null)}>{t("common.cancel")}</button>
+                <button className="btnSmall" style={{ background: "var(--danger, #e53935)", color: "#fff", border: "none" }} onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}>{t("common.confirm")}</button>
               </div>
             </div>
           </div>

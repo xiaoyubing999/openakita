@@ -67,6 +67,9 @@ async def serve_file(request: Request, path: str = ""):
 
     # Security: ensure the file is under workspace OR under known safe directories
     # (e.g. user home, temp dirs used by agent tools)
+    # Use Path.is_relative_to() instead of string prefix matching to avoid
+    # false positives (e.g. /home/user matching /home/user_docs) and
+    # case-sensitivity issues on Windows.
     workspace_resolved = workspace.resolve()
     safe_roots = [
         workspace_resolved,
@@ -74,7 +77,7 @@ async def serve_file(request: Request, path: str = ""):
     ]
 
     is_safe = any(
-        str(full_path).startswith(str(root)) for root in safe_roots
+        full_path.is_relative_to(root) for root in safe_roots
     )
     if not is_safe:
         raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")

@@ -103,10 +103,15 @@ def get_openakita_chrome_profile() -> str:
 
     # 使用固定的目录（不是每次都创建临时目录）
     # 这样可以保持登录状态
-    if platform.system() == "Windows":
+    system = platform.system()
+    if system == "Windows":
         base_dir = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()))
+    elif system == "Darwin":
+        # macOS 标准应用数据目录
+        base_dir = Path.home() / "Library" / "Application Support"
     else:
-        base_dir = Path.home() / ".local" / "share"
+        # Linux / other Unix: XDG data home
+        base_dir = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
 
     profile_dir = base_dir / "OpenAkita" / "ChromeProfile"
     profile_dir.mkdir(parents=True, exist_ok=True)

@@ -1099,11 +1099,9 @@ def serve():
             except RuntimeError:
                 pass
 
-    # 设置信号处理
-    if sys.platform == "win32":
-        # Windows 上使用 signal.signal
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+    # 设置信号处理（所有平台都需要，以支持优雅关闭）
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         asyncio.run(_serve())

@@ -13,6 +13,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -321,7 +322,17 @@ class ShellTool:
                 f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
             )
         else:
-            # Linux/Mac 上使用 pwsh（如果已安装）
+            # Linux/Mac 上使用 pwsh（PowerShell Core，需单独安装）
+            if not shutil.which("pwsh"):
+                return CommandResult(
+                    exit_code=1,
+                    stdout="",
+                    stderr=(
+                        "PowerShell Core (pwsh) is not installed on this system.\n"
+                        "Install it from: https://github.com/PowerShell/PowerShell\n"
+                        "Or use a regular shell command instead."
+                    ),
+                )
             return await self.run(
                 f"pwsh -NoProfile -NonInteractive -EncodedCommand {encoded}"
             )

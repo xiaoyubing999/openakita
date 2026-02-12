@@ -6,6 +6,7 @@
 """
 
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -296,7 +297,23 @@ class SkillLoader:
         if script_path.suffix == ".py":
             cmd = [sys.executable, str(script_path)] + args
         elif script_path.suffix in (".sh", ".bash"):
-            cmd = ["bash", str(script_path)] + args
+            bash_path = shutil.which("bash")
+            if not bash_path:
+                # Windows 上尝试 Git Bash 的常见路径
+                if sys.platform == "win32":
+                    for candidate in [
+                        r"C:\Program Files\Git\bin\bash.exe",
+                        r"C:\Program Files (x86)\Git\bin\bash.exe",
+                    ]:
+                        if Path(candidate).exists():
+                            bash_path = candidate
+                            break
+                if not bash_path:
+                    return False, (
+                        f"Cannot run {script_name}: 'bash' not found on this system. "
+                        f"On Windows, install Git for Windows (https://git-scm.com) to get bash."
+                    )
+            cmd = [bash_path, str(script_path)] + args
         elif script_path.suffix == ".js":
             cmd = ["node", str(script_path)] + args
         else:
