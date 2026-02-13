@@ -215,8 +215,8 @@ async def auto_select_backend(
         最佳可用后端实例，或 None
     """
     # 延迟导入，避免循环依赖
-    from .mcp_chrome_backend import McpChromeBackend
     from .chrome_devtools_backend import ChromeDevToolsBackend
+    from .mcp_chrome_backend import McpChromeBackend
     from .playwright_backend import PlaywrightBackend
 
     # 1. 尝试 mcp-chrome 扩展

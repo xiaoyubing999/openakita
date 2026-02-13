@@ -244,7 +244,7 @@ async def check_mcp_chrome_extension(port: int = 12306, timeout: float = 2.0) ->
         import httpx
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
+            await client.get(
                 f"http://127.0.0.1:{port}/mcp",
                 timeout=timeout,
             )

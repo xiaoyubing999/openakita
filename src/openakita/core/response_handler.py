@@ -155,6 +155,20 @@ class ResponseHandler:
             logger.info("[TaskVerify] complete_plan executed, completed")
             return True
 
+        # === 系统限制 / 不可克服障碍 → 已尽力告知用户，视为完成 ===
+        _resp_lower = (assistant_response or "").lower()
+        _limitation_keywords = (
+            "不支持", "暂不支持", "无法完成", "超出能力", "系统限制",
+            "平台限制", "接口限制", "api 暂未开放", "暂未开放",
+            "not supported", "cannot complete", "system limitation",
+        )
+        if any(kw in _resp_lower for kw in _limitation_keywords):
+            logger.info(
+                "[TaskVerify] Detected system limitation in response, "
+                "treating as COMPLETED (agent already informed user)"
+            )
+            return True
+
         # 宣称已交付但无证据
         if any(
             k in (assistant_response or "") for k in ("已发送", "已交付", "已发给你", "已发给您")
@@ -209,6 +223,10 @@ class ResponseHandler:
 - 工具执行成功即表示该操作完成
 - 如果响应只是说"现在开始..."且没有工具执行，任务还在进行中
 - 如果响应包含明确的操作确认，任务完成
+
+### 系统限制 / 不可克服障碍（直接判 COMPLETED）
+- 如果助手已尝试执行但遇到**平台/系统/API 限制**（如"不支持"、"暂未开放"等），并已向用户说明原因 → **COMPLETED**
+- 助手已尽力但因技术限制无法完成，且已告知用户 → **COMPLETED**（继续循环无意义）
 
 ## 回答要求
 STATUS: COMPLETED 或 INCOMPLETE

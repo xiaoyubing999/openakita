@@ -233,7 +233,14 @@ class ToolExecutor:
                     try:
                         import json as _json
 
-                        parsed = _json.loads(result_str)
+                        # execute_one 可能在 JSON 后追加 "[执行日志]" 警告文本，
+                        # 需要先剥离才能正确解析 JSON
+                        json_str = result_str
+                        log_marker = "\n\n[执行日志]"
+                        if log_marker in json_str:
+                            json_str = json_str[: json_str.index(log_marker)]
+
+                        parsed = _json.loads(json_str)
                         rs = parsed.get("receipts") if isinstance(parsed, dict) else None
                         if isinstance(rs, list):
                             receipts = rs

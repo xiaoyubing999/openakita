@@ -12,7 +12,7 @@ WebMCP 预留接口：
 """
 
 from .base import BrowserBackend, BrowserBackendType, auto_select_backend
-from .webmcp import WebMCPTool, WebMCPDiscoveryResult, discover_webmcp_tools, call_webmcp_tool
+from .webmcp import WebMCPDiscoveryResult, WebMCPTool, call_webmcp_tool, discover_webmcp_tools
 
 __all__ = [
     "BrowserBackend",

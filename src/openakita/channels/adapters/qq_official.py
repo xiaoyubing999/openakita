@@ -277,8 +277,8 @@ class QQBotAdapter(ChannelAdapter):
         """
         try:
             # 尝试 ed25519 验签（需要 PyNaCl）
-            from nacl.signing import VerifyKey
             from nacl.exceptions import BadSignatureError
+            from nacl.signing import VerifyKey
 
             # QQ 使用 bot_secret 的前 32 字节作为 ed25519 seed
             seed = self.app_secret.encode("utf-8")
