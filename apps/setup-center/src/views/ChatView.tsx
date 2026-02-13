@@ -34,6 +34,7 @@ import {
 // ─── SSE 事件处理 ───
 
 type StreamEvent =
+  | { type: "heartbeat" }
   | { type: "thinking_start" }
   | { type: "thinking_delta"; content: string }
   | { type: "thinking_end" }

@@ -6077,7 +6077,7 @@ export function App() {
           )}
         </div>
 
-        {/* Version info at sidebar bottom */}
+        {/* Version info + website link at sidebar bottom */}
         {!sidebarCollapsed && (
           <div style={{
             padding: "10px 16px",
@@ -6090,6 +6090,34 @@ export function App() {
             <div>Desktop v{desktopVersion}</div>
             {backendVersion && <div>Backend v{backendVersion}</div>}
             {!backendVersion && serviceStatus?.running && <div>Backend: -</div>}
+            <div style={{ marginTop: 4 }}>
+              <a
+                href="https://openakita.ai"
+                style={{ color: "var(--accent, #5B8DEF)", textDecoration: "none", opacity: 1 }}
+                onMouseEnter={(e) => (e.currentTarget.style.textDecoration = "underline")}
+                onMouseLeave={(e) => (e.currentTarget.style.textDecoration = "none")}
+              >
+                <IconGlobe size={11} style={{ verticalAlign: "-1px", marginRight: 3 }} />
+                openakita.ai
+              </a>
+            </div>
+          </div>
+        )}
+        {sidebarCollapsed && (
+          <div style={{
+            padding: "8px 0",
+            borderTop: "1px solid var(--line)",
+            flexShrink: 0,
+            display: "flex",
+            justifyContent: "center",
+          }}>
+            <a
+              href="https://openakita.ai"
+              title="openakita.ai"
+              style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex" }}
+            >
+              <IconGlobe size={14} />
+            </a>
           </div>
         )}
       </aside>

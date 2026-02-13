@@ -128,6 +128,10 @@ class LLMClient:
         # per-conversation 临时覆盖（用于并发隔离）
         self._conversation_overrides: dict[str, EndpointOverride] = {}
 
+        # 端点亲和性：记录上一次成功的端点名称
+        # 有工具上下文时，优先使用上次成功的端点（避免 failover 后又回到高优先级的故障端点）
+        self._last_success_endpoint: str | None = None
+
         if endpoints:
             self._endpoints = sorted(endpoints, key=lambda x: x.priority)
         elif config_path or get_default_config_path().exists():
@@ -162,6 +166,7 @@ class LLMClient:
             self._settings = new_settings
             self._providers.clear()
             self._init_providers()
+            self._last_success_endpoint = None  # 重载后重置端点亲和性
             logger.info(
                 f"LLMClient reloaded from {self._config_path}: "
                 f"{len(self._endpoints)} endpoints, {len(self._providers)} providers"
@@ -273,12 +278,14 @@ class LLMClient:
             )
 
         # 筛选支持所需能力的端点
+        # 有工具上下文时传入端点亲和性：优先使用上次成功的端点
         eligible = self._filter_eligible_endpoints(
             require_tools=require_tools,
             require_vision=require_vision,
             require_video=require_video,
             require_thinking=require_thinking,
             conversation_id=conversation_id,
+            prefer_endpoint=self._last_success_endpoint if has_tool_context else None,
         )
 
         # 可选：工具上下文下启用 failover（显式配置才开启）
@@ -334,13 +341,14 @@ class LLMClient:
                     f"Waiting for recovery (likely transient network issue)..."
                 )
                 await asyncio.sleep(min(min_cooldown + 1, 12))
-                # 等待后重新筛选
+                # 等待后重新筛选（保持亲和性）
                 eligible = self._filter_eligible_endpoints(
                     require_tools=require_tools,
                     require_vision=require_vision,
                     require_video=require_video,
                     require_thinking=require_thinking,
                     conversation_id=conversation_id,
+                    prefer_endpoint=self._last_success_endpoint if has_tool_context else None,
                 )
                 if eligible:
                     logger.info(
@@ -436,12 +444,15 @@ class LLMClient:
         require_video: bool = False,
         require_thinking: bool = False,
         conversation_id: str | None = None,
+        prefer_endpoint: str | None = None,
     ) -> list[LLMProvider]:
         """筛选支持所需能力的端点
 
         注意：
         - enable_thinking=True 时，优先/要求端点具备 thinking 能力（避免能力/格式退化）
         - 如果有临时覆盖且覆盖端点支持所需能力，优先使用覆盖端点
+        - prefer_endpoint: 端点亲和性，有工具上下文时传入上次成功的端点名称，
+          将其提升到队列前端（优先于 priority 排序，但低于 override）
         """
         # 清理过期的 override
         # 1) 清理当前 conversation 的过期 override
@@ -521,7 +532,21 @@ class LLMClient:
         # 按优先级排序
         eligible.sort(key=lambda p: p.config.priority)
 
-        # 如果有有效的 override，将其放到最前面
+        # 端点亲和性：有工具上下文时，将上次成功的端点提升到队列前端
+        # 这样 failover 后的下一次调用会继续使用成功的端点，而不是回到高优先级的故障端点
+        if prefer_endpoint:
+            prefer_provider = next(
+                (p for p in eligible if p.name == prefer_endpoint), None
+            )
+            if prefer_provider:
+                eligible.remove(prefer_provider)
+                eligible.insert(0, prefer_provider)
+                logger.debug(
+                    f"[LLM] Endpoint affinity: prefer {prefer_endpoint} "
+                    f"(last successful endpoint with tool context)"
+                )
+
+        # 如果有有效的 override，将其放到最前面（override 优先于亲和性）
         if override_provider and override_provider in eligible:
             eligible.remove(override_provider)
             eligible.insert(0, override_provider)
@@ -592,15 +617,12 @@ class LLMClient:
                         f"action=response tokens_in={response.usage.input_tokens} tokens_out={response.usage.output_tokens}"
                     )
 
-                    # 成功：如果之前有其他端点因本次全局故障被标记，缩短它们的冷静期
-                    if failed_providers:
-                        for fp in failed_providers:
-                            if fp is not provider and fp.error_category == "transient":
-                                fp.shorten_cooldown(COOLDOWN_GLOBAL_FAILURE)
-                                logger.info(
-                                    f"[LLM] endpoint={fp.name} cooldown shortened "
-                                    f"(peer recovered, likely transient network issue)"
-                                )
+                    # 注意：这里不缩短其他失败端点的冷静期。
+                    # A 失败、B 成功 ≠ 全局网络波动；A 的远程服务可能仍然有问题。
+                    # 全局网络波动判定见本方法末尾：所有端点都失败时才触发。
+
+                    # 端点亲和性：记录本次成功的端点，供后续有工具上下文的调用优先使用
+                    self._last_success_endpoint = provider.name
 
                     # 成功：如果该端点之前有连续失败记录，刷新持久化状态
                     if had_consecutive:
