@@ -12,11 +12,19 @@ Environment variables:
 
 import os
 import sys
+import shutil
 from pathlib import Path
 
 # Project root directory
 PROJECT_ROOT = Path(SPECPATH).parent
 SRC_DIR = PROJECT_ROOT / "src"
+
+# Force clean output directories to avoid macOS symlink conflicts
+# This must happen early, before PyInstaller starts collecting files
+_dist_server = PROJECT_ROOT / "dist" / "openakita-server"
+if _dist_server.exists():
+    print(f"[spec] Removing existing output: {_dist_server}")
+    shutil.rmtree(_dist_server)
 
 # Build mode
 BUILD_MODE = os.environ.get("OPENAKITA_BUILD_MODE", "core")
