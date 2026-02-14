@@ -232,18 +232,29 @@ exe = EXE(
     entitlements_file=None,
 )
 
-# Force remove output dir right before COLLECT to avoid macOS symlink FileExistsError
-# This is needed because PyInstaller's COLLECT phase may conflict with files created earlier
+# On macOS, filter out duplicate Python framework entries to avoid symlink FileExistsError
+# This is a workaround for PyInstaller bug with Python.framework symlinks
 import sys as _sys
+_binaries_filtered = a.binaries
 if _sys.platform == "darwin":
-    _collect_output = PROJECT_ROOT / "dist" / "openakita-server"
-    if _collect_output.exists():
-        print(f"[spec] Removing output before COLLECT: {_collect_output}")
-        shutil.rmtree(_collect_output)
+    # Remove duplicate Python framework entries that cause symlink conflicts
+    _seen_python = set()
+    _filtered = []
+    for item in a.binaries:
+        name = item[0] if isinstance(item, tuple) else item
+        # Skip duplicate Python framework entries
+        if 'Python.framework' in str(name) and 'Python' in str(name):
+            if name in _seen_python:
+                print(f"[spec] Skipping duplicate: {name}")
+                continue
+            _seen_python.add(name)
+        _filtered.append(item)
+    _binaries_filtered = _filtered
+    print(f"[spec] Filtered binaries: {len(a.binaries)} -> {len(_binaries_filtered)}")
 
 coll = COLLECT(
     exe,
-    a.binaries,
+    _binaries_filtered,
     a.datas,
     strip=False,
     upx=True,
