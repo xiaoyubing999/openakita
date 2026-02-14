@@ -381,6 +381,7 @@ Var AppStartMenuFolder
 ; 6.5 环境检测自定义页面 (检测 ~/.openakita 旧残留)
 Var EnvCleanVenv
 Var EnvCleanRuntime
+Var EnvCleanModules
 Var EnvCleanUserData
 Var EnvCleanUserDataConfirmed
 Page custom PageEnvCheck PageLeaveEnvCheck
@@ -462,17 +463,23 @@ Function PageEnvCheck
   ${NSD_SetState} $EnvCleanRuntime ${BST_CHECKED}
  ${EndIf}
 
+ ${If} ${FileExists} "$R0\modules\*.*"
+  ${NSD_CreateCheckbox} 14u 66u -14u 12u "清理已安装的可选模块（向量记忆、whisper 等）"
+  Pop $EnvCleanModules
+  ${NSD_SetState} $EnvCleanModules ${BST_CHECKED}
+ ${EndIf}
+
  ; ── 用户数据清理选项 (默认不勾选) ──
- ${NSD_CreateCheckbox} 14u 76u -14u 12u "清理用户数据（工作区、配置文件、对话记录等）"
+ ${NSD_CreateCheckbox} 14u 86u -14u 12u "清理用户数据（工作区、配置文件、对话记录等）"
  Pop $EnvCleanUserData
  ${NSD_SetState} $EnvCleanUserData ${BST_UNCHECKED}
 
- ${NSD_CreateLabel} 22u 92u -22u 26u "⚠ 警告：清理用户数据将永久删除所有工作区配置、对话记录$\n和个人设置，此操作不可撤销！"
+ ${NSD_CreateLabel} 22u 102u -22u 26u "⚠ 警告：清理用户数据将永久删除所有工作区配置、对话记录$\n和个人设置，此操作不可撤销！"
  Pop $0
  SetCtlColors $0 "CC0000" "transparent"
 
  ; ── 底部提示 ──
- ${NSD_CreateLabel} 0 126u 100% 12u "提示：用户数据清理需要二次确认方可执行。"
+ ${NSD_CreateLabel} 0 136u 100% 12u "提示：用户数据清理需要二次确认方可执行。"
  Pop $0
  SetCtlColors $0 "888888" "transparent"
 
@@ -537,6 +544,19 @@ Function PageLeaveEnvCheck
   ${EndIf}
  ${EndIf}
 
+ ${If} $EnvCleanModules != ""
+  ${NSD_GetState} $EnvCleanModules $0
+  ${If} $0 = ${BST_CHECKED}
+   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\modules"
+   ExecWait 'cmd /c rd /s /q "$R0"'
+   ; 同时清理嵌入式 Python（模块安装可能下载了它）
+   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\python"
+   ExecWait 'cmd /c rd /s /q "$R0"'
+   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\embedded_python"
+   ExecWait 'cmd /c rd /s /q "$R0"'
+  ${EndIf}
+ ${EndIf}
+
  ; ── 执行用户数据清理（需要双重确认通过） ──
  ${If} $EnvCleanUserDataConfirmed = 1
   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita"
@@ -546,10 +566,16 @@ Function PageLeaveEnvCheck
   Delete "$R0\state.json"
   Delete "$R0\config.json"
   Delete "$R0\.env"
+  Delete "$R0\cli.json"
   ; 清理日志
   ExecWait 'cmd /c rd /s /q "$R0\logs"'
   ; 清理运行时 pid 文件
   ExecWait 'cmd /c rd /s /q "$R0\run"'
+  ; 清理已安装的可选模块（向量记忆、whisper、浏览器自动化等）
+  ExecWait 'cmd /c rd /s /q "$R0\modules"'
+  ; 清理嵌入式 Python 环境
+  ExecWait 'cmd /c rd /s /q "$R0\python"'
+  ExecWait 'cmd /c rd /s /q "$R0\embedded_python"'
  ${EndIf}
 FunctionEnd
 

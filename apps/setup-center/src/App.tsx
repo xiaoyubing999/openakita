@@ -7150,8 +7150,17 @@ export function App() {
                   setView("status");
                   await refreshAll();
                   // 关键：刷新端点列表、IM 状态等（forceAliveCheck=true 绕过 serviceStatus 闭包）
+                  // 首次尝试
                   try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
                   autoCheckEndpoints("http://127.0.0.1:18900");
+                  // 延迟重试：后端 API 可能还在初始化，3 秒后再拉一次端点列表
+                  setTimeout(async () => {
+                    try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
+                  }, 3000);
+                  // 8 秒后最终重试
+                  setTimeout(async () => {
+                    try { await refreshStatus("local", "http://127.0.0.1:18900", true); } catch { /* ignore */ }
+                  }, 8000);
                 }}
               >
                 {t("onboarding.done.enter")}
