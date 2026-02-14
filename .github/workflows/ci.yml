@@ -149,6 +149,11 @@ jobs:
         with:
           workspaces: apps/setup-center/src-tauri
 
+      - name: Create resource placeholder for cargo check
+        if: ${{ hashFiles('apps/setup-center/src-tauri/Cargo.toml') != '' }}
+        shell: bash
+        run: mkdir -p apps/setup-center/src-tauri/resources/openakita-server
+
       - name: Cargo check
         if: ${{ hashFiles('apps/setup-center/src-tauri/Cargo.toml') != '' }}
         working-directory: apps/setup-center/src-tauri

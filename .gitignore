@@ -109,9 +109,10 @@ tests/
 test_*.py
 *_test.py
 
-# Identity (only keep examples)
+# Identity (only keep examples and personas)
 identity/*
 !identity/*.example
+!identity/personas/
 
 # Media files
 *.mp3
