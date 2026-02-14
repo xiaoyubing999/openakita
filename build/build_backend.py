@@ -43,13 +43,26 @@ def check_pyinstaller():
 
 def clean_dist():
     """Clean previous build output"""
+    # Clean dist output directory
     if OUTPUT_DIR.exists():
         print(f"  Cleaning old build output: {OUTPUT_DIR}")
         shutil.rmtree(OUTPUT_DIR)
 
+    # Clean entire dist directory to avoid symlink conflicts on macOS
+    if DIST_DIR.exists():
+        print(f"  Cleaning dist directory: {DIST_DIR}")
+        shutil.rmtree(DIST_DIR)
+
+    # Clean build temp directory
     build_tmp = PROJECT_ROOT / "build" / "openakita-server"
     if build_tmp.exists():
         shutil.rmtree(build_tmp)
+
+    # Clean PyInstaller work directory (fixes macOS symlink FileExistsError)
+    pyinstaller_work = PROJECT_ROOT / "build" / "pyinstaller_work"
+    if pyinstaller_work.exists():
+        print(f"  Cleaning PyInstaller work directory: {pyinstaller_work}")
+        shutil.rmtree(pyinstaller_work)
 
 
 def build_backend(mode: str):
