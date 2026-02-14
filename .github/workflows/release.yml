@@ -154,7 +154,11 @@ jobs:
 
       - name: Clean previous PyInstaller output
         shell: bash
-        run: rm -rf dist/openakita-server build/openakita-server
+        run: |
+          rm -rf dist/
+          rm -rf build/openakita-server
+          rm -rf build/pyinstaller_work
+          rm -rf build/modules
 
       - name: Package Python backend (PyInstaller)
         run: python build/build_backend.py --mode ${{ matrix.build_mode }}
