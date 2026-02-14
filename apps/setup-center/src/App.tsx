@@ -680,7 +680,8 @@ export function App() {
   type ModuleInfo = { id: string; name: string; description: string; installed: boolean; bundled: boolean; sizeMb: number };
   const [obStep, setObStep] = useState<OnboardingStep>("ob-welcome");
   const [obModules, setObModules] = useState<ModuleInfo[]>([]);
-  const [obSelectedModules, setObSelectedModules] = useState<Set<string>>(new Set());
+  const [obSelectedModules, setObSelectedModules] = useState<Set<string>>(new Set(["vector-memory", "browser", "whisper"]));
+  const obModulesDefaultsApplied = useRef(false);
   const [obInstallLog, setObInstallLog] = useState<string[]>([]);
   const [obInstalling, setObInstalling] = useState(false);
   const [obEnvCheck, setObEnvCheck] = useState<{
@@ -6504,6 +6505,19 @@ export function App() {
     try {
       const modules = await invoke<ModuleInfo[]>("detect_modules");
       setObModules(modules);
+      // 首次加载时，将未安装的默认推荐模块加入选中集合
+      if (!obModulesDefaultsApplied.current) {
+        obModulesDefaultsApplied.current = true;
+        const defaultIds = ["vector-memory", "browser", "whisper"];
+        setObSelectedModules(prev => {
+          const next = new Set(prev);
+          for (const id of defaultIds) {
+            const m = modules.find(mod => mod.id === id);
+            if (m && !m.installed && !m.bundled) next.add(id);
+          }
+          return next;
+        });
+      }
     } catch (e) {
       console.warn("detect_modules failed:", e);
     }
@@ -6912,9 +6926,14 @@ export function App() {
             <div className="obContent">
               <h2 className="obStepTitle">{t("onboarding.modules.title")}</h2>
               <p className="obStepDesc">{t("onboarding.modules.desc")}</p>
+              <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 8px", lineHeight: 1.5 }}>
+                已为你推荐常用模块，如不需要可取消勾选。模块安装后也可在设置中管理。
+              </p>
               <div className="obModuleList">
                 {obModules.map((m) => (
-                  <label key={m.id} className={`obModuleItem ${m.installed || m.bundled ? "obModuleInstalled" : ""}`}>
+                  <label key={m.id} className={`obModuleItem ${m.installed || m.bundled ? "obModuleInstalled" : ""}`}
+                    style={obSelectedModules.has(m.id) && !m.installed && !m.bundled ? { borderColor: "#5B8DEF", background: "#f0f5ff" } : {}}
+                  >
                     <input
                       type="checkbox"
                       checked={m.installed || m.bundled || obSelectedModules.has(m.id)}
@@ -6927,6 +6946,9 @@ export function App() {
                       <span className="obModuleSize">~{m.sizeMb} MB</span>
                     </div>
                     {(m.installed || m.bundled) && <span className="obModuleBadge">{t("onboarding.modules.installed")}</span>}
+                    {m.id === "orchestration" && !m.installed && !m.bundled && (
+                      <span className="obModuleBadge" style={{ background: "#fef3c7", color: "#92400e" }}>Beta</span>
+                    )}
                   </label>
                 ))}
                 {obModules.length === 0 && <p style={{ color: "#94a3b8" }}>{t("onboarding.modules.loading")}</p>}

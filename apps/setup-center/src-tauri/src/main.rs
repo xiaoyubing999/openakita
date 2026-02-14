@@ -1385,6 +1385,44 @@ fn ensure_workspace_scaffold(dir: &Path) -> Result<(), String> {
         fs::write(&memory_md, DEFAULT_MEMORY).map_err(|e| format!("write identity/MEMORY.md failed: {e}"))?;
     }
 
+    // 人格预设文件：8 个标配预设 + user_custom 模板
+    // 从仓库 identity/personas/ 目录嵌入，确保新工作区开箱即用
+    {
+        const PERSONA_DEFAULT: &str = include_str!("../../../../identity/personas/default.md");
+        const PERSONA_BUSINESS: &str = include_str!("../../../../identity/personas/business.md");
+        const PERSONA_TECH_EXPERT: &str = include_str!("../../../../identity/personas/tech_expert.md");
+        const PERSONA_BUTLER: &str = include_str!("../../../../identity/personas/butler.md");
+        const PERSONA_GIRLFRIEND: &str = include_str!("../../../../identity/personas/girlfriend.md");
+        const PERSONA_BOYFRIEND: &str = include_str!("../../../../identity/personas/boyfriend.md");
+        const PERSONA_FAMILY: &str = include_str!("../../../../identity/personas/family.md");
+        const PERSONA_JARVIS: &str = include_str!("../../../../identity/personas/jarvis.md");
+        const PERSONA_USER_CUSTOM: &str = include_str!("../../../../identity/personas/user_custom.md");
+
+        let personas_dir = dir.join("identity").join("personas");
+        fs::create_dir_all(&personas_dir)
+            .map_err(|e| format!("create identity/personas dir failed: {e}"))?;
+
+        let presets: &[(&str, &str)] = &[
+            ("default.md", PERSONA_DEFAULT),
+            ("business.md", PERSONA_BUSINESS),
+            ("tech_expert.md", PERSONA_TECH_EXPERT),
+            ("butler.md", PERSONA_BUTLER),
+            ("girlfriend.md", PERSONA_GIRLFRIEND),
+            ("boyfriend.md", PERSONA_BOYFRIEND),
+            ("family.md", PERSONA_FAMILY),
+            ("jarvis.md", PERSONA_JARVIS),
+            ("user_custom.md", PERSONA_USER_CUSTOM),
+        ];
+
+        for (filename, content) in presets {
+            let path = personas_dir.join(filename);
+            if !path.exists() {
+                fs::write(&path, content)
+                    .map_err(|e| format!("write identity/personas/{filename} failed: {e}"))?;
+            }
+        }
+    }
+
     // 默认 llm_endpoints.json：用仓库内的 data/llm_endpoints.json.example 作为初始模板
     let llm = dir.join("data").join("llm_endpoints.json");
     if !llm.exists() {

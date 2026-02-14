@@ -152,6 +152,10 @@ jobs:
           pip install -e ".[all]"
           pip install pyinstaller
 
+      - name: Clean previous PyInstaller output
+        shell: bash
+        run: rm -rf dist/openakita-server build/openakita-server
+
       - name: Package Python backend (PyInstaller)
         run: python build/build_backend.py --mode ${{ matrix.build_mode }}
 
@@ -164,8 +168,11 @@ jobs:
         run: |
           RESOURCE_DIR="apps/setup-center/src-tauri/resources"
           mkdir -p "$RESOURCE_DIR"
+          # 清除旧的构建产物，防止 cp 冲突
+          rm -rf "$RESOURCE_DIR/openakita-server"
           cp -r dist/openakita-server "$RESOURCE_DIR/openakita-server"
           if [ "${{ matrix.build_mode }}" = "full" ] && [ -d "build/modules" ]; then
+            rm -rf "$RESOURCE_DIR/modules"
             cp -r build/modules "$RESOURCE_DIR/modules"
           fi
           echo "Resources copied:"
@@ -178,8 +185,8 @@ jobs:
       - name: Build Tauri bundles
         working-directory: apps/setup-center
         env:
-          # full 构建需要额外包含 modules 资源目录
-          TAURI_CONFIG: ${{ matrix.build_mode == 'full' && '{"bundle":{"resources":["resources/openakita-server/","resources/modules/"]}}' || '' }}
+          # full 构建需要额外包含 modules 资源目录；core 构建不设置此变量（空字符串会导致 JSON 解析失败）
+          TAURI_CONFIG: ${{ matrix.build_mode == 'full' && '{"bundle":{"resources":["resources/openakita-server/","resources/modules/"]}}' || '{}' }}
         run: npx tauri build --bundles "${{ matrix.bundles }}" ${{ matrix.args }}
 
       - name: List bundle outputs

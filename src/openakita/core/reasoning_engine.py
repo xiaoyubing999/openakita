@@ -977,8 +977,8 @@ class ReasoningEngine:
 
             current_model = self._brain.model
 
-            # ReAct multi-turn loop
-            max_iterations = min(settings.max_iterations, 10)
+            # ReAct multi-turn loop (与 run() 保持一致，由 settings 控制上限)
+            max_iterations = settings.max_iterations
             working_messages = list(messages)
 
             for _iteration in range(max_iterations):
