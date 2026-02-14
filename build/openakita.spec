@@ -214,49 +214,60 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="openakita-server",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-# On macOS, remove conflicting Python file before COLLECT creates symlink
-# This is a workaround for PyInstaller bug with Python.framework symlinks
 import sys as _sys
-_binaries_filtered = a.binaries
-if _sys.platform == "darwin":
-    # Remove the Python file that conflicts with symlink creation
-    _internal_python = PROJECT_ROOT / "dist" / "openakita-server" / "_internal" / "Python"
-    if _internal_python.exists():
-        print(f"[spec] Removing conflicting file: {_internal_python}")
-        _internal_python.unlink()
-    
-    # Also try to remove the entire _internal directory if it exists
-    _internal_dir = PROJECT_ROOT / "dist" / "openakita-server" / "_internal"
-    if _internal_dir.exists():
-        print(f"[spec] Removing _internal directory: {_internal_dir}")
-        shutil.rmtree(_internal_dir)
-    
-    print(f"[spec] macOS cleanup completed, binaries count: {len(a.binaries)}")
 
-coll = COLLECT(
-    exe,
-    _binaries_filtered,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name="openakita-server",
-)
+# On macOS, use onefile mode to avoid COLLECT symlink issues
+# On other platforms, use onedir mode for faster startup
+if _sys.platform == "darwin":
+    # macOS: bundle everything into single executable to avoid symlink conflicts
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,  # Include binaries in EXE
+        a.datas,     # Include datas in EXE
+        [],
+        name="openakita-server",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,  # Disable UPX on macOS for stability
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    # No COLLECT needed for onefile mode - create output directory structure manually
+    _output_dir = PROJECT_ROOT / "dist" / "openakita-server"
+    _output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[spec] macOS onefile mode - output dir: {_output_dir}")
+else:
+    # Windows/Linux: use onedir mode with COLLECT
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="openakita-server",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name="openakita-server",
+    )
