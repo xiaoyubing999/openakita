@@ -77,6 +77,7 @@ jobs:
 
   desktop_release:
     needs: python_release
+    if: always()  # 无论 python_release 成功与否都运行
     permissions:
       contents: write
     strategy:
