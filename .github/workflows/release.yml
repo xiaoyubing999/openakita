@@ -150,7 +150,7 @@ jobs:
       - name: Install Python project and PyInstaller
         run: |
           pip install -e ".[all]"
-          pip install pyinstaller
+          pip install "pyinstaller>=6.18.0"
 
       - name: Clean previous PyInstaller output
         shell: bash
