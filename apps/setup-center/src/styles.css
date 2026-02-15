@@ -2101,6 +2101,11 @@ button:disabled {
   overflow-y: auto;
 }
 
+.chainThinkingEmpty {
+  font-style: italic;
+  opacity: 0.4;
+}
+
 .chainToolList {
   padding-left: 16px;
   display: flex;

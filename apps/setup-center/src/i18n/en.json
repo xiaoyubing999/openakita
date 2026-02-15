@@ -70,7 +70,8 @@
     "chainSummary": "Thinking process",
     "explored": "Explored {{desc}}",
     "chainCollapsed": "{{count}} reasoning steps",
-    "contextCompressed": "Context compressed: {{before}}K → {{after}}K tokens"
+    "contextCompressed": "Context compressed: {{before}}K → {{after}}K tokens",
+    "noThinkingContent": "Model did not return detailed thinking"
   },
   "skills": {
     "title": "Skill Manager",

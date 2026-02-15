@@ -70,7 +70,8 @@
     "chainSummary": "思维过程",
     "explored": "处理了 {{desc}}",
     "chainCollapsed": "{{count}} 步推理过程",
-    "contextCompressed": "上下文压缩: {{before}}K → {{after}}K tokens"
+    "contextCompressed": "上下文压缩: {{before}}K → {{after}}K tokens",
+    "noThinkingContent": "模型未返回详细思考过程"
   },
   "skills": {
     "title": "技能管理",

@@ -1184,6 +1184,9 @@ class ReasoningEngine:
                 _thinking_duration = int((time.time() - _thinking_t0) * 1000)
                 if decision.thinking_content:
                     yield {"type": "thinking_delta", "content": decision.thinking_content}
+                elif decision.text_content:
+                    # 模型不支持 extended thinking 时，用 text_content 作为思考预览
+                    yield {"type": "thinking_delta", "content": decision.text_content[:500]}
                 yield {"type": "thinking_end", "duration_ms": _thinking_duration}
 
                 if task_monitor:

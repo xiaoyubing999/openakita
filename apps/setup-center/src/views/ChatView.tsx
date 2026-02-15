@@ -291,11 +291,15 @@ function ChainGroupItem({ group, onToggle, isLast, streaming }: {
       {showContent && (
         <>
           {/* Thinking content (inline visible, Cursor style) */}
-          {group.thinking?.content && (
+          {group.thinking?.content ? (
             <div className="chainThinkingContent">
               {group.thinking.content}
             </div>
-          )}
+          ) : (!isActive && group.toolCalls.length === 0) ? (
+            <div className="chainThinkingContent chainThinkingEmpty">
+              {t("chat.noThinkingContent")}
+            </div>
+          ) : null}
 
           {/* Tool calls */}
           {group.toolCalls.length > 0 && (
