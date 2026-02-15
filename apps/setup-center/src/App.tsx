@@ -899,6 +899,7 @@ export function App() {
   const [skillsTouched, setSkillsTouched] = useState(false);
   const [secretShown, setSecretShown] = useState<Record<string, boolean>>({});
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState<boolean | null>(null);
   // autoStartBackend 已合并到"开机自启"：--background 模式自动拉起后端，无需独立开关
   const [serviceStatus, setServiceStatus] = useState<{ running: boolean; pid: number | null; pidFile: string } | null>(null);
   // 心跳状态机: "alive" | "suspect" | "degraded" | "dead"
@@ -3077,6 +3078,12 @@ export function App() {
       } catch {
         setAutostartEnabled(null);
       }
+      try {
+        const au = await invoke<boolean>("get_auto_update");
+        setAutoUpdateEnabled(au);
+      } catch {
+        setAutoUpdateEnabled(null);
+      }
       // autoStartBackend 已合并到开机自启，不再单独获取
 
       // Local mode (HTTP not reachable): check PID-based service status
@@ -3400,12 +3407,13 @@ export function App() {
     await doStartLocalService(wsId);
   }
 
-  // ── Check for app updates once desktop version is known ──
+  // ── Check for app updates once desktop version is known (respects auto-update toggle) ──
   useEffect(() => {
     if (desktopVersion === "0.0.0") return; // not yet loaded
+    if (autoUpdateEnabled === false) return; // user disabled auto-update
     checkForAppUpdate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [desktopVersion]);
+  }, [desktopVersion, autoUpdateEnabled]);
 
   /** Stop the running service: try API shutdown first, then PID kill, then verify. */
   async function doStopService(wsId?: string | null) {
@@ -3752,6 +3760,28 @@ export function App() {
           </div>
 
           {/* Auto-start backend 已合并到"开机自启"中，不再单独展示 */}
+
+          {/* Auto-update toggle */}
+          <div className="statusCard">
+            <div className="statusCardHead">
+              <span className="statusCardLabel">{t("status.autoUpdate")}</span>
+              {autoUpdateEnabled ? <DotGreen /> : <DotGray />}
+            </div>
+            <div className="statusCardValue">{autoUpdateEnabled ? t("status.on") : t("status.off")}</div>
+            <div className="statusCardSub">{t("status.autoUpdateHint")}</div>
+            <div className="statusCardActions">
+              <button className="btnSmall" onClick={async () => {
+                setBusy(t("common.loading")); setError(null);
+                try {
+                  const next = !autoUpdateEnabled;
+                  await invoke("set_auto_update", { enabled: next });
+                  setAutoUpdateEnabled(next);
+                  // 关闭时清除已有的更新通知
+                  if (!next) { setNewRelease(null); setUpdateAvailable(null); setUpdateProgress({ status: "idle" }); }
+                } catch (e) { setError(String(e)); } finally { setBusy(null); }
+              }} disabled={autoUpdateEnabled === null || !!busy}>{autoUpdateEnabled ? t("status.off") : t("status.on")}</button>
+            </div>
+          </div>
         </div>
 
         {/* LLM Endpoints compact table */}

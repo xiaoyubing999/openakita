@@ -78,6 +78,12 @@ struct AppStateFile {
     last_installed_version: Option<String>,
     #[serde(default)]
     install_mode: Option<String>,
+    #[serde(default = "default_auto_update")]
+    auto_update: bool,
+}
+
+fn default_auto_update() -> bool {
+    true
 }
 
 fn default_config_version() -> u32 {
@@ -1654,6 +1660,8 @@ fn main() {
             set_tray_backend_status,
             get_auto_start_backend,
             set_auto_start_backend,
+            get_auto_update,
+            set_auto_update,
             openakita_list_skills,
             openakita_list_providers,
             openakita_list_models,
@@ -2086,6 +2094,19 @@ fn get_auto_start_backend() -> Result<bool, String> {
 fn set_auto_start_backend(enabled: bool) -> Result<(), String> {
     let mut state = read_state_file();
     state.auto_start_backend = Some(enabled);
+    write_state_file(&state)
+}
+
+#[tauri::command]
+fn get_auto_update() -> Result<bool, String> {
+    let state = read_state_file();
+    Ok(state.auto_update)
+}
+
+#[tauri::command]
+fn set_auto_update(enabled: bool) -> Result<(), String> {
+    let mut state = read_state_file();
+    state.auto_update = enabled;
     write_state_file(&state)
 }
 
