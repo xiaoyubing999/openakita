@@ -1151,9 +1151,19 @@ export function ChatView({
   const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
 
-  // 思维链 & 显示模式
-  const [showChain, setShowChain] = useState(true);
-  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("flat");
+  // 思维链 & 显示模式（从 localStorage 恢复用户习惯）
+  const [showChain, setShowChain] = useState(() => {
+    try { const v = localStorage.getItem("chat_showChain"); return v !== null ? v === "true" : true; }
+    catch { return true; }
+  });
+  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>(() => {
+    try { const v = localStorage.getItem("chat_displayMode"); return (v === "bubble" || v === "flat") ? v : "flat"; }
+    catch { return "flat"; }
+  });
+
+  // 持久化用户偏好
+  useEffect(() => { try { localStorage.setItem("chat_showChain", String(showChain)); } catch {} }, [showChain]);
+  useEffect(() => { try { localStorage.setItem("chat_displayMode", displayMode); } catch {} }, [displayMode]);
 
   const [isRecording, setIsRecording] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
