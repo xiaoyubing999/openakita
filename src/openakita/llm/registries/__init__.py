@@ -56,7 +56,23 @@ def _build_registries() -> list[ProviderRegistry]:
             )
         mod = import_module(mod_name, package=__package__)
         cls = getattr(mod, cls_name)
-        registries.append(cls())
+        instance = cls()
+
+        # 用 providers.json 中的声明覆盖 registry class 上的默认 info，
+        # 这样同一个 class（如 OpenAIRegistry）可以被多个服务商复用
+        # （如 Ollama、LM Studio 都使用 OpenAI 兼容协议）
+        instance.info = ProviderInfo(
+            name=entry["name"],
+            slug=entry["slug"],
+            api_type=entry["api_type"],
+            default_base_url=entry["default_base_url"],
+            api_key_env_suggestion=entry.get("api_key_env_suggestion", ""),
+            supports_model_list=entry.get("supports_model_list", True),
+            supports_capability_api=entry.get("supports_capability_api", False),
+            requires_api_key=entry.get("requires_api_key", True),
+            is_local=entry.get("is_local", False),
+        )
+        registries.append(instance)
     return registries
 
 

@@ -26,11 +26,19 @@ type IMSession = {
   lastMessage: string | null;
 };
 
+type ChainSummaryItem = {
+  iteration: number;
+  thinking_preview: string;
+  thinking_duration_ms: number;
+  tools: { name: string; input_preview: string }[];
+};
+
 type IMMessage = {
   role: string;
   content: string;
   timestamp: string;
   metadata?: Record<string, unknown> | null;
+  chain_summary?: ChainSummaryItem[] | null;
 };
 
 const API_BASE = "http://127.0.0.1:18900";
@@ -193,6 +201,10 @@ export function IMView({ serviceRunning }: { serviceRunning: boolean }) {
                     {msg.role === "user" ? t("im.user") : msg.role === "system" ? t("im.system") : t("im.bot")}
                     <span className="imMsgTime">{msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ""}</span>
                   </div>
+                  {/* 思维链摘要 (bot 消息) */}
+                  {msg.role !== "user" && msg.chain_summary && msg.chain_summary.length > 0 && (
+                    <IMChainSummary chain={msg.chain_summary} />
+                  )}
                   <div className="imMsgContent">
                     <MediaContent content={msg.content} />
                   </div>
@@ -240,4 +252,47 @@ function MediaContent({ content }: { content: string }) {
   }
 
   return <>{parts.length > 0 ? parts : content}</>;
+}
+
+/** IM 思维链简化摘要组件 */
+function IMChainSummary({ chain }: { chain: ChainSummaryItem[] }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      className="imChainSummary"
+      onClick={() => setExpanded(v => !v)}
+      style={{ cursor: "pointer" }}
+    >
+      <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 2 }}>
+        {t("chat.chainSummary")} ({chain.length})
+        <span style={{ marginLeft: 4, fontSize: 10 }}>{expanded ? "▼" : "▶"}</span>
+      </div>
+      {expanded && chain.map((item, idx) => (
+        <div key={idx} className="imChainGroup">
+          {item.context_compressed && (
+            <div className="imChainCompressedLine">
+              {t("chat.contextCompressed", {
+                before: Math.round(item.context_compressed.before_tokens / 1000),
+                after: Math.round(item.context_compressed.after_tokens / 1000),
+              })}
+            </div>
+          )}
+          {item.thinking_preview && (
+            <div className="imChainThinkingLine">
+              {t("chat.thoughtFor", { seconds: (item.thinking_duration_ms / 1000).toFixed(1) })}
+              {" — "}
+              {item.thinking_preview}
+            </div>
+          )}
+          {item.tools.map((tool, ti) => (
+            <div key={ti} className="imChainToolLine">
+              {tool.name}{tool.input_preview ? `: ${tool.input_preview}` : ""}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
 }

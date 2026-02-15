@@ -19,6 +19,8 @@ class ProviderInfo:
     api_key_env_suggestion: str  # 建议的环境变量名
     supports_model_list: bool  # 是否支持模型列表 API
     supports_capability_api: bool  # API 是否返回能力信息
+    requires_api_key: bool = True  # 是否需要 API Key（本地服务如 Ollama 为 False）
+    is_local: bool = False  # 是否为本地服务商
 
 
 @dataclass

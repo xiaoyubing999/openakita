@@ -61,7 +61,16 @@
     "startService": "Start Service",
     "connectService": "Connect to Running Service",
     "serviceHint": "Chat requires the backend service running. Start this workspace's service or connect to an existing serve instance.",
-    "title": "AI Chat Assistant"
+    "title": "AI Chat Assistant",
+    "thoughtFor": "Thought for {{seconds}}s",
+    "showChain": "Show thinking chain",
+    "hideChain": "Hide thinking chain",
+    "bubbleMode": "Bubble mode",
+    "flatMode": "Flat mode",
+    "chainSummary": "Thinking process",
+    "explored": "Explored {{desc}}",
+    "chainCollapsed": "{{count}} reasoning steps",
+    "contextCompressed": "Context compressed: {{before}}K → {{after}}K tokens"
   },
   "skills": {
     "title": "Skill Manager",
@@ -450,7 +459,10 @@
     "testAuthError": "Authentication failed, check API Key",
     "testForbidden": "Access denied, check API Key permissions",
     "testNotFound": "Endpoint not found, check API URL",
-    "testTimeout": "Connection timed out, check network"
+    "testTimeout": "Connection timed out, check network",
+    "localNoKey": "No API Key required",
+    "localKeyPlaceholder": "Local service, no API Key needed",
+    "localHint": "Local services (Ollama / LM Studio) don't require a real API Key, a placeholder has been auto-filled"
   },
   "welcome": {
     "title": "Setup Guide",

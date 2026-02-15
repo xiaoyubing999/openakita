@@ -106,6 +106,9 @@ class ReasoningEngine:
         self._checkpoints: list[Checkpoint] = []
         self._tool_failure_counter: dict[str, int] = {}  # tool_name -> consecutive_failures
 
+        # 思维链: 暂存最近一次推理的 react_trace，供 agent_handler 读取
+        self._last_react_trace: list[dict] = []
+
         # 浏览器"读页面状态"工具
         self._browser_page_read_tools = frozenset({
             "browser_get_content", "browser_screenshot",
@@ -503,18 +506,30 @@ class ReasoningEngine:
                     no_confirmation_text_count = 0
 
             # 上下文压缩
+            _ctx_compressed_info: dict | None = None
             if iteration > 0:
+                _before_tokens = self._context_manager.estimate_messages_tokens(working_messages)
                 working_messages = await self._context_manager.compress_if_needed(
                     working_messages,
                     system_prompt=_build_effective_system_prompt(),
                     tools=tools,
                 )
+                _after_tokens = self._context_manager.estimate_messages_tokens(working_messages)
+                if _after_tokens < _before_tokens:
+                    _ctx_compressed_info = {
+                        "before_tokens": _before_tokens,
+                        "after_tokens": _after_tokens,
+                    }
+                    logger.info(
+                        f"[ReAct] Context compressed: {_before_tokens} → {_after_tokens} tokens"
+                    )
 
             # ==================== REASON 阶段 ====================
             logger.info(f"[ReAct] Iter {iteration+1}/{max_iterations} — REASON (model={current_model})")
             if state.status != TaskStatus.REASONING:
                 state.transition(TaskStatus.REASONING)
 
+            _thinking_t0 = time.time()  # 思维链: 记录 thinking 开始时间
             try:
                 decision = await self._reason(
                     working_messages,
@@ -548,6 +563,8 @@ class ReasoningEngine:
                 else:
                     raise
 
+            _thinking_duration_ms = int((time.time() - _thinking_t0) * 1000)  # 思维链: 计算 thinking 耗时
+
             if task_monitor:
                 task_monitor.end_iteration(decision.text_content or "")
 
@@ -563,6 +580,7 @@ class ReasoningEngine:
                 "decision_type": decision.type.value if hasattr(decision.type, "value") else str(decision.type),
                 "model": current_model,
                 "thinking": (decision.thinking_content or "")[:500] if decision.thinking_content else None,
+                "thinking_duration_ms": _thinking_duration_ms,
                 "text": (decision.text_content or "")[:2000] if decision.text_content else None,
                 "tool_calls": [
                     {
@@ -577,6 +595,7 @@ class ReasoningEngine:
                     "input": _in_tokens,
                     "output": _out_tokens,
                 },
+                "context_compressed": _ctx_compressed_info,
             }
             tool_names_for_log = [tc.get("name", "?") for tc in (decision.tool_calls or [])]
             logger.info(
@@ -906,6 +925,10 @@ class ReasoningEngine:
         *,
         tools: list[dict] | None = None,
         system_prompt: str = "",
+        base_system_prompt: str = "",
+        task_description: str = "",
+        task_monitor: Any = None,
+        session_type: str = "desktop",
         plan_mode: bool = False,
         endpoint_override: str | None = None,
         conversation_id: str | None = None,
@@ -913,59 +936,68 @@ class ReasoningEngine:
         """
         流式推理循环，为 HTTP API (SSE) 设计。
 
-        调用方（如 Agent）需传入 tools 和 system_prompt，
-        与 run() 保持一致的上下文。
+        与 run() 保持特性对齐：TaskMonitor、循环检测、模型切换、
+        LLM 错误重试、任务完成度验证、Rollback 等。
+
+        调用方（如 Agent.chat_with_session_stream）需传入 tools 和 system_prompt，
+        新增参数均 optional，向后兼容老的调用方式。
 
         Yields dict events:
-        - {"type": "thinking_start"}
-        - {"type": "thinking_delta", "content": "..."}
-        - {"type": "thinking_end"}
+        - {"type": "iteration_start", "iteration": N}
+        - {"type": "context_compressed", "before_tokens": N, "after_tokens": M}
+        - {"type": "thinking_start"} / {"type": "thinking_delta"} / {"type": "thinking_end"}
         - {"type": "text_delta", "content": "..."}
-        - {"type": "tool_call_start", "tool": "...", "args": {...}}
-        - {"type": "tool_call_end", "tool": "...", "result": "..."}
-        - {"type": "plan_created", "plan": {...}}
-        - {"type": "plan_step_updated", "stepIdx": N, "status": "..."}
+        - {"type": "tool_call_start"} / {"type": "tool_call_end"}
+        - {"type": "plan_created"} / {"type": "plan_step_updated"}
+        - {"type": "ask_user", "question": "..."}
         - {"type": "error", "message": "..."}
         - {"type": "done"}
         """
         tools = tools or []
 
-        # 在 try 外初始化，避免 except 块中 UnboundLocalError
+        # 在 try 外初始化，避免 except/finally 块中 UnboundLocalError
         react_trace: list[dict] = []
         _trace_started_at = datetime.now().isoformat()
+        _endpoint_switched = False
+
+        # Task state
+        state = self._state.current_task
+        if not state or not state.is_active:
+            state = self._state.begin_task()
 
         try:
-            # Build system prompt with optional plan context
-            def _build_stream_system_prompt() -> str:
-                """动态追加活跃 Plan（与 run() 中逻辑一致）"""
+            # === 动态 System Prompt（追加活跃 Plan） ===
+            _base_sp = base_system_prompt or system_prompt
+
+            def _build_effective_prompt() -> str:
                 try:
                     from ..tools.handlers.plan import get_active_plan_prompt
-                    prompt = system_prompt
+                    prompt = _base_sp
                     if conversation_id:
                         plan_section = get_active_plan_prompt(conversation_id)
                         if plan_section:
                             prompt += f"\n\n{plan_section}\n"
                     return prompt
                 except Exception:
-                    return system_prompt
+                    return _base_sp
 
-            effective_prompt = _build_stream_system_prompt()
+            effective_prompt = _build_effective_prompt()
             if plan_mode:
-                effective_prompt += "\n\n[PLAN MODE] 用户请求 Plan 模式。请先制定详细计划（使用 create_plan 工具），然后按计划执行。"
+                effective_prompt += (
+                    "\n\n[PLAN MODE] 用户请求 Plan 模式。"
+                    "请先制定详细计划（使用 create_plan 工具），然后按计划执行。"
+                )
 
-            # 如果指定了端点，通过 LLMClient.switch_model 临时切换
-            # 关键：必须使用 per-conversation override，避免污染全局状态
-            # 否则 IM 通道、调度器等其他 LLM 调用会在 3 分钟内被错误地路由到该端点
+            # === 端点覆盖 ===
             _endpoint_switched = False
             if endpoint_override:
-                # 确保有 conversation_id —— 无 id 时生成临时 id，避免设置全局 override
                 if not conversation_id:
                     conversation_id = f"_stream_{uuid.uuid4().hex[:12]}"
                 llm_client = getattr(self._brain, "_llm_client", None)
                 if llm_client and hasattr(llm_client, "switch_model"):
                     ok, msg = llm_client.switch_model(
                         endpoint_name=endpoint_override,
-                        hours=0.05,  # ~3 分钟有效
+                        hours=0.05,
                         reason=f"chat endpoint override: {endpoint_override}",
                         conversation_id=conversation_id,
                     )
@@ -975,7 +1007,6 @@ class ReasoningEngine:
                         return
                     _endpoint_switched = True
 
-            # 获取实际使用的模型名：如果切换了端点，从 LLMClient 获取该端点的模型名
             current_model = self._brain.model
             if _endpoint_switched and endpoint_override:
                 llm_client = getattr(self._brain, "_llm_client", None)
@@ -984,13 +1015,116 @@ class ReasoningEngine:
                     if _provider:
                         current_model = _provider.model
 
-            # ReAct multi-turn loop (与 run() 保持一致，由 settings 控制上限)
+            # === 与 run() 一致的循环控制变量 ===
             max_iterations = settings.max_iterations
             working_messages = list(messages)
 
+            # ForceToolCall 配置
+            if session_type == "im":
+                base_force_retries = 0
+            else:
+                base_force_retries = max(0, int(getattr(settings, "force_tool_call_max_retries", 1)))
+
+            max_no_tool_retries = self._effective_force_retries(base_force_retries, conversation_id)
+            max_verify_retries = 3
+            max_confirmation_text_retries = 1
+
+            executed_tool_names: list[str] = []
+            delivery_receipts: list[dict] = []
+            _last_browser_url = ""
+            consecutive_tool_rounds = 0
+            no_tool_call_count = 0
+            verify_incomplete_count = 0
+            no_confirmation_text_count = 0
+            tools_executed_in_task = False
+
+            # 循环检测
+            recent_tool_signatures: list[str] = []
+            tool_pattern_window = 8
+            llm_self_check_interval = 10
+            extreme_safety_threshold = 50
+
+            def _make_tool_sig(tc: dict) -> str:
+                nonlocal _last_browser_url
+                name = tc.get("name", "")
+                inp = tc.get("input", {})
+                if name == "browser_navigate":
+                    _last_browser_url = inp.get("url", "")
+                try:
+                    param_str = json.dumps(inp, sort_keys=True, ensure_ascii=False)
+                except Exception:
+                    param_str = str(inp)
+                if name in self._browser_page_read_tools and len(param_str) <= 20 and _last_browser_url:
+                    param_str = f"{param_str}|url={_last_browser_url}"
+                param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
+                return f"{name}({param_hash})"
+
+            # ==================== 主循环 ====================
+            logger.info(
+                f"[ReAct-Stream] === Loop started (max_iterations={max_iterations}, model={current_model}) ==="
+            )
+
             for _iteration in range(max_iterations):
-                logger.info(f"[ReAct-Stream] Iter {_iteration+1}/{max_iterations} — REASON (model={current_model})")
-                # Reason phase
+                state.iteration = _iteration
+
+                # --- 取消检查 ---
+                if state.cancelled:
+                    logger.info(f"[ReAct-Stream] Task cancelled at iteration start: {state.cancel_reason}")
+                    self._save_react_trace(react_trace, conversation_id, session_type, "cancelled", _trace_started_at)
+                    yield {"type": "text_delta", "content": "✅ 任务已停止。"}
+                    yield {"type": "done"}
+                    return
+
+                # --- TaskMonitor: 迭代开始 + 模型切换检查 ---
+                if task_monitor:
+                    task_monitor.begin_iteration(_iteration + 1, current_model)
+                    switch_result = self._check_model_switch(
+                        task_monitor, state, working_messages, current_model
+                    )
+                    if switch_result:
+                        current_model, working_messages = switch_result
+                        no_tool_call_count = 0
+                        tools_executed_in_task = False
+                        verify_incomplete_count = 0
+                        executed_tool_names = []
+                        consecutive_tool_rounds = 0
+                        recent_tool_signatures = []
+                        no_confirmation_text_count = 0
+
+                logger.info(
+                    f"[ReAct-Stream] Iter {_iteration+1}/{max_iterations} — REASON (model={current_model})"
+                )
+
+                # --- 上下文压缩（从第 2 轮迭代开始） ---
+                _ctx_compressed_info: dict | None = None
+                if _iteration > 0:
+                    effective_prompt = _build_effective_prompt()  # 每轮刷新 Plan
+                    _before_tokens = self._context_manager.estimate_messages_tokens(working_messages)
+                    working_messages = await self._context_manager.compress_if_needed(
+                        working_messages,
+                        system_prompt=effective_prompt,
+                        tools=tools,
+                    )
+                    _after_tokens = self._context_manager.estimate_messages_tokens(working_messages)
+                    if _after_tokens < _before_tokens:
+                        _ctx_compressed_info = {
+                            "before_tokens": _before_tokens,
+                            "after_tokens": _after_tokens,
+                        }
+                        logger.info(
+                            f"[ReAct-Stream] Context compressed: {_before_tokens} → {_after_tokens} tokens"
+                        )
+                        yield {
+                            "type": "context_compressed",
+                            "before_tokens": _before_tokens,
+                            "after_tokens": _after_tokens,
+                        }
+
+                # --- 思维链: 迭代开始事件 ---
+                yield {"type": "iteration_start", "iteration": _iteration + 1}
+
+                # --- Reason phase ---
+                _thinking_t0 = time.time()
                 yield {"type": "thinking_start"}
 
                 try:
@@ -1008,20 +1142,50 @@ class ReasoningEngine:
                             decision = hb_event["decision"]
                     if decision is None:
                         raise RuntimeError("_reason returned no decision")
+
+                    if task_monitor:
+                        task_monitor.reset_retry_count()
+
                 except Exception as e:
-                    self._save_react_trace(react_trace, conversation_id, "desktop", f"reason_error: {str(e)[:100]}", _trace_started_at)
-                    yield {"type": "thinking_end"}
-                    yield {"type": "error", "message": f"推理失败: {str(e)[:300]}"}
-                    yield {"type": "done"}
-                    return
+                    # --- LLM Error Handling（与 run() 一致） ---
+                    retry_result = self._handle_llm_error(
+                        e, task_monitor, state, working_messages, current_model
+                    )
+                    _thinking_duration = int((time.time() - _thinking_t0) * 1000)
+                    yield {"type": "thinking_end", "duration_ms": _thinking_duration}
+
+                    if retry_result == "retry":
+                        await asyncio.sleep(2)
+                        continue
+                    elif isinstance(retry_result, tuple):
+                        current_model, working_messages = retry_result
+                        no_tool_call_count = 0
+                        tools_executed_in_task = False
+                        verify_incomplete_count = 0
+                        executed_tool_names = []
+                        consecutive_tool_rounds = 0
+                        recent_tool_signatures = []
+                        no_confirmation_text_count = 0
+                        continue
+                    else:
+                        self._save_react_trace(
+                            react_trace, conversation_id, session_type,
+                            f"reason_error: {str(e)[:100]}", _trace_started_at,
+                        )
+                        yield {"type": "error", "message": f"推理失败: {str(e)[:300]}"}
+                        yield {"type": "done"}
+                        return
 
                 # Emit thinking content
+                _thinking_duration = int((time.time() - _thinking_t0) * 1000)
                 if decision.thinking_content:
                     yield {"type": "thinking_delta", "content": decision.thinking_content}
-                yield {"type": "thinking_end"}
+                yield {"type": "thinking_end", "duration_ms": _thinking_duration}
 
-                # -- 收集 ReAct trace 数据 --
-                # token 信息从 raw_response.usage 提取
+                if task_monitor:
+                    task_monitor.end_iteration(decision.text_content or "")
+
+                # -- 收集 ReAct trace --
                 _raw = decision.raw_response
                 _usage = getattr(_raw, "usage", None) if _raw else None
                 _in_tokens = getattr(_usage, "input_tokens", 0) if _usage else 0
@@ -1032,6 +1196,7 @@ class ReasoningEngine:
                     "decision_type": decision.type.value if hasattr(decision.type, "value") else str(decision.type),
                     "model": current_model,
                     "thinking": (decision.thinking_content or "")[:500] if decision.thinking_content else None,
+                    "thinking_duration_ms": _thinking_duration,
                     "text": (decision.text_content or "")[:2000] if decision.text_content else None,
                     "tool_calls": [
                         {
@@ -1042,48 +1207,84 @@ class ReasoningEngine:
                         for tc in (decision.tool_calls or [])
                     ],
                     "tool_results": [],
-                    "tokens": {
-                        "input": _in_tokens,
-                        "output": _out_tokens,
-                    },
+                    "tokens": {"input": _in_tokens, "output": _out_tokens},
+                    "context_compressed": _ctx_compressed_info,
                 }
                 tool_names_log = [tc.get("name", "?") for tc in (decision.tool_calls or [])]
                 logger.info(
                     f"[ReAct-Stream] Iter {_iteration+1} — decision={_iter_trace['decision_type']}, "
-                    f"tools={tool_names_log}, "
-                    f"tokens_in={_in_tokens}, tokens_out={_out_tokens}"
+                    f"tools={tool_names_log}, tokens_in={_in_tokens}, tokens_out={_out_tokens}"
                 )
 
-                # Final answer: stream text
+                # ==================== FINAL_ANSWER ====================
                 if decision.type == DecisionType.FINAL_ANSWER:
-                    text = decision.text_content or ""
-                    react_trace.append(_iter_trace)
-                    self._save_react_trace(react_trace, conversation_id, "desktop", "completed", _trace_started_at)
-                    logger.info(
-                        f"[ReAct-Stream] === COMPLETED after {_iteration+1} iterations ==="
-                    )
-                    # Stream in chunks for better UX
-                    chunk_size = 20
-                    for i in range(0, len(text), chunk_size):
-                        yield {"type": "text_delta", "content": text[i:i + chunk_size]}
-                        await asyncio.sleep(0.01)  # Small delay for streaming effect
-                    yield {"type": "done"}
-                    return
+                    consecutive_tool_rounds = 0
 
-                # Tool calls: emit each call
-                if decision.type == DecisionType.TOOL_CALLS and decision.tool_calls:
-                    # assistant_content 只追加一次（完整的 assistant turn 包含所有 tool_use）
+                    # 任务完成度验证（与 run() 一致）
+                    result = await self._handle_final_answer(
+                        decision=decision,
+                        working_messages=working_messages,
+                        original_messages=messages,
+                        tools_executed_in_task=tools_executed_in_task,
+                        executed_tool_names=executed_tool_names,
+                        delivery_receipts=delivery_receipts,
+                        no_tool_call_count=no_tool_call_count,
+                        verify_incomplete_count=verify_incomplete_count,
+                        no_confirmation_text_count=no_confirmation_text_count,
+                        max_no_tool_retries=max_no_tool_retries,
+                        max_verify_retries=max_verify_retries,
+                        max_confirmation_text_retries=max_confirmation_text_retries,
+                        base_force_retries=base_force_retries,
+                        conversation_id=conversation_id,
+                    )
+
+                    if isinstance(result, str):
+                        # 最终答案 → stream 给前端
+                        react_trace.append(_iter_trace)
+                        self._save_react_trace(
+                            react_trace, conversation_id, session_type, "completed", _trace_started_at
+                        )
+                        state.transition(TaskStatus.COMPLETED)
+                        logger.info(
+                            f"[ReAct-Stream] === COMPLETED after {_iteration+1} iterations ==="
+                        )
+                        chunk_size = 20
+                        for i in range(0, len(result), chunk_size):
+                            yield {"type": "text_delta", "content": result[i:i + chunk_size]}
+                            await asyncio.sleep(0.01)
+                        yield {"type": "done"}
+                        return
+                    else:
+                        # 验证不通过 → 继续循环
+                        logger.info(
+                            f"[ReAct-Stream] Iter {_iteration+1} — VERIFY: incomplete, continuing loop"
+                        )
+                        react_trace.append(_iter_trace)
+                        state.transition(TaskStatus.VERIFYING)
+                        (
+                            working_messages,
+                            no_tool_call_count,
+                            verify_incomplete_count,
+                            no_confirmation_text_count,
+                            max_no_tool_retries,
+                        ) = result
+                        continue
+
+                # ==================== TOOL_CALLS ====================
+                elif decision.type == DecisionType.TOOL_CALLS and decision.tool_calls:
+                    state.transition(TaskStatus.ACTING)
+
                     working_messages.append({
                         "role": "assistant",
                         "content": decision.assistant_content or [{"type": "text", "text": ""}],
                     })
 
-                    # ---- ask_user 拦截（Web Chat 模式） ----
+                    # ---- ask_user 拦截 ----
                     ask_user_calls = [tc for tc in decision.tool_calls if tc.get("name") == "ask_user"]
                     other_tool_calls = [tc for tc in decision.tool_calls if tc.get("name") != "ask_user"]
 
                     if ask_user_calls:
-                        # 先执行非 ask_user 的工具
+                        # 先执行非 ask_user 工具
                         tool_results_for_msg: list[dict] = []
                         for tc in other_tool_calls:
                             t_name = tc.get("name", "unknown")
@@ -1097,14 +1298,14 @@ class ReasoningEngine:
                                     session_id=conversation_id,
                                 )
                                 r = str(r) if r else ""
-                            except Exception as e:
-                                r = f"Tool error: {e}"
+                            except Exception as exc:
+                                r = f"Tool error: {exc}"
                             yield {"type": "tool_call_end", "tool": t_name, "result": r[:2000], "id": t_id}
                             tool_results_for_msg.append({
                                 "type": "tool_result", "tool_use_id": t_id, "content": r[:4000],
                             })
 
-                        # 提取 ask_user 问题和选项并发送事件
+                        # ask_user 事件
                         ask_input = ask_user_calls[0].get("input", {})
                         ask_q = ask_input.get("question", "")
                         ask_options = ask_input.get("options")
@@ -1117,7 +1318,6 @@ class ReasoningEngine:
                             "question": question_text,
                             "conversation_id": conversation_id,
                         }
-                        # 单问题选项（向后兼容）
                         if ask_options and isinstance(ask_options, list):
                             event["options"] = [
                                 {"id": str(o.get("id", "")), "label": str(o.get("label", ""))}
@@ -1126,16 +1326,12 @@ class ReasoningEngine:
                             ]
                         if ask_allow_multiple:
                             event["allow_multiple"] = True
-                        # 多问题支持
                         if ask_questions and isinstance(ask_questions, list):
                             parsed_questions = []
                             for q in ask_questions:
                                 if not isinstance(q, dict) or not q.get("id") or not q.get("prompt"):
                                     continue
-                                pq: dict = {
-                                    "id": str(q["id"]),
-                                    "prompt": str(q["prompt"]),
-                                }
+                                pq: dict = {"id": str(q["id"]), "prompt": str(q["prompt"])}
                                 q_options = q.get("options")
                                 if q_options and isinstance(q_options, list):
                                     pq["options"] = [
@@ -1149,12 +1345,14 @@ class ReasoningEngine:
                             if parsed_questions:
                                 event["questions"] = parsed_questions
                         yield event
-                        # 中断流：前端收到 ask_user 后，用户回复将作为新一轮 chat 请求发送
                         react_trace.append(_iter_trace)
-                        self._save_react_trace(react_trace, conversation_id, "desktop", "ask_user", _trace_started_at)
+                        self._save_react_trace(
+                            react_trace, conversation_id, session_type, "ask_user", _trace_started_at
+                        )
                         yield {"type": "done"}
                         return
 
+                    # ---- 正常工具执行 ----
                     tool_results_for_msg: list[dict] = []
                     for tc in decision.tool_calls:
                         tool_name = tc.get("name", "unknown")
@@ -1163,8 +1361,6 @@ class ReasoningEngine:
 
                         yield {"type": "tool_call_start", "tool": tool_name, "args": tool_args, "id": tool_id}
 
-                        # Execute tool via ToolExecutor.execute_tool
-                        # 传递 session_id 以确保 Plan 模式检查正常工作
                         try:
                             result_text = await self._tool_executor.execute_tool(
                                 tool_name=tool_name,
@@ -1172,12 +1368,21 @@ class ReasoningEngine:
                                 session_id=conversation_id,
                             )
                             result_text = str(result_text) if result_text else ""
-                        except Exception as e:
-                            result_text = f"Tool error: {e}"
+                        except Exception as exc:
+                            result_text = f"Tool error: {exc}"
 
                         yield {"type": "tool_call_end", "tool": tool_name, "result": result_text[:2000], "id": tool_id}
 
-                        # Check for plan-related tools
+                        # deliver_artifacts 回执收集（与 run() 一致）
+                        if tool_name == "deliver_artifacts" and result_text:
+                            try:
+                                _receipts_data = json.loads(result_text)
+                                if isinstance(_receipts_data, dict) and "receipts" in _receipts_data:
+                                    delivery_receipts = _receipts_data["receipts"]
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                        # Plan 事件
                         if tool_name == "create_plan" and isinstance(tool_args, dict):
                             yield {"type": "plan_created", "plan": {
                                 "id": str(uuid.uuid4()),
@@ -1188,12 +1393,25 @@ class ReasoningEngine:
                         elif tool_name == "update_plan_step" and isinstance(tool_args, dict):
                             yield {"type": "plan_step_updated", "stepIdx": tool_args.get("step_index", 0), "status": tool_args.get("status", "completed")}
 
-                        # Collect tool result for message
                         tool_results_for_msg.append({
                             "type": "tool_result",
                             "tool_use_id": tool_id,
                             "content": result_text[:4000],
                         })
+
+                    if decision.tool_calls:
+                        tools_executed_in_task = True
+                        _executed = [tc.get("name", "") for tc in decision.tool_calls]
+                        executed_tool_names.extend(_executed)
+                        state.record_tool_execution(_executed)
+
+                        # 记录工具成功/失败状态（与 run() 一致）
+                        for i, t_name in enumerate(_executed):
+                            r_content = ""
+                            if i < len(tool_results_for_msg):
+                                r_content = str(tool_results_for_msg[i].get("content", ""))
+                            is_error = any(m in r_content for m in ["❌", "⚠️ 工具执行错误", "错误类型:"])
+                            self._record_tool_result(t_name, success=not is_error)
 
                     # 收集工具结果到 trace
                     _iter_trace["tool_results"] = [
@@ -1205,34 +1423,111 @@ class ReasoningEngine:
                     ]
                     react_trace.append(_iter_trace)
 
-                    # Append all tool results as a single user turn
+                    state.transition(TaskStatus.OBSERVING)
+
+                    # --- Rollback 检查（与 run() 一致） ---
+                    should_rb, rb_reason = self._should_rollback(tool_results_for_msg)
+                    if should_rb:
+                        rollback_result = self._rollback(rb_reason)
+                        if rollback_result:
+                            working_messages, _ = rollback_result
+                            logger.info("[ReAct-Stream][Rollback] 回滚成功，将用不同方法重新推理")
+                            continue
+
+                    # 取消检查
+                    if state.cancelled:
+                        self._save_react_trace(
+                            react_trace, conversation_id, session_type, "cancelled", _trace_started_at
+                        )
+                        yield {"type": "text_delta", "content": "✅ 任务已停止。"}
+                        yield {"type": "done"}
+                        return
+
                     working_messages.append({
                         "role": "user",
                         "content": tool_results_for_msg,
                     })
 
+                    # --- 循环检测（与 run() 一致） ---
+                    consecutive_tool_rounds += 1
+
+                    # stop_reason 检查
+                    if decision.stop_reason == "end_turn":
+                        cleaned_text = strip_thinking_tags(decision.text_content)
+                        if cleaned_text and cleaned_text.strip():
+                            logger.info(
+                                f"[ReAct-Stream][LoopGuard] stop_reason=end_turn after {consecutive_tool_rounds} rounds"
+                            )
+                            self._save_react_trace(
+                                react_trace, conversation_id, session_type,
+                                "completed_end_turn", _trace_started_at,
+                            )
+                            chunk_size = 20
+                            for i in range(0, len(cleaned_text), chunk_size):
+                                yield {"type": "text_delta", "content": cleaned_text[i:i + chunk_size]}
+                                await asyncio.sleep(0.01)
+                            yield {"type": "done"}
+                            return
+
+                    # 工具签名循环检测
+                    round_signatures = [_make_tool_sig(tc) for tc in decision.tool_calls]
+                    round_sig_str = "+".join(sorted(round_signatures))
+                    recent_tool_signatures.append(round_sig_str)
+                    if len(recent_tool_signatures) > tool_pattern_window:
+                        recent_tool_signatures = recent_tool_signatures[-tool_pattern_window:]
+
+                    loop_result = self._detect_loops(
+                        recent_tool_signatures,
+                        consecutive_tool_rounds,
+                        working_messages,
+                        decision.text_content,
+                        llm_self_check_interval,
+                        extreme_safety_threshold,
+                        conversation_id,
+                    )
+                    if loop_result == "terminate":
+                        cleaned = strip_thinking_tags(decision.text_content)
+                        self._save_react_trace(
+                            react_trace, conversation_id, session_type,
+                            "loop_terminated", _trace_started_at,
+                        )
+                        state.transition(TaskStatus.FAILED)
+                        msg = cleaned or "⚠️ 检测到工具调用陷入死循环，任务已自动终止。请重新描述您的需求。"
+                        yield {"type": "text_delta", "content": msg}
+                        yield {"type": "done"}
+                        return
+                    if loop_result == "disable_force":
+                        max_no_tool_retries = 0
+
                     continue  # Next iteration
 
-            self._save_react_trace(react_trace, conversation_id, "desktop", "max_iterations", _trace_started_at)
+            # max_iterations
+            self._save_react_trace(
+                react_trace, conversation_id, session_type, "max_iterations", _trace_started_at
+            )
+            state.transition(TaskStatus.FAILED)
             logger.info(f"[ReAct-Stream] === MAX_ITERATIONS reached ({max_iterations}) ===")
             yield {"type": "text_delta", "content": "\n\n（已达到最大迭代次数）"}
             yield {"type": "done"}
 
         except Exception as e:
             logger.error(f"reason_stream error: {e}", exc_info=True)
-            self._save_react_trace(react_trace, conversation_id, "desktop", f"error: {str(e)[:100]}", _trace_started_at)
+            self._save_react_trace(
+                react_trace, conversation_id, session_type,
+                f"error: {str(e)[:100]}", _trace_started_at,
+            )
             yield {"type": "error", "message": str(e)[:500]}
             yield {"type": "done"}
 
         finally:
-            # 清理 per-conversation endpoint override，避免残留
+            # 清理 per-conversation endpoint override
             if _endpoint_switched and conversation_id:
                 llm_client = getattr(self._brain, "_llm_client", None)
                 if llm_client and hasattr(llm_client, "restore_default"):
                     try:
                         llm_client.restore_default(conversation_id=conversation_id)
                     except Exception:
-                        pass  # 清理失败不影响主流程
+                        pass
 
     # ==================== ReAct 推理链保存 ====================
 
@@ -1247,8 +1542,13 @@ class ReasoningEngine:
         """
         保存完整的 ReAct 推理链到文件。
 
+        同时暂存到 self._last_react_trace 供 agent_handler 读取（思维链功能）。
+
         路径: data/react_traces/{date}/trace_{conversation_id}_{timestamp}.json
         """
+        # 思维链: 暂存 trace 供外部读取（即使为空也更新，清除旧数据）
+        self._last_react_trace = react_trace or []
+
         if not react_trace:
             return
 

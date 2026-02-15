@@ -135,6 +135,7 @@ async def get_session_messages(
                 "content": item.get("content", ""),
                 "timestamp": item.get("timestamp", ""),
                 "metadata": item.get("metadata"),
+                "chain_summary": item.get("chain_summary"),
             })
         else:
             messages.append({
@@ -142,6 +143,7 @@ async def get_session_messages(
                 "content": str(getattr(item, "content", "")),
                 "timestamp": str(getattr(item, "timestamp", "")),
                 "metadata": getattr(item, "metadata", None),
+                "chain_summary": getattr(item, "chain_summary", None),
             })
 
     return JSONResponse(content={

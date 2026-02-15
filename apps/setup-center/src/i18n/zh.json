@@ -61,7 +61,16 @@
     "startService": "启动服务",
     "connectService": "连接已有服务",
     "serviceHint": "聊天功能需要后台服务运行中。你可以启动本工作区的服务，或连接一个已运行的 serve 实例。",
-    "title": "AI 聊天助手"
+    "title": "AI 聊天助手",
+    "thoughtFor": "思考了 {{seconds}}s",
+    "showChain": "显示思维链",
+    "hideChain": "隐藏思维链",
+    "bubbleMode": "气泡模式",
+    "flatMode": "简洁模式",
+    "chainSummary": "思维过程",
+    "explored": "处理了 {{desc}}",
+    "chainCollapsed": "{{count}} 步推理过程",
+    "contextCompressed": "上下文压缩: {{before}}K → {{after}}K tokens"
   },
   "skills": {
     "title": "技能管理",
@@ -450,7 +459,10 @@
     "testAuthError": "认证失败，请检查 API Key 是否正确",
     "testForbidden": "权限不足，请检查 API Key 权限",
     "testNotFound": "接口不存在，请检查 API 地址",
-    "testTimeout": "连接超时，请检查网络"
+    "testTimeout": "连接超时，请检查网络",
+    "localNoKey": "无需 API Key",
+    "localKeyPlaceholder": "本地服务无需 API Key，可留空",
+    "localHint": "本地服务（Ollama / LM Studio）无需真实 API Key，已自动填入占位值"
   },
   "welcome": {
     "title": "配置向导",

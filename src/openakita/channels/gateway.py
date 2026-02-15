@@ -923,10 +923,17 @@ class MessageGateway:
             for hook in self._post_process_hooks:
                 response_text = await hook(message, response_text)
 
-            # 8. 记录响应到会话
+            # 8. 记录响应到会话（含思维链摘要）
+            _chain_summary = None
+            try:
+                _chain_summary = session.get_metadata("_last_chain_summary")
+                session.set_metadata("_last_chain_summary", None)  # 清除，避免下次复用
+            except Exception:
+                pass
             session.add_message(
                 role="assistant",
                 content=response_text,
+                **({"chain_summary": _chain_summary} if _chain_summary else {}),
             )
             self.session_manager.mark_dirty()  # 触发保存
 
@@ -983,10 +990,17 @@ class MessageGateway:
                 for hook in self._post_process_hooks:
                     response_text = await hook(interrupt_msg, response_text)
 
-                # 记录响应
+                # 记录响应（含思维链摘要）
+                _int_chain = None
+                try:
+                    _int_chain = session.get_metadata("_last_chain_summary")
+                    session.set_metadata("_last_chain_summary", None)
+                except Exception:
+                    pass
                 session.add_message(
                     role="assistant",
                     content=response_text,
+                    **({"chain_summary": _int_chain} if _int_chain else {}),
                 )
                 self.session_manager.mark_dirty()  # 触发保存
 

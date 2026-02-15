@@ -295,6 +295,8 @@ async def list_providers_api():
                     "api_key_env_suggestion": getattr(p, "api_key_env_suggestion", ""),
                     "supports_model_list": getattr(p, "supports_model_list", True),
                     "supports_capability_api": getattr(p, "supports_capability_api", False),
+                    "requires_api_key": getattr(p, "requires_api_key", True),
+                    "is_local": getattr(p, "is_local", False),
                 }
                 for p in providers
             ]
@@ -325,8 +327,9 @@ async def list_models_api(body: ListModelsRequest):
             return {"error": "api_type 不能为空", "models": []}
         if not base_url:
             return {"error": "base_url 不能为空", "models": []}
+        # 本地服务商（Ollama/LM Studio 等）不需要 API Key，允许空值
         if not api_key:
-            return {"error": "缺少 api_key", "models": []}
+            api_key = "local"  # placeholder for local providers
 
         if api_type == "openai":
             models = await _list_models_openai(api_key, base_url, provider_slug)

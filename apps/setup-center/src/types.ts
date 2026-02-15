@@ -22,6 +22,8 @@ export type ProviderInfo = {
   api_key_env_suggestion: string;
   supports_model_list: boolean;
   supports_capability_api: boolean;
+  requires_api_key?: boolean;  // default true; false for local providers like Ollama
+  is_local?: boolean;          // true for local providers (Ollama, LM Studio, etc.)
 };
 
 export type ListedModel = {
@@ -151,9 +153,50 @@ export type ChatMessage = {
   askUser?: ChatAskUser | null;
   attachments?: ChatAttachment[] | null;
   artifacts?: ChatArtifact[] | null;
+  thinkingChain?: ChainGroup[] | null;
   timestamp: number;
   streaming?: boolean;
 };
+
+// ─── 思维链 (Thinking Chain) 类型 ───
+
+/** 一个 ReAct 迭代组 = 一次 thinking + 关联的 tool calls */
+export type ChainGroup = {
+  iteration: number;
+  thinking?: {
+    content: string;       // 完整 thinking 文字
+    durationMs: number;    // 思考耗时 ms
+    preview: string;       // 首句/首 80 字符, 用于组标题
+  };
+  toolCalls: ChainToolCall[];
+  summary?: string;        // 自动生成: "Explored 3 files 2 searches"
+  collapsed: boolean;      // 当前折叠状态
+  contextCompressed?: {    // 本轮迭代前是否发生了上下文压缩
+    beforeTokens: number;
+    afterTokens: number;
+  };
+};
+
+export type ChainToolCall = {
+  toolId: string;
+  tool: string;                     // 原始工具名
+  args: Record<string, unknown>;
+  result?: string;
+  status: "running" | "done" | "error";
+  description: string;              // 人类可读描述 (由 formatter 生成)
+};
+
+/** IM 消息中的思维链摘要项 */
+export type ChainSummaryItem = {
+  iteration: number;
+  thinking_preview: string;
+  thinking_duration_ms: number;
+  tools: { name: string; input_preview: string }[];
+  context_compressed?: { before_tokens: number; after_tokens: number };
+};
+
+/** 聊天显示模式 */
+export type ChatDisplayMode = "bubble" | "flat";
 
 export type ChatToolCall = {
   id?: string;

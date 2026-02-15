@@ -192,18 +192,29 @@ class OpenAIProvider(LLMProvider):
             self.mark_unhealthy(f"Timeout: {detail}")
             raise LLMError(f"Stream timeout: {detail}")
 
+    def _is_local_endpoint(self) -> bool:
+        """检查是否为本地端点（Ollama/LM Studio 等）"""
+        url = self.base_url.lower()
+        return any(host in url for host in (
+            "localhost", "127.0.0.1", "0.0.0.0", "[::1]",
+        ))
+
     def _build_headers(self) -> dict:
         """构建请求头"""
         # 避免 Authorization: Bearer <empty> 导致 httpx 报 Illegal header value
         api_key = (self.api_key or "").strip()
         if not api_key:
-            hint = ""
-            if self.config.api_key_env:
-                hint = f" (env var {self.config.api_key_env} is not set)"
-            raise AuthenticationError(
-                f"Missing API key for endpoint '{self.name}'{hint}. "
-                "Set the environment variable or configure api_key/api_key_env."
-            )
+            # 本地服务（Ollama/LM Studio 等）不需要真实 API Key
+            if self._is_local_endpoint():
+                api_key = "local"
+            else:
+                hint = ""
+                if self.config.api_key_env:
+                    hint = f" (env var {self.config.api_key_env} is not set)"
+                raise AuthenticationError(
+                    f"Missing API key for endpoint '{self.name}'{hint}. "
+                    "Set the environment variable or configure api_key/api_key_env."
+                )
 
         headers = {
             "Content-Type": "application/json",

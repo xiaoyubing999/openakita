@@ -61,12 +61,24 @@ type ProviderInfo = {
   api_key_env_suggestion: string;
   supports_model_list: boolean;
   supports_capability_api: boolean;
+  requires_api_key?: boolean;  // default true; false for local providers like Ollama
+  is_local?: boolean;          // true for local providers (Ollama, LM Studio, etc.)
 };
 
 // 内置 Provider 列表（打包模式下 venv 不可用时作为回退）
 // 数据来源：@shared/providers.json（与 Python 后端共享同一份文件）
 // registry_class 字段仅 Python 使用，前端忽略
 const BUILTIN_PROVIDERS: ProviderInfo[] = SHARED_PROVIDERS as ProviderInfo[];
+
+/** 判断服务商是否为本地服务（不需要真实 API Key） */
+function isLocalProvider(p: ProviderInfo | null | undefined): boolean {
+  return p?.requires_api_key === false || p?.is_local === true;
+}
+
+/** 获取本地服务商的默认 placeholder API key */
+function localProviderPlaceholderKey(p: ProviderInfo | null | undefined): string {
+  return p?.slug || "local";
+}
 
 type ListedModel = {
   id: string;
@@ -1603,6 +1615,10 @@ export function App() {
     if (!endpointNameTouched) {
       setEndpointName(autoName);
     }
+    // 本地服务商（Ollama / LM Studio 等）不需要真实 API Key，自动填入 placeholder
+    if (isLocalProvider(selectedProvider) && !apiKeyValue.trim()) {
+      setApiKeyValue(localProviderPlaceholderKey(selectedProvider));
+    }
   }, [selectedProvider, selectedModelId, envDraft, savedEndpoints, apiKeyEnvTouched, endpointNameTouched]);
 
   // When user switches provider via dropdown, reset auto-naming to follow the new provider.
@@ -1620,12 +1636,14 @@ export function App() {
     setSelectedModelId(""); // clear search / selection
     setBusy("拉取模型列表...");
     try {
-      console.log('[doFetchModels] apiType:', apiType, 'baseUrl:', baseUrl, 'slug:', selectedProvider?.slug, 'keyLen:', apiKeyValue?.length, 'httpApi:', shouldUseHttpApi());
+      // 本地服务商自动使用 placeholder key
+      const effectiveKey = apiKeyValue.trim() || (isLocalProvider(selectedProvider) ? localProviderPlaceholderKey(selectedProvider) : "");
+      console.log('[doFetchModels] apiType:', apiType, 'baseUrl:', baseUrl, 'slug:', selectedProvider?.slug, 'keyLen:', effectiveKey?.length, 'httpApi:', shouldUseHttpApi(), 'isLocal:', isLocalProvider(selectedProvider));
       const parsed = await fetchModelListUnified({
         apiType,
         baseUrl,
         providerSlug: selectedProvider?.slug ?? null,
-        apiKey: apiKeyValue,
+        apiKey: effectiveKey,
       });
       setModels(parsed);
       // 不要默认选中/填入任何模型，避免“自动出现一个搜索结果”造成误导
@@ -2049,7 +2067,9 @@ export function App() {
   }
 
   async function doFetchCompilerModels() {
-    if (!compilerApiKeyValue.trim()) {
+    const compilerSelectedProvider = providers.find((p) => p.slug === compilerProviderSlug) || null;
+    const isCompilerLocal = isLocalProvider(compilerSelectedProvider);
+    if (!compilerApiKeyValue.trim() && !isCompilerLocal) {
       setError("请先填写编译端点的 API Key 值");
       return;
     }
@@ -2061,11 +2081,12 @@ export function App() {
     setCompilerModels([]);
     setBusy("拉取编译端点模型列表...");
     try {
+      const effectiveCompilerKey = compilerApiKeyValue.trim() || (isCompilerLocal ? localProviderPlaceholderKey(compilerSelectedProvider) : "");
       const parsed = await fetchModelListUnified({
         apiType: compilerApiType,
         baseUrl: compilerBaseUrl,
         providerSlug: compilerProviderSlug || null,
-        apiKey: compilerApiKeyValue,
+        apiKey: effectiveCompilerKey,
       });
       setCompilerModels(parsed);
       setCompilerModel("");
@@ -2086,11 +2107,15 @@ export function App() {
       setError("请填写编译模型名称");
       return;
     }
-    if (!compilerApiKeyEnv.trim()) {
+    const compilerSelectedProvider = providers.find((p) => p.slug === compilerProviderSlug) || null;
+    const isCompilerLocal = isLocalProvider(compilerSelectedProvider);
+    const effectiveCompApiKeyEnv = compilerApiKeyEnv.trim() || (isCompilerLocal ? (compilerSelectedProvider?.api_key_env_suggestion || envKeyFromSlug(compilerProviderSlug || "local")) : "");
+    const effectiveCompApiKeyValue = compilerApiKeyValue.trim() || (isCompilerLocal ? localProviderPlaceholderKey(compilerSelectedProvider) : "");
+    if (!isCompilerLocal && !effectiveCompApiKeyEnv) {
       setError("请填写编译端点的 API Key 环境变量名");
       return;
     }
-    if (!compilerApiKeyValue.trim()) {
+    if (!isCompilerLocal && !effectiveCompApiKeyValue) {
       setError("请填写编译端点的 API Key 值");
       return;
     }
@@ -2098,7 +2123,7 @@ export function App() {
     setError(null);
     try {
       // Write API key to .env — 遵循路由原则
-      const compilerEnvPayload = { entries: { [compilerApiKeyEnv.trim()]: compilerApiKeyValue.trim() } };
+      const compilerEnvPayload = { entries: { [effectiveCompApiKeyEnv]: effectiveCompApiKeyValue } };
       if (shouldUseHttpApi()) {
         try {
           await safeFetch(`${httpApiBase()}/api/config/env`, {
@@ -2110,17 +2135,17 @@ export function App() {
           if (currentWorkspaceId) {
             await invoke("workspace_update_env", {
               workspaceId: currentWorkspaceId,
-              entries: [{ key: compilerApiKeyEnv.trim(), value: compilerApiKeyValue.trim() }],
+              entries: [{ key: effectiveCompApiKeyEnv, value: effectiveCompApiKeyValue }],
             });
           }
         }
       } else if (currentWorkspaceId) {
         await invoke("workspace_update_env", {
           workspaceId: currentWorkspaceId,
-          entries: [{ key: compilerApiKeyEnv.trim(), value: compilerApiKeyValue.trim() }],
+          entries: [{ key: effectiveCompApiKeyEnv, value: effectiveCompApiKeyValue }],
         });
       }
-      setEnvDraft((e) => envSet(e, compilerApiKeyEnv.trim(), compilerApiKeyValue.trim()));
+      setEnvDraft((e) => envSet(e, effectiveCompApiKeyEnv, effectiveCompApiKeyValue));
 
       // Read existing JSON
       let currentJson = "";
@@ -2145,7 +2170,7 @@ export function App() {
         provider: compilerProviderSlug || "custom",
         api_type: compilerApiType,
         base_url: compilerBaseUrl,
-        api_key_env: compilerApiKeyEnv.trim(),
+        api_key_env: effectiveCompApiKeyEnv,
         model: compilerModel.trim(),
         priority: base.compiler_endpoints.length + 1,
         max_tokens: 2048,
@@ -2287,8 +2312,10 @@ export function App() {
 
   async function doFetchEditModels() {
     if (!editDraft) return;
-    const key = editDraft.apiKeyValue.trim() || envGet(envDraft, editDraft.apiKeyEnv);
-    if (!key) {
+    const editProvider = providers.find((p) => p.slug === editDraft.providerSlug);
+    const isEditLocal = isLocalProvider(editProvider);
+    const key = editDraft.apiKeyValue.trim() || envGet(envDraft, editDraft.apiKeyEnv) || (isEditLocal ? localProviderPlaceholderKey(editProvider) : "");
+    if (!isEditLocal && !key) {
       setError("请先填写 API Key 值（或确保对应环境变量已有值）");
       return;
     }
@@ -2303,7 +2330,7 @@ export function App() {
         apiType: editDraft.apiType,
         baseUrl: editDraft.baseUrl,
         providerSlug: editDraft.providerSlug || null,
-        apiKey: key,
+        apiKey: key || "local",
       });
       setEditModels(parsed);
       setNotice(`拉取到模型：${parsed.length} 个`);
@@ -2418,7 +2445,11 @@ export function App() {
       setError("请先选择模型");
       return;
     }
-    if (!apiKeyEnv.trim() || !apiKeyValue.trim()) {
+    const isLocal = isLocalProvider(selectedProvider);
+    // 本地服务商允许空 API Key（自动填入 placeholder）
+    const effectiveApiKeyValue = apiKeyValue.trim() || (isLocal ? localProviderPlaceholderKey(selectedProvider) : "");
+    const effectiveApiKeyEnv = apiKeyEnv.trim() || (isLocal ? (selectedProvider?.api_key_env_suggestion || envKeyFromSlug(selectedProvider?.slug || "local")) : "");
+    if (!isLocal && (!effectiveApiKeyEnv || !effectiveApiKeyValue)) {
       setError("请填写 API Key 环境变量名和值（会写入工作区 .env）");
       return;
     }
@@ -2427,8 +2458,8 @@ export function App() {
 
     try {
       await ensureEnvLoaded(currentWorkspaceId);
-      setEnvDraft((e) => envSet(e, apiKeyEnv.trim(), apiKeyValue.trim()));
-      const envPayload = { entries: { [apiKeyEnv.trim()]: apiKeyValue.trim() } };
+      setEnvDraft((e) => envSet(e, effectiveApiKeyEnv, effectiveApiKeyValue));
+      const envPayload = { entries: { [effectiveApiKeyEnv]: effectiveApiKeyValue } };
 
       if (shouldUseHttpApi()) {
         try {
@@ -2442,14 +2473,14 @@ export function App() {
           if (currentWorkspaceId) {
             await invoke("workspace_update_env", {
               workspaceId: currentWorkspaceId,
-              entries: [{ key: apiKeyEnv.trim(), value: apiKeyValue.trim() }],
+              entries: [{ key: effectiveApiKeyEnv, value: effectiveApiKeyValue }],
             });
           }
         }
       } else if (currentWorkspaceId) {
         await invoke("workspace_update_env", {
           workspaceId: currentWorkspaceId,
-          entries: [{ key: apiKeyEnv.trim(), value: apiKeyValue.trim() }],
+          entries: [{ key: effectiveApiKeyEnv, value: effectiveApiKeyValue }],
         });
       }
 
@@ -2489,7 +2520,7 @@ export function App() {
           provider: providerSlug || (selectedProvider?.slug ?? "custom"),
           api_type: apiType,
           base_url: baseUrl,
-          api_key_env: apiKeyEnv.trim(),
+          api_key_env: effectiveApiKeyEnv,
           model: selectedModelId,
           priority: normalizePriority(endpointPriority, 1),
           max_tokens: 8192,
@@ -2613,6 +2644,8 @@ export function App() {
       "zhipu-cn": "https://open.bigmodel.cn/usercenter/apikeys",
       "zhipu-int": "https://z.ai/manage-apikey/apikey-list",
       yunwu: "https://yunwu.zeabur.app/",
+      ollama: "https://ollama.com/library",
+      lmstudio: "https://lmstudio.ai/",
     };
     return map[slug] || "";
   }, [selectedProvider?.slug]);
@@ -4667,13 +4700,16 @@ export function App() {
 
               {/* API Key */}
               <div className="dialogSection">
-                <div className="dialogLabel">API Key</div>
+                <div className="dialogLabel">API Key {isLocalProvider(selectedProvider) && <span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>({t("llm.localNoKey")})</span>}</div>
                 <input
                   value={apiKeyValue}
                   onChange={(e) => setApiKeyValue(e.target.value)}
-                  placeholder="sk-..."
+                  placeholder={isLocalProvider(selectedProvider) ? t("llm.localKeyPlaceholder") : "sk-..."}
                   type={secretShown.__LLM_API_KEY ? "text" : "password"}
                 />
+                {isLocalProvider(selectedProvider) && (
+                  <div className="help" style={{ marginTop: 4, paddingLeft: 2, color: "var(--brand)" }}>{t("llm.localHint")}</div>
+                )}
               </div>
 
               {/* Model name — always visible; fetch is optional */}
@@ -4689,7 +4725,7 @@ export function App() {
                 {models.length === 0 && (
                   <div className="help" style={{ marginTop: 4, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ opacity: 0.7 }}>{t("llm.modelManualHint")}</span>
-                    <button onClick={doFetchModels} className="btnSmall" disabled={!apiKeyValue.trim() || !baseUrl.trim() || !!busy}
+                    <button onClick={doFetchModels} className="btnSmall" disabled={(!apiKeyValue.trim() && !isLocalProvider(selectedProvider)) || !baseUrl.trim() || !!busy}
                       style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6 }}>
                       {t("llm.fetchModels")}
                     </button>
@@ -4698,7 +4734,7 @@ export function App() {
                 {models.length > 0 && (
                   <div className="help" style={{ marginTop: 4, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ opacity: 0.6 }}>{t("llm.modelFetched", { count: models.length })}</span>
-                    <button onClick={doFetchModels} className="btnSmall" disabled={!apiKeyValue.trim() || !baseUrl.trim() || !!busy}
+                    <button onClick={doFetchModels} className="btnSmall" disabled={(!apiKeyValue.trim() && !isLocalProvider(selectedProvider)) || !baseUrl.trim() || !!busy}
                       style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6 }}>
                       {t("llm.refetch")}
                     </button>
@@ -4780,12 +4816,12 @@ export function App() {
                   <button
                     className="btnSmall"
                     style={{ padding: "8px 16px", borderRadius: 8 }}
-                    disabled={!apiKeyValue.trim() || !baseUrl.trim() || connTesting}
-                    onClick={() => doTestConnection({ testApiType: apiType, testBaseUrl: baseUrl, testApiKey: apiKeyValue, testProviderSlug: selectedProvider?.slug })}
+                    disabled={(!apiKeyValue.trim() && !isLocalProvider(selectedProvider)) || !baseUrl.trim() || connTesting}
+                    onClick={() => doTestConnection({ testApiType: apiType, testBaseUrl: baseUrl, testApiKey: apiKeyValue.trim() || (isLocalProvider(selectedProvider) ? localProviderPlaceholderKey(selectedProvider) : ""), testProviderSlug: selectedProvider?.slug })}
                   >
                     {connTesting ? t("llm.testTesting") : t("llm.testConnection")}
                   </button>
-                  <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveEndpoint(); setAddEpDialogOpen(false); setConnTestResult(null); }} disabled={!selectedModelId.trim() || !apiKeyEnv.trim() || !apiKeyValue.trim() || !baseUrl.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
+                  <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveEndpoint(); setAddEpDialogOpen(false); setConnTestResult(null); }} disabled={!selectedModelId.trim() || (!apiKeyEnv.trim() && !isLocalProvider(selectedProvider)) || (!apiKeyValue.trim() && !isLocalProvider(selectedProvider)) || !baseUrl.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
                     {isEditingEndpoint ? t("common.save") : t("llm.addEndpoint")}
                   </button>
                 </div>
@@ -4808,13 +4844,14 @@ export function App() {
                 <input value={editDraft.baseUrl || ""} onChange={(e) => setEditDraft({ ...editDraft, baseUrl: e.target.value })} />
               </div>
               <div className="dialogSection">
-                <div className="dialogLabel">API Key</div>
+                <div className="dialogLabel">API Key {isLocalProvider(providers.find((p) => p.slug === editDraft.providerSlug)) && <span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>({t("llm.localNoKey")})</span>}</div>
                 <div style={{ position: "relative" }}>
-                  <input value={envDraft[editDraft.apiKeyEnv || ""] || ""} onChange={(e) => { const k = editDraft.apiKeyEnv || ""; const v = e.target.value; setEnvDraft((m) => ({ ...m, [k]: v })); setEditDraft((d) => d ? { ...d, apiKeyValue: v } : d); }} type={secretShown.__EDIT_EP_KEY ? "text" : "password"} style={{ paddingRight: 44, width: "100%" }} />
+                  <input value={envDraft[editDraft.apiKeyEnv || ""] || ""} onChange={(e) => { const k = editDraft.apiKeyEnv || ""; const v = e.target.value; setEnvDraft((m) => ({ ...m, [k]: v })); setEditDraft((d) => d ? { ...d, apiKeyValue: v } : d); }} type={secretShown.__EDIT_EP_KEY ? "text" : "password"} style={{ paddingRight: 44, width: "100%" }} placeholder={isLocalProvider(providers.find((p) => p.slug === editDraft.providerSlug)) ? t("llm.localKeyPlaceholder") : "sk-..."} />
                   <button type="button" className="btnEye" onClick={() => setSecretShown((m) => ({ ...m, __EDIT_EP_KEY: !m.__EDIT_EP_KEY }))} title={secretShown.__EDIT_EP_KEY ? "隐藏" : "显示"}>
                     {secretShown.__EDIT_EP_KEY ? <IconEyeOff size={16} /> : <IconEye size={16} />}
                   </button>
                 </div>
+                {isLocalProvider(providers.find((p) => p.slug === editDraft.providerSlug)) && <div className="help" style={{ marginTop: 4, paddingLeft: 2, color: "var(--brand)" }}>{t("llm.localHint")}</div>}
               </div>
               <div className="dialogSection">
                 <div className="dialogLabel">{t("status.model")}</div>
@@ -4826,7 +4863,7 @@ export function App() {
                   disabled={!!busy}
                 />
                 <div className="help" style={{ marginTop: 4, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
-                  <button onClick={doFetchEditModels} className="btnSmall" disabled={!(envDraft[editDraft.apiKeyEnv || ""] || "").trim() || !(editDraft.baseUrl || "").trim() || !!busy}
+                  <button onClick={doFetchEditModels} className="btnSmall" disabled={(!isLocalProvider(providers.find((p) => p.slug === editDraft.providerSlug)) && !(envDraft[editDraft.apiKeyEnv || ""] || "").trim()) || !(editDraft.baseUrl || "").trim() || !!busy}
                     style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6 }}>
                     {t("llm.fetchModels")}
                   </button>
@@ -4855,13 +4892,13 @@ export function App() {
                   <button
                     className="btnSmall"
                     style={{ padding: "8px 16px", borderRadius: 8 }}
-                    disabled={!(envDraft[editDraft.apiKeyEnv || ""] || "").trim() || !(editDraft.baseUrl || "").trim() || connTesting}
-                    onClick={() => doTestConnection({
+                    disabled={(!isLocalProvider(providers.find((p) => p.slug === editDraft.providerSlug)) && !(envDraft[editDraft.apiKeyEnv || ""] || "").trim()) || !(editDraft.baseUrl || "").trim() || connTesting}
+                    onClick={() => { const _ep = providers.find((p) => p.slug === editDraft.providerSlug); doTestConnection({
                       testApiType: editDraft.apiType || "openai",
                       testBaseUrl: editDraft.baseUrl || "",
-                      testApiKey: envDraft[editDraft.apiKeyEnv || ""] || "",
+                      testApiKey: (envDraft[editDraft.apiKeyEnv || ""] || "").trim() || (isLocalProvider(_ep) ? localProviderPlaceholderKey(_ep) : ""),
                       testProviderSlug: editDraft.providerSlug,
-                    })}
+                    }); }}
                   >
                     {connTesting ? t("llm.testTesting") : t("llm.testConnection")}
                   </button>
@@ -4890,6 +4927,7 @@ export function App() {
                     setCompilerApiType("openai");
                     setCompilerBaseUrl("");
                     setCompilerApiKeyEnv("CUSTOM_COMPILER_API_KEY");
+                    setCompilerApiKeyValue("");
                   } else {
                     const p = providers.find((x) => x.slug === slug);
                     if (p) {
@@ -4899,6 +4937,12 @@ export function App() {
                       const used = new Set(Object.keys(envDraft || {}));
                       for (const ep of [...savedEndpoints, ...savedCompilerEndpoints]) { if (ep.api_key_env) used.add(ep.api_key_env); }
                       setCompilerApiKeyEnv(nextEnvKeyName(suggested, used));
+                      // 本地服务商自动填入 placeholder API Key
+                      if (isLocalProvider(p)) {
+                        setCompilerApiKeyValue(localProviderPlaceholderKey(p));
+                      } else {
+                        setCompilerApiKeyValue("");
+                      }
                     }
                   }
                 }}>
@@ -4917,8 +4961,11 @@ export function App() {
                 <input value={compilerApiKeyEnv} onChange={(e) => setCompilerApiKeyEnv(e.target.value)} placeholder="MY_API_KEY" />
               </div>
               <div className="dialogSection">
-                <div className="dialogLabel">API Key</div>
-                <input value={compilerApiKeyValue} onChange={(e) => setCompilerApiKeyValue(e.target.value)} placeholder="sk-..." type="password" />
+                <div className="dialogLabel">API Key {isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug)) && <span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400 }}>({t("llm.localNoKey")})</span>}</div>
+                <input value={compilerApiKeyValue} onChange={(e) => setCompilerApiKeyValue(e.target.value)} placeholder={isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug)) ? t("llm.localKeyPlaceholder") : "sk-..."} type="password" />
+                {isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug)) && (
+                  <div className="help" style={{ marginTop: 4, paddingLeft: 2, color: "var(--brand)" }}>{t("llm.localHint")}</div>
+                )}
               </div>
               {/* Model name — always visible; fetch is optional */}
               <div className="dialogSection">
@@ -4927,7 +4974,7 @@ export function App() {
                 {compilerModels.length === 0 && (
                   <div className="help" style={{ marginTop: 4, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ opacity: 0.7 }}>{t("llm.modelManualHint")}</span>
-                    <button onClick={doFetchCompilerModels} className="btnSmall" disabled={!compilerApiKeyValue.trim() || !compilerBaseUrl.trim() || !!busy}
+                    <button onClick={doFetchCompilerModels} className="btnSmall" disabled={(!compilerApiKeyValue.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || !compilerBaseUrl.trim() || !!busy}
                       style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6 }}>
                       {t("llm.fetchModels")}
                     </button>
@@ -4936,7 +4983,7 @@ export function App() {
                 {compilerModels.length > 0 && (
                   <div className="help" style={{ marginTop: 4, paddingLeft: 2, display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ opacity: 0.6 }}>{t("llm.modelFetched", { count: compilerModels.length })}</span>
-                    <button onClick={doFetchCompilerModels} className="btnSmall" disabled={!compilerApiKeyValue.trim() || !compilerBaseUrl.trim() || !!busy}
+                    <button onClick={doFetchCompilerModels} className="btnSmall" disabled={(!compilerApiKeyValue.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || !compilerBaseUrl.trim() || !!busy}
                       style={{ fontSize: 11, padding: "2px 10px", borderRadius: 6 }}>
                       {t("llm.refetch")}
                     </button>
@@ -4948,11 +4995,36 @@ export function App() {
                 <input value={compilerEndpointName} onChange={(e) => setCompilerEndpointName(e.target.value)} placeholder={`compiler-${compilerProviderSlug || "custom"}-${compilerModel || "model"}`} />
               </div>
               </div>
+
+              {/* 连接测试结果 */}
+              {connTestResult && (
+                <div className={`connTestResult ${connTestResult.ok ? "connTestOk" : "connTestFail"}`}>
+                  {connTestResult.ok
+                    ? `${t("llm.testSuccess")} · ${connTestResult.latencyMs}ms · ${t("llm.testModelCount", { count: connTestResult.modelCount ?? 0 })}`
+                    : `${t("llm.testFailed")}：${connTestResult.error} (${connTestResult.latencyMs}ms)`}
+                </div>
+              )}
+
               <div className="dialogFooter">
-                <button className="btnSmall" onClick={() => setAddCompDialogOpen(false)}>{t("common.cancel")}</button>
-                <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveCompilerEndpoint(); setAddCompDialogOpen(false); }} disabled={!compilerModel.trim() || !compilerApiKeyEnv.trim() || !compilerApiKeyValue.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
-                  {t("llm.addEndpoint")}
-                </button>
+                <button className="btnSmall" onClick={() => { setAddCompDialogOpen(false); setConnTestResult(null); }}>{t("common.cancel")}</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    className="btnSmall"
+                    style={{ padding: "8px 16px", borderRadius: 8 }}
+                    disabled={(!compilerApiKeyValue.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || !compilerBaseUrl.trim() || connTesting}
+                    onClick={() => { const _cp = providers.find((p) => p.slug === compilerProviderSlug); doTestConnection({
+                      testApiType: compilerApiType,
+                      testBaseUrl: compilerBaseUrl,
+                      testApiKey: compilerApiKeyValue.trim() || (isLocalProvider(_cp) ? localProviderPlaceholderKey(_cp) : ""),
+                      testProviderSlug: compilerProviderSlug || null,
+                    }); }}
+                  >
+                    {connTesting ? t("llm.testTesting") : t("llm.testConnection")}
+                  </button>
+                  <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { await doSaveCompilerEndpoint(); setAddCompDialogOpen(false); setConnTestResult(null); }} disabled={!compilerModel.trim() || (!compilerApiKeyEnv.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || (!compilerApiKeyValue.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
+                    {t("llm.addEndpoint")}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

@@ -1,5 +1,29 @@
 [
   {
+    "name": "Ollama (本地)",
+    "slug": "ollama",
+    "api_type": "openai",
+    "default_base_url": "http://localhost:11434/v1",
+    "api_key_env_suggestion": "OLLAMA_API_KEY",
+    "supports_model_list": true,
+    "supports_capability_api": false,
+    "registry_class": "OpenAIRegistry",
+    "requires_api_key": false,
+    "is_local": true
+  },
+  {
+    "name": "LM Studio (本地)",
+    "slug": "lmstudio",
+    "api_type": "openai",
+    "default_base_url": "http://localhost:1234/v1",
+    "api_key_env_suggestion": "LMSTUDIO_API_KEY",
+    "supports_model_list": true,
+    "supports_capability_api": false,
+    "registry_class": "OpenAIRegistry",
+    "requires_api_key": false,
+    "is_local": true
+  },
+  {
     "name": "Anthropic (Official / Compatible)",
     "slug": "anthropic",
     "api_type": "anthropic",

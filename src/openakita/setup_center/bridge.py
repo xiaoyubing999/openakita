@@ -50,8 +50,10 @@ async def _list_models_openai(api_key: str, base_url: str, provider_slug: str | 
     from openakita.llm.capabilities import infer_capabilities
 
     url = base_url.rstrip("/") + "/models"
+    # 本地服务（Ollama/LM Studio 等）不需要真实 API Key，使用 placeholder
+    effective_key = api_key.strip() or "local"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+        resp = await client.get(url, headers={"Authorization": f"Bearer {effective_key}"})
         resp.raise_for_status()
         data = resp.json()
 
@@ -112,8 +114,8 @@ async def list_models(api_type: str, base_url: str, provider_slug: str | None, a
         raise ValueError("--api-type 不能为空")
     if not base_url:
         raise ValueError("--base-url 不能为空")
-    if not api_key.strip():
-        raise ValueError("缺少 API Key（Setup Center 会通过环境变量 SETUPCENTER_API_KEY 传入）")
+    # 本地服务商（Ollama/LM Studio 等）不需要 API Key，允许空值
+    # 前端会传入 placeholder key，但也兼容完全为空的情况
 
     if api_type == "openai":
         _json_print(await _list_models_openai(api_key, base_url, provider_slug))

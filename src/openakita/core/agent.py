@@ -2633,6 +2633,283 @@ search_github → install_skill → 使用
 
         return response
 
+    # ==================== 会话流水线: 共享准备 / 收尾 / 入口 ====================
+
+    async def _prepare_session_context(
+        self,
+        message: str,
+        session_messages: list[dict],
+        session_id: str,
+        session: Any,
+        gateway: Any,
+        conversation_id: str,
+        *,
+        attachments: list | None = None,
+    ) -> tuple[list[dict], str, "TaskMonitor", str, Any]:
+        """
+        会话流水线 - 共享准备阶段。
+
+        chat_with_session() 和 chat_with_session_stream() 共用此方法，
+        确保 IM/Desktop 两条路径走完全一致的准备逻辑。
+
+        步骤:
+        1. Memory session align
+        2. IM context setup
+        3. Agent state / log session setup
+        4. Proactive engine update
+        5. User turn memory record
+        6. Trait mining
+        7. Prompt Compiler (两段式第一阶段)
+        8. Plan 模式自动检测
+        9. Task definition setup
+        10. Message history build (含上下文边界标记、多模态/附件)
+        11. Context compression
+        12. TaskMonitor creation
+
+        Args:
+            message: 用户消息
+            session_messages: Session 的对话历史
+            session_id: 会话 ID（用于日志）
+            session: Session 对象
+            gateway: MessageGateway 对象
+            conversation_id: 稳定对话线程 ID
+            attachments: Desktop Chat 附件列表 (可选)
+
+        Returns:
+            (messages, session_type, task_monitor, conversation_id, im_tokens)
+        """
+        # 1. 对齐 MemoryManager 会话
+        try:
+            conversation_safe_id = conversation_id.replace(":", "__")
+            conversation_safe_id = re.sub(r'[/\\+=%?*<>|"\x00-\x1f]', "_", conversation_safe_id)
+            if getattr(self.memory_manager, "_current_session_id", None) != conversation_safe_id:
+                self.memory_manager.start_session(conversation_safe_id)
+        except Exception as e:
+            logger.warning(f"[Memory] Failed to align memory session: {e}")
+
+        # 2. IM context setup（协程隔离）
+        from .im_context import set_im_context
+
+        im_tokens = set_im_context(
+            session=session if gateway else None,
+            gateway=gateway,
+        )
+
+        # 3. Agent state / log session
+        self._current_session = session
+        self.agent_state.current_session = session
+
+        from ..logging import get_session_log_buffer
+        get_session_log_buffer().set_current_session(conversation_id)
+
+        logger.info(f"[Session:{session_id}] User: {message}")
+
+        # 4. Proactive engine: 记录用户互动时间
+        if hasattr(self, "proactive_engine") and self.proactive_engine:
+            self.proactive_engine.update_user_interaction()
+
+        # 5. User turn memory record
+        self.memory_manager.record_turn("user", message)
+
+        # 6. Trait mining
+        if hasattr(self, "trait_miner") and self.trait_miner and self.trait_miner.brain:
+            try:
+                mined_traits = await self.trait_miner.mine_from_message(message, role="user")
+                for trait in mined_traits:
+                    from ..memory.types import Memory, MemoryPriority, MemoryType
+                    mem = Memory(
+                        type=MemoryType.PERSONA_TRAIT,
+                        priority=MemoryPriority.LONG_TERM,
+                        content=f"{trait.dimension}={trait.preference}",
+                        source=trait.source,
+                        tags=[f"dimension:{trait.dimension}", f"preference:{trait.preference}"],
+                        importance_score=trait.confidence,
+                    )
+                    self.memory_manager.add_memory(mem)
+                if mined_traits:
+                    logger.debug(f"[TraitMiner] Mined {len(mined_traits)} traits from user message")
+            except Exception as e:
+                logger.debug(f"[TraitMiner] Mining failed (non-critical): {e}")
+
+        # 7. Prompt Compiler (两段式第一阶段)
+        compiled_message = message
+        compiler_output = ""
+        compiler_summary = ""
+
+        if self._should_compile_prompt(message):
+            compiled_message, compiler_output = await self._compile_prompt(message)
+            if compiler_output:
+                logger.info(f"[Session:{session_id}] Prompt compiled")
+                compiler_summary = self._summarize_compiler_output(compiler_output)
+
+                # 8. Plan 模式自动检测
+                from ..tools.handlers.plan import require_plan_for_session, should_require_plan
+
+                is_compound = (
+                    "task_type: compound" in compiler_output
+                    or "task_type:compound" in compiler_output
+                )
+                has_multi_actions = should_require_plan(message)
+
+                if is_compound or has_multi_actions:
+                    require_plan_for_session(conversation_id, True)
+                    logger.info(
+                        f"[Session:{session_id}] Multi-step task detected "
+                        f"(compound={is_compound}, multi_actions={has_multi_actions}), Plan required"
+                    )
+
+        # 9. Task definition setup
+        self._current_task_definition = compiler_summary
+        self._current_task_query = compiler_summary or message
+
+        # 10. Message history build
+        # session_messages 已包含当前轮用户消息（gateway 调用前 add_message），
+        # 当前轮由下方 compiled_message 单独追加，需排除最后一条避免重复。
+        history_messages = session_messages
+        if history_messages and history_messages[-1].get("role") == "user":
+            history_messages = history_messages[:-1]
+
+        messages: list[dict] = []
+        for msg in history_messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+        # 上下文边界标记
+        if messages:
+            messages.append({
+                "role": "user",
+                "content": "[上下文结束，以下是用户的最新消息]",
+            })
+            messages.append({
+                "role": "assistant",
+                "content": "好的，我已了解之前的对话上下文。请告诉我你现在的需求。",
+            })
+
+        # 当前用户消息（支持多模态）
+        pending_images = session.get_metadata("pending_images") if session else None
+
+        # Desktop Chat 附件处理（与 IM 的 pending_images 对齐）
+        if attachments and not pending_images:
+            content_blocks: list[dict] = []
+            if compiled_message:
+                content_blocks.append({"type": "text", "text": compiled_message})
+            for att in attachments:
+                att_type = getattr(att, "type", None) or ""
+                att_url = getattr(att, "url", None) or ""
+                att_name = getattr(att, "name", None) or "file"
+                att_mime = getattr(att, "mime_type", None) or att_type
+                if att_type == "image" and att_url:
+                    content_blocks.append({"type": "image_url", "image_url": {"url": att_url}})
+                elif att_url:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[附件: {att_name} ({att_mime})] URL: {att_url}",
+                    })
+            if content_blocks:
+                messages.append({"role": "user", "content": content_blocks})
+            elif compiled_message:
+                messages.append({"role": "user", "content": compiled_message})
+        elif pending_images:
+            # IM 路径: 多模态（图片）
+            content_parts: list[dict] = []
+            _text_for_llm = compiled_message.strip()
+            if _text_for_llm and re.fullmatch(r"(\[图片: [^\]]+\]\s*)+", _text_for_llm):
+                _text_for_llm = (
+                    f"用户发送了 {len(pending_images)} 张图片（已附在消息中，请直接查看）。"
+                    "请描述或回应你所看到的图片内容。"
+                )
+            if _text_for_llm:
+                content_parts.append({"type": "text", "text": _text_for_llm})
+            for img_data in pending_images:
+                content_parts.append(img_data)
+            messages.append({"role": "user", "content": content_parts})
+            logger.info(f"[Session:{session_id}] Multimodal message with {len(pending_images)} images")
+        else:
+            # 普通文本消息
+            messages.append({"role": "user", "content": compiled_message})
+
+        # 11. Context compression
+        messages = await self._compress_context(messages)
+
+        # 12. TaskMonitor creation
+        task_monitor = TaskMonitor(
+            task_id=f"{session_id}_{datetime.now().strftime('%H%M%S')}",
+            description=message,
+            session_id=session_id,
+            timeout_seconds=settings.progress_timeout_seconds,
+            hard_timeout_seconds=settings.hard_timeout_seconds,
+            retrospect_threshold=60,
+            fallback_model=self.brain.get_fallback_model(session_id),
+        )
+        task_monitor.start(self.brain.model)
+        self._current_task_monitor = task_monitor
+
+        # session_type 检测
+        session_type = "cli" if (session and session.channel == "cli") else "im"
+
+        return messages, session_type, task_monitor, conversation_id, im_tokens
+
+    async def _finalize_session(
+        self,
+        response_text: str,
+        session: Any,
+        session_id: str,
+        task_monitor: "TaskMonitor",
+    ) -> None:
+        """
+        会话流水线 - 共享收尾阶段。
+
+        chat_with_session() 和 chat_with_session_stream() 共用此方法。
+
+        步骤:
+        1. 将 react_trace 摘要写入 session metadata（供 IM 使用）
+        2. 完成 TaskMonitor + 后台复盘
+        3. 记录 assistant 响应到 memory
+        4. 清理临时状态
+        """
+        # 1. 思维链摘要 → session metadata
+        if session:
+            try:
+                chain_summary = self._build_chain_summary(
+                    self.reasoning_engine._last_react_trace
+                )
+                if chain_summary:
+                    session.set_metadata("_last_chain_summary", chain_summary)
+            except Exception as e:
+                logger.debug(f"[ChainSummary] Failed to build chain summary: {e}")
+
+        # 2. TaskMonitor complete + retrospect
+        metrics = task_monitor.complete(success=True, response=response_text)
+        if metrics.retrospect_needed:
+            asyncio.create_task(self._do_task_retrospect_background(task_monitor, session_id))
+            logger.info(f"[Session:{session_id}] Task retrospect scheduled (background)")
+
+        # 3. Memory: 记录 assistant 响应
+        self.memory_manager.record_turn("assistant", response_text)
+        logger.info(f"[Session:{session_id}] Agent: {response_text}")
+
+        # 4. Cleanup（总是执行，放在 finally 中由调用方保证）
+        # 注意：此方法不做 cleanup，cleanup 统一在 _cleanup_session_state() 中
+
+    def _cleanup_session_state(self, im_tokens: Any) -> None:
+        """
+        会话流水线 - 状态清理（总是在 finally 中调用）。
+
+        im_tokens 可能为 None（_prepare_session_context 在 step 2 之前/之后异常时）,
+        此时 contextvar 残留由下次 set_im_context 覆盖，这里跳过 reset 即可。
+        """
+        self._current_task_definition = ""
+        self._current_task_query = ""
+        if im_tokens is not None:
+            with contextlib.suppress(Exception):
+                from .im_context import reset_im_context
+                reset_im_context(im_tokens)
+        self._current_session = None
+        self.agent_state.current_session = None
+        self._current_task_monitor = None
+
     async def chat_with_session(
         self,
         message: str,
@@ -2642,17 +2919,17 @@ search_github → install_skill → 使用
         gateway: Any = None,
     ) -> str:
         """
-        使用外部 Session 历史进行对话（用于 IM 通道）
+        使用外部 Session 历史进行对话（用于 IM / CLI 通道）。
 
-        与 chat() 不同，这里使用传入的 session_messages 作为对话上下文，
-        而不是全局的 _conversation_history。
+        走完整的 Agent 流水线：Prompt Compiler → 上下文构建 → ReasoningEngine.run()。
+        与 chat_with_session_stream() 共享 _prepare_session_context / _finalize_session。
 
         Args:
             message: 用户消息
-            session_messages: Session 的对话历史，格式 [{"role": "user/assistant", "content": "..."}]
-            session_id: 会话 ID（用于日志）
-            session: Session 对象（用于发送消息回 IM 通道）
-            gateway: MessageGateway 对象（用于发送消息）
+            session_messages: Session 的对话历史
+            session_id: 会话 ID
+            session: Session 对象
+            gateway: MessageGateway 对象
 
         Returns:
             Agent 响应
@@ -2661,7 +2938,6 @@ search_github → install_skill → 使用
             await self.initialize()
 
         # === 停止指令检测 ===
-        # 检测用户是否发送了停止任务的指令
         message_lower = message.strip().lower()
         if message_lower in self.STOP_COMMANDS or message.strip() in self.STOP_COMMANDS:
             self._task_cancelled = True
@@ -2669,14 +2945,170 @@ search_github → install_skill → 使用
             logger.info(f"[StopTask] User requested to stop: {message}")
             return "✅ 好的，已停止当前任务。有什么其他需要帮助的吗？"
 
-        # 重置取消标志（开始新任务）
+        # 重置取消标志
         self._task_cancelled = False
         self._cancel_reason = ""
 
-        # 保存当前会话标识
-        # - session_instance_id: Session.id（临时实例 ID，用于日志）
-        # - conversation_id: Session.session_key（稳定对话线程 ID，用于 plan/memory 归档）
+        # 解析 conversation_id
         self._current_session_id = session_id
+        conversation_id = self._resolve_conversation_id(session, session_id)
+        self._current_conversation_id = conversation_id
+
+        im_tokens = None
+        try:
+            # === 共享准备 ===
+            messages, session_type, task_monitor, conversation_id, im_tokens = (
+                await self._prepare_session_context(
+                    message=message,
+                    session_messages=session_messages,
+                    session_id=session_id,
+                    session=session,
+                    gateway=gateway,
+                    conversation_id=conversation_id,
+                )
+            )
+
+            # === 核心推理 (同步返回) ===
+            response_text = await self._chat_with_tools_and_context(
+                messages, task_monitor=task_monitor, session_type=session_type,
+            )
+
+            # === 共享收尾 ===
+            await self._finalize_session(
+                response_text=response_text,
+                session=session,
+                session_id=session_id,
+                task_monitor=task_monitor,
+            )
+
+            return response_text
+        finally:
+            self._cleanup_session_state(im_tokens)
+
+    async def chat_with_session_stream(
+        self,
+        message: str,
+        session_messages: list[dict],
+        session_id: str = "",
+        session: Any = None,
+        gateway: Any = None,
+        *,
+        plan_mode: bool = False,
+        endpoint_override: str | None = None,
+        attachments: list | None = None,
+    ):
+        """
+        流式版 chat_with_session，yield SSE 事件字典。
+
+        走与 chat_with_session() 完全一致的 Agent 流水线（共享准备/收尾），
+        中间推理部分使用 reasoning_engine.reason_stream() 实现流式输出。
+
+        用于 Desktop Chat API (/api/chat) 的 SSE 通道。
+
+        Args:
+            message: 用户消息
+            session_messages: Session 的对话历史
+            session_id: 会话 ID
+            session: Session 对象
+            gateway: MessageGateway 对象
+            plan_mode: 是否启用 Plan 模式
+            endpoint_override: 端点覆盖
+            attachments: Desktop Chat 附件列表
+
+        Yields:
+            SSE 事件字典 {"type": "...", ...}
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # === 停止指令检测 ===
+        message_lower = message.strip().lower()
+        if message_lower in self.STOP_COMMANDS or message.strip() in self.STOP_COMMANDS:
+            self._task_cancelled = True
+            self._cancel_reason = f"用户发送停止指令: {message}"
+            logger.info(f"[StopTask] User requested to stop: {message}")
+            yield {"type": "text_delta", "content": "✅ 好的，已停止当前任务。有什么其他需要帮助的吗？"}
+            yield {"type": "done"}
+            return
+
+        # 重置取消标志
+        self._task_cancelled = False
+        self._cancel_reason = ""
+
+        # 解析 conversation_id
+        self._current_session_id = session_id
+        conversation_id = self._resolve_conversation_id(session, session_id)
+        self._current_conversation_id = conversation_id
+
+        im_tokens = None
+        _reply_text = ""
+        try:
+            # === 共享准备 ===
+            messages, session_type, task_monitor, conversation_id, im_tokens = (
+                await self._prepare_session_context(
+                    message=message,
+                    session_messages=session_messages,
+                    session_id=session_id,
+                    session=session,
+                    gateway=gateway,
+                    conversation_id=conversation_id,
+                    attachments=attachments,
+                )
+            )
+
+            # === 构建 System Prompt（与 _chat_with_tools_and_context 一致） ===
+            task_description = (getattr(self, "_current_task_query", "") or "").strip()
+            if not task_description:
+                task_description = self._get_last_user_request(messages).strip()
+
+            system_prompt = await self._build_system_prompt_compiled(
+                task_description=task_description,
+                session_type=session_type,
+            )
+
+            # 注入 TaskDefinition
+            task_def = (getattr(self, "_current_task_definition", "") or "").strip()
+            if task_def:
+                system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
+
+            base_system_prompt = system_prompt
+
+            # === 核心推理 (流式) ===
+            async for event in self.reasoning_engine.reason_stream(
+                messages=messages,
+                tools=self._tools,
+                system_prompt=system_prompt,
+                base_system_prompt=base_system_prompt,
+                task_description=task_description,
+                task_monitor=task_monitor,
+                session_type=session_type,
+                plan_mode=plan_mode,
+                endpoint_override=endpoint_override,
+                conversation_id=conversation_id,
+            ):
+                # 收集回复文本（用于 session 保存 & memory）
+                if event.get("type") == "text_delta":
+                    _reply_text += event.get("content", "")
+                yield event
+
+            # === 共享收尾 ===
+            if _reply_text:
+                await self._finalize_session(
+                    response_text=_reply_text,
+                    session=session,
+                    session_id=session_id,
+                    task_monitor=task_monitor,
+                )
+
+        except Exception as e:
+            logger.error(f"chat_with_session_stream error: {e}", exc_info=True)
+            yield {"type": "error", "message": str(e)[:500]}
+            yield {"type": "done"}
+        finally:
+            self._cleanup_session_state(im_tokens)
+
+    def _resolve_conversation_id(self, session: Any, session_id: str) -> str:
+        """从 session 中解析稳定的 conversation_id。"""
         conversation_id = ""
         try:
             if session and hasattr(session, "session_key"):
@@ -2685,242 +3117,32 @@ search_github → install_skill → 使用
                 conversation_id = session.get_metadata("_session_key") or ""
         except Exception:
             conversation_id = ""
-        if not conversation_id:
-            conversation_id = session_id
+        return conversation_id or session_id
 
-        self._current_conversation_id = conversation_id
+    def _build_chain_summary(self, react_trace: list[dict]) -> list[dict] | None:
+        """
+        从 ReAct trace 构建思维链摘要（用于 IM 消息 metadata）。
 
-        # 对齐 MemoryManager 会话：使用 Windows 安全的文件名
-        try:
-            import re
-            conversation_safe_id = conversation_id.replace(":", "__")
-            # 清理文件名中不安全的字符 (/, \, +, =, ?, *, <, >, |, " 等)
-            conversation_safe_id = re.sub(r'[/\\+=%?*<>|"\x00-\x1f]', "_", conversation_safe_id)
-            if getattr(self.memory_manager, "_current_session_id", None) != conversation_safe_id:
-                self.memory_manager.start_session(conversation_safe_id)
-        except Exception as e:
-            logger.warning(f"[Memory] Failed to align memory session: {e}")
-
-        # 保存当前 IM 会话信息（供 IM 工具使用，协程隔离）
-        # CLI 模式（gateway=None）不暴露 session 给 IM 工具，
-        # 保持 IM 工具返回 "当前不在 IM 会话中" 的清晰提示
-        from .im_context import reset_im_context, set_im_context
-
-        im_tokens = set_im_context(
-            session=session if gateway else None,
-            gateway=gateway,
-        )
-
-        # === 设置当前会话（供中断检查 & ReasoningEngine ask_user 等待使用）===
-        self._current_session = session
-        self.agent_state.current_session = session
-
-        # 设置当前会话到日志缓存（供 get_session_logs 工具使用）
-        from ..logging import get_session_log_buffer
-
-        # 日志按 conversation 聚合更易排障
-        get_session_log_buffer().set_current_session(conversation_id)
-
-        try:
-            logger.info(f"[Session:{session_id}] User: {message}")
-
-            # 记录用户消息到 conversation_history（用于凌晨归纳）
-            self.memory_manager.record_turn("user", message)
-
-            # === 活人感：记录用户互动时间（用于空闲检测） ===
-            if hasattr(self, "proactive_engine") and self.proactive_engine:
-                self.proactive_engine.update_user_interaction()
-
-            # === 偏好挖掘：从用户消息中提取人格偏好信号（LLM 驱动，异步） ===
-            if hasattr(self, "trait_miner") and self.trait_miner and self.trait_miner.brain:
-                try:
-                    # mine_from_message 是 async，内部已调用 persona_manager.add_trait
-                    mined_traits = await self.trait_miner.mine_from_message(message, role="user")
-                    # 写入记忆系统，以便每日反思时晋升到 identity
-                    for trait in mined_traits:
-                        from ..memory.types import Memory, MemoryPriority, MemoryType
-                        mem = Memory(
-                            type=MemoryType.PERSONA_TRAIT,
-                            priority=MemoryPriority.LONG_TERM,
-                            content=f"{trait.dimension}={trait.preference}",
-                            source=trait.source,
-                            tags=[f"dimension:{trait.dimension}", f"preference:{trait.preference}"],
-                            importance_score=trait.confidence,
-                        )
-                        self.memory_manager.add_memory(mem)
-                    if mined_traits:
-                        logger.debug(f"[TraitMiner] Mined {len(mined_traits)} traits from user message")
-                except Exception as e:
-                    logger.debug(f"[TraitMiner] Mining failed (non-critical): {e}")
-
-            # === 两段式 Prompt 第一阶段：Prompt Compiler ===
-            # 对复杂请求进行结构化分析（独立上下文，不进入核心对话）
-            compiled_message = message
-            compiler_output = ""
-            compiler_summary = ""
-
-            if self._should_compile_prompt(message):
-                compiled_message, compiler_output = await self._compile_prompt(message)
-                if compiler_output:
-                    logger.info(f"[Session:{session_id}] Prompt compiled")
-                    compiler_summary = self._summarize_compiler_output(compiler_output)
-
-                    # 检查是否需要 Plan 模式（多步骤任务检测）
-                    from ..tools.handlers.plan import require_plan_for_session, should_require_plan
-
-                    # 判断条件：
-                    # 1. task_type 是 compound
-                    # 2. 用户请求包含多个动作（打开+搜索+截图等）
-                    is_compound = (
-                        "task_type: compound" in compiler_output
-                        or "task_type:compound" in compiler_output
-                    )
-                    has_multi_actions = should_require_plan(message)
-
-                    if is_compound or has_multi_actions:
-                        require_plan_for_session(conversation_id, True)
-                        logger.info(
-                            f"[Session:{session_id}] Multi-step task detected (compound={is_compound}, multi_actions={has_multi_actions}), Plan required"
-                        )
-
-            # 保存本轮任务定义（用于 system/developer 段注入与 memory 检索 query）
-            self._current_task_definition = compiler_summary
-            self._current_task_query = compiler_summary or message
-
-            # 构建 API 消息格式（从 session_messages 转换）
-            # 注意：session_messages 已包含当前轮用户消息（由 gateway 在调用前通过
-            # session.add_message 添加）。当前轮消息由下方 compiled_message 单独追加
-            # （可能经过 Prompt Compiler 处理），因此这里需要排除最后一条用户消息以避免重复。
-            history_messages = session_messages
-            if history_messages and history_messages[-1].get("role") == "user":
-                history_messages = history_messages[:-1]
-
-            messages = []
-            for msg in history_messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role in ("user", "assistant") and content:
-                    messages.append(
-                        {
-                            "role": role,
-                            "content": content,
-                        }
-                    )
-
-            # === C2: 插入上下文边界标记 ===
-            # 让 LLM 清楚区分"历史上下文"和"当前最新消息"，避免将历史消息当成当前请求
-            if messages:
-                messages.append({
-                    "role": "user",
-                    "content": "[上下文结束，以下是用户的最新消息]",
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": "好的，我已了解之前的对话上下文。请告诉我你现在的需求。",
-                })
-
-            # 添加当前用户消息（支持多模态：文本 + 图片）
-            pending_images = session.get_metadata("pending_images") if session else None
-
-            if pending_images:
-                # 多模态消息：文本 + 图片
-                content_parts = []
-
-                # 添加文本部分（使用编译后的消息）
-                # 如果文本仅是图片占位符（如 "[图片: xxx.png]"），替换为更有意义的提示
-                _text_for_llm = compiled_message.strip()
-                if _text_for_llm and re.fullmatch(
-                    r"(\[图片: [^\]]+\]\s*)+", _text_for_llm
-                ):
-                    _text_for_llm = (
-                        f"用户发送了 {len(pending_images)} 张图片（已附在消息中，请直接查看）。"
-                        "请描述或回应你所看到的图片内容。"
-                    )
-
-                if _text_for_llm:
-                    content_parts.append(
-                        {
-                            "type": "text",
-                            "text": _text_for_llm,
-                        }
-                    )
-
-                # 添加图片部分
-                for img_data in pending_images:
-                    content_parts.append(img_data)
-
-                messages.append(
+        每个迭代生成一个摘要项，包含 thinking 预览和工具调用列表。
+        """
+        if not react_trace:
+            return None
+        return [
+            {
+                "iteration": t.get("iteration", 0),
+                "thinking_preview": (t.get("thinking") or "")[:150],
+                "thinking_duration_ms": t.get("thinking_duration_ms", 0),
+                "tools": [
                     {
-                        "role": "user",
-                        "content": content_parts,
+                        "name": tc.get("name", ""),
+                        "input_preview": str(tc.get("input_preview", ""))[:80],
                     }
-                )
-                logger.info(
-                    f"[Session:{session_id}] Multimodal message with {len(pending_images)} images"
-                )
-            else:
-                # 普通文本消息（使用编译后的消息）
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": compiled_message,
-                    }
-                )
-
-            # 压缩上下文（如果需要）
-            messages = await self._compress_context(messages)
-
-            # === 创建任务监控器 ===
-            task_monitor = TaskMonitor(
-                task_id=f"{session_id}_{datetime.now().strftime('%H%M%S')}",
-                description=message,
-                session_id=session_id,
-                timeout_seconds=settings.progress_timeout_seconds,
-                hard_timeout_seconds=settings.hard_timeout_seconds,
-                retrospect_threshold=60,  # 复盘阈值：60秒
-                fallback_model=self.brain.get_fallback_model(session_id),  # 动态获取备用模型
-            )
-            task_monitor.start(self.brain.model)
-            # 暴露给系统工具：允许 LLM 动态调整超时策略
-            self._current_task_monitor = task_monitor
-
-            # === 两段式 Prompt 第二阶段：主模型处理 ===
-            # 根据 session.channel 自动检测 session_type（CLI vs IM）
-            session_type = "cli" if (session and session.channel == "cli") else "im"
-            response_text = await self._chat_with_tools_and_context(
-                messages, task_monitor=task_monitor, session_type=session_type,
-            )
-
-            # === 完成任务监控 ===
-            metrics = task_monitor.complete(
-                success=True,
-                response=response_text,
-            )
-
-            # === 后台复盘分析（如果任务耗时过长，不阻塞响应） ===
-            if metrics.retrospect_needed:
-                # 创建后台任务执行复盘，不等待结果
-                asyncio.create_task(self._do_task_retrospect_background(task_monitor, session_id))
-                logger.info(f"[Session:{session_id}] Task retrospect scheduled (background)")
-
-            # 记录 Agent 响应到 conversation_history（用于凌晨归纳）
-            self.memory_manager.record_turn("assistant", response_text)
-
-            logger.info(f"[Session:{session_id}] Agent: {response_text}")
-
-            return response_text
-        finally:
-            # 清理临时任务定义（避免跨会话串扰）
-            self._current_task_definition = ""
-            self._current_task_query = ""
-            # 清除 IM 会话信息（协程隔离）
-            with contextlib.suppress(Exception):
-                reset_im_context(im_tokens)
-            # 清除当前会话引用
-            self._current_session = None
-            self.agent_state.current_session = None
-            # 清除当前任务监控器引用
-            self._current_task_monitor = None
+                    for tc in t.get("tool_calls", [])
+                ],
+                **({"context_compressed": t["context_compressed"]} if t.get("context_compressed") else {}),
+            }
+            for t in react_trace
+        ]
 
     async def _compile_prompt(self, user_message: str) -> tuple[str, str]:
         """

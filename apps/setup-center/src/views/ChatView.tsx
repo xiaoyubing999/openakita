@@ -20,6 +20,9 @@ import type {
   ChatArtifact,
   SlashCommand,
   EndpointSummary,
+  ChainGroup,
+  ChainToolCall,
+  ChatDisplayMode,
 } from "../types";
 import { genId, formatTime, formatDate } from "../utils";
 import {
@@ -35,9 +38,11 @@ import {
 
 type StreamEvent =
   | { type: "heartbeat" }
+  | { type: "iteration_start"; iteration: number }
+  | { type: "context_compressed"; before_tokens: number; after_tokens: number }
   | { type: "thinking_start" }
   | { type: "thinking_delta"; content: string }
-  | { type: "thinking_end" }
+  | { type: "thinking_end"; duration_ms?: number }
   | { type: "text_delta"; content: string }
   | { type: "tool_call_start"; tool: string; args: Record<string, unknown>; id?: string }
   | { type: "tool_call_end"; tool: string; result: string; id?: string }
@@ -49,8 +54,63 @@ type StreamEvent =
   | { type: "error"; message: string }
   | { type: "done"; usage?: { input_tokens: number; output_tokens: number } };
 
+// ─── 思维链工具函数 ───
+
+/** 提取文件名 */
+function basename(path: string): string {
+  if (!path) return "";
+  return path.replace(/\\/g, "/").split("/").pop() || path;
+}
+
+/** 将原始工具调用转为人类可读描述 */
+function formatToolDescription(tool: string, args: Record<string, unknown>): string {
+  switch (tool) {
+    case "read_file":
+      return `Read ${basename(String(args.path || args.file || ""))}`;
+    case "grep": case "search": case "ripgrep": case "search_files":
+      return `Grepped ${String(args.pattern || args.query || "").slice(0, 60)}${args.path ? ` in ${basename(String(args.path))}` : ""}`;
+    case "web_search":
+      return `Searched: "${String(args.query || "").slice(0, 50)}"`;
+    case "execute_code": case "run_code":
+      return "Executed code";
+    case "create_plan":
+      return `Created plan: ${String(args.task_summary || "").slice(0, 40)}`;
+    case "update_plan_step":
+      return `Updated plan step ${args.step_index ?? ""}`;
+    case "write_file":
+      return `Wrote ${basename(String(args.path || ""))}`;
+    case "edit_file":
+      return `Edited ${basename(String(args.path || ""))}`;
+    case "list_files": case "list_dir":
+      return `Listed ${basename(String(args.path || args.directory || "."))}`;
+    case "browser_navigate":
+      return `Navigated to ${String(args.url || "").slice(0, 50)}`;
+    case "browser_screenshot":
+      return "Took screenshot";
+    case "ask_user":
+      return `Asked: "${String(args.question || "").slice(0, 40)}"`;
+    default:
+      return `${tool}(${Object.keys(args).slice(0, 3).join(", ")})`;
+  }
+}
+
+/** 自动生成组摘要 */
+function generateGroupSummary(tools: ChainToolCall[]): string {
+  const reads = tools.filter(t => ["read_file"].includes(t.tool)).length;
+  const searches = tools.filter(t => ["grep", "search", "ripgrep", "search_files", "web_search"].includes(t.tool)).length;
+  const writes = tools.filter(t => ["write_file", "edit_file"].includes(t.tool)).length;
+  const others = tools.length - reads - searches - writes;
+  const parts: string[] = [];
+  if (reads) parts.push(`${reads} file${reads > 1 ? "s" : ""}`);
+  if (searches) parts.push(`${searches} search${searches > 1 ? "es" : ""}`);
+  if (writes) parts.push(`${writes} write${writes > 1 ? "s" : ""}`);
+  if (others) parts.push(`${others} other${others > 1 ? "s" : ""}`);
+  return parts.length > 0 ? `Explored ${parts.join(", ")}` : "";
+}
+
 // ─── 子组件 ───
 
+/** ThinkingBlock: 旧版组件保留做 bubble 模式向后兼容 */
 function ThinkingBlock({ content, defaultOpen }: { content: string; defaultOpen?: boolean }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen ?? false);
@@ -113,7 +173,7 @@ function ToolCallDetail({ tc }: { tc: ChatToolCall }) {
   );
 }
 
-/** Grouped tool calls: collapsed into one line by default, expandable */
+/** Grouped tool calls: collapsed into one line by default, expandable (bubble mode legacy) */
 function ToolCallsGroup({ toolCalls }: { toolCalls: ChatToolCall[] }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -158,6 +218,155 @@ function ToolCallsGroup({ toolCalls }: { toolCalls: ChatToolCall[] }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── ThinkingChain 组件 (Cursor 风格思维链时间线) ───
+
+/** 单个迭代组中的工具调用行 */
+function ChainToolItem({ tc }: { tc: ChainToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  const statusIcon =
+    tc.status === "done" ? <IconCheck size={12} /> :
+    tc.status === "error" ? <IconX size={12} /> :
+    <IconLoader size={12} />;
+  const statusColor = tc.status === "done" ? "var(--ok)" : tc.status === "error" ? "var(--danger)" : "var(--brand)";
+  return (
+    <div className="chainToolItem">
+      <div
+        className="chainToolHeader"
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span style={{ color: statusColor, display: "inline-flex", alignItems: "center" }}>{statusIcon}</span>
+        <span className="chainToolDesc">{tc.description}</span>
+        {tc.result && <span className="chainToolExpandHint"><IconChevronRight size={10} /></span>}
+      </div>
+      {expanded && tc.result && (
+        <pre className="chainToolResult">{tc.result}</pre>
+      )}
+    </div>
+  );
+}
+
+/** 单个迭代组 */
+function ChainGroupItem({ group, onToggle, isLast, streaming }: {
+  group: ChainGroup;
+  onToggle: () => void;
+  isLast: boolean;
+  streaming: boolean;
+}) {
+  const { t } = useTranslation();
+  const durationSec = group.thinking?.durationMs
+    ? (group.thinking.durationMs / 1000).toFixed(1)
+    : "...";
+  const isActive = isLast && streaming;
+  const showContent = !group.collapsed || isActive;
+
+  return (
+    <div className={`chainGroup ${group.collapsed && !isActive ? "chainGroupCollapsed" : ""}`}>
+      {/* Context compressed indicator */}
+      {group.contextCompressed && (
+        <div className="chainCompressedIndicator">
+          {t("chat.contextCompressed", {
+            before: Math.round(group.contextCompressed.beforeTokens / 1000),
+            after: Math.round(group.contextCompressed.afterTokens / 1000),
+          })}
+        </div>
+      )}
+      {/* Thinking header: "Thought for Xs" */}
+      <div className="chainThinkingHeader" onClick={onToggle}>
+        <span className="chainChevron" style={{ transform: showContent ? "rotate(90deg)" : "rotate(0deg)" }}>
+          <IconChevronRight size={11} />
+        </span>
+        <span className="chainThinkingLabel">
+          {isActive && !group.thinking?.durationMs
+            ? t("chat.thinking")
+            : group.thinking?.durationMs
+              ? t("chat.thoughtFor", { seconds: durationSec })
+              : t("chat.thinking")}
+        </span>
+      </div>
+
+      {showContent && (
+        <>
+          {/* Thinking content (inline visible, Cursor style) */}
+          {group.thinking?.content && (
+            <div className="chainThinkingContent">
+              {group.thinking.content}
+            </div>
+          )}
+
+          {/* Tool calls */}
+          {group.toolCalls.length > 0 && (
+            <div className="chainToolList">
+              {group.toolCalls.map((tc, i) => (
+                <ChainToolItem key={tc.toolId || i} tc={tc} />
+              ))}
+              {/* Summary line */}
+              {group.summary && (
+                <div className="chainSummary">{group.summary}</div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 完整思维链组件 */
+function ThinkingChain({ chain, streaming, showChain }: {
+  chain: ChainGroup[];
+  streaming: boolean;
+  showChain: boolean;
+}) {
+  const { t } = useTranslation();
+  const [localChain, setLocalChain] = useState(chain);
+
+  // 同步外部 chain 数据，但保留用户手动修改的 collapsed 状态
+  useEffect(() => {
+    setLocalChain(prev => {
+      const prevMap = new Map(prev.map(g => [g.iteration, g.collapsed]));
+      return chain.map(g => ({
+        ...g,
+        collapsed: prevMap.has(g.iteration) ? prevMap.get(g.iteration)! : g.collapsed,
+      }));
+    });
+  }, [chain]);
+
+  if (!showChain || !localChain || localChain.length === 0) return null;
+
+  // 全部折叠时显示摘要行
+  const allCollapsed = localChain.every(g => g.collapsed) && !streaming;
+  if (allCollapsed) {
+    const totalSteps = localChain.reduce((n, g) => n + g.toolCalls.length + (g.thinking ? 1 : 0), 0);
+    return (
+      <div
+        className="chainCollapsedSummary"
+        onClick={() => setLocalChain(prev => prev.map(g => ({ ...g, collapsed: false })))}
+      >
+        <IconChevronRight size={11} />
+        <span>{t("chat.chainCollapsed", { count: totalSteps })}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="thinkingChain">
+      {localChain.map((group, idx) => (
+        <ChainGroupItem
+          key={group.iteration}
+          group={group}
+          isLast={idx === localChain.length - 1}
+          streaming={streaming}
+          onToggle={() => {
+            setLocalChain(prev => prev.map((g, i) =>
+              i === idx ? { ...g, collapsed: !g.collapsed } : g
+            ));
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -598,10 +807,12 @@ function MessageBubble({
   msg,
   onAskAnswer,
   apiBaseUrl,
+  showChain = true,
 }: {
   msg: ChatMessage;
   onAskAnswer?: (msgId: string, answer: string) => void;
   apiBaseUrl?: string;
+  showChain?: boolean;
 }) {
   const isUser = msg.role === "user";
   return (
@@ -635,8 +846,15 @@ function MessageBubble({
           </div>
         )}
 
-        {/* Thinking content */}
-        {msg.thinking && <ThinkingBlock content={msg.thinking} />}
+        {/* Thinking chain (new, Cursor-style) */}
+        {msg.thinkingChain && msg.thinkingChain.length > 0 && (
+          <ThinkingChain chain={msg.thinkingChain} streaming={!!msg.streaming} showChain={showChain} />
+        )}
+
+        {/* Thinking content (legacy fallback when no chain data) */}
+        {msg.thinking && (!msg.thinkingChain || msg.thinkingChain.length === 0) && (
+          <ThinkingBlock content={msg.thinking} />
+        )}
 
         {/* Main content (markdown) */}
         {msg.content && (
@@ -656,8 +874,8 @@ function MessageBubble({
           </div>
         )}
 
-        {/* Tool calls (grouped & collapsed by default) */}
-        {msg.toolCalls && msg.toolCalls.length > 0 && (
+        {/* Tool calls - only show legacy group when no chain data */}
+        {msg.toolCalls && msg.toolCalls.length > 0 && (!msg.thinkingChain || msg.thinkingChain.length === 0) && (
           <ToolCallsGroup toolCalls={msg.toolCalls} />
         )}
 
@@ -754,6 +972,134 @@ function MessageBubble({
   );
 }
 
+// ─── Flat Mode (Cursor 风格无气泡模式) ───
+
+function FlatMessageItem({
+  msg,
+  onAskAnswer,
+  apiBaseUrl,
+  showChain = true,
+}: {
+  msg: ChatMessage;
+  onAskAnswer?: (msgId: string, answer: string) => void;
+  apiBaseUrl?: string;
+  showChain?: boolean;
+}) {
+  const isUser = msg.role === "user";
+  const isSystem = msg.role === "system";
+
+  if (isSystem) {
+    return (
+      <div className="flatMsgSystem">
+        <span>{msg.content}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flatMessage ${isUser ? "flatMsgUser" : "flatMsgAssistant"}`}>
+      {/* User message */}
+      {isUser && (
+        <div className="flatUserContent">
+          {msg.attachments && msg.attachments.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              {msg.attachments.map((att, i) => (
+                <AttachmentPreview key={i} att={att} />
+              ))}
+            </div>
+          )}
+          <span>{msg.content}</span>
+        </div>
+      )}
+
+      {/* Assistant message */}
+      {!isUser && (
+        <>
+          {/* Agent name */}
+          {msg.agentName && (
+            <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.4, marginBottom: 4 }}>
+              {msg.agentName}
+            </div>
+          )}
+
+          {/* Thinking chain (Cursor style timeline) */}
+          {msg.thinkingChain && msg.thinkingChain.length > 0 && (
+            <ThinkingChain chain={msg.thinkingChain} streaming={!!msg.streaming} showChain={showChain} />
+          )}
+
+          {/* Legacy thinking fallback */}
+          {msg.thinking && (!msg.thinkingChain || msg.thinkingChain.length === 0) && (
+            <ThinkingBlock content={msg.thinking} />
+          )}
+
+          {/* Streaming indicator */}
+          {msg.streaming && !msg.content && (
+            <div style={{ display: "flex", gap: 4, padding: "4px 0" }}>
+              <span className="dotBounce" style={{ animationDelay: "0s" }} />
+              <span className="dotBounce" style={{ animationDelay: "0.15s" }} />
+              <span className="dotBounce" style={{ animationDelay: "0.3s" }} />
+            </div>
+          )}
+
+          {/* Main content (markdown) */}
+          {msg.content && (
+            <div className="chatMdContent">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                {msg.content}
+              </ReactMarkdown>
+            </div>
+          )}
+
+          {/* Tool calls legacy fallback */}
+          {msg.toolCalls && msg.toolCalls.length > 0 && (!msg.thinkingChain || msg.thinkingChain.length === 0) && (
+            <ToolCallsGroup toolCalls={msg.toolCalls} />
+          )}
+
+          {/* Plan */}
+          {msg.plan && <PlanBlock plan={msg.plan} />}
+
+          {/* Artifacts */}
+          {msg.artifacts && msg.artifacts.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {msg.artifacts.map((art, i) => {
+                const fullUrl = art.file_url.startsWith("http")
+                  ? art.file_url
+                  : `${apiBaseUrl || ""}${art.file_url}`;
+                if (art.artifact_type === "image") {
+                  return (
+                    <div key={i} style={{ marginBottom: 8 }}>
+                      <img
+                        src={fullUrl}
+                        alt={art.caption || art.name}
+                        style={{ maxWidth: "100%", maxHeight: 400, borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer" }}
+                        onClick={() => window.open(fullUrl, "_blank")}
+                      />
+                    </div>
+                  );
+                }
+                return null;
+              })}
+            </div>
+          )}
+
+          {/* Ask user */}
+          {msg.askUser && (
+            <AskUserBlock
+              ask={msg.askUser}
+              onAnswer={(ans) => onAskAnswer?.(msg.id, ans)}
+            />
+          )}
+        </>
+      )}
+
+      {/* Timestamp */}
+      <div style={{ fontSize: 11, opacity: 0.25, marginTop: 2 }}>
+        {formatTime(msg.timestamp)}
+      </div>
+    </div>
+  );
+}
+
 // ─── 主组件 ───
 
 export function ChatView({
@@ -781,6 +1127,10 @@ export function ChatView({
   const [slashFilter, setSlashFilter] = useState("");
   const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+
+  // 思维链 & 显示模式
+  const [showChain, setShowChain] = useState(true);
+  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("flat");
 
   const [isRecording, setIsRecording] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -826,6 +1176,19 @@ export function ChatView({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // ── 思维链: 流式结束后自动折叠 ──
+  useEffect(() => {
+    if (!isStreaming && messages.some(m => m.thinkingChain?.length)) {
+      const timer = setTimeout(() => {
+        setMessages(prev => prev.map(m => ({
+          ...m,
+          thinkingChain: m.thinkingChain?.map(g => ({ ...g, collapsed: true })) ?? null,
+        })));
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [isStreaming]);
 
   // ── 点击外部关闭模型菜单 ──
   useEffect(() => {
@@ -1036,6 +1399,13 @@ export function ChatView({
       let currentArtifacts: ChatArtifact[] = [];
       let gracefulDone = false; // SSE 正常发送了 "done" 事件
 
+      // 思维链: 分组数据
+      let chainGroups: ChainGroup[] = [];
+      let currentChainGroup: ChainGroup | null = null;
+      let thinkingStartTime = 0;
+      let currentThinkingContent = "";
+      let pendingCompressedInfo: { beforeTokens: number; afterTokens: number } | null = null;
+
       while (true) {
         // ── 1. 每次循环检查 abort 状态 ──
         if (abort.signal.aborted) break;
@@ -1091,20 +1461,85 @@ export function ChatView({
                 // 后端心跳：保持连接活跃，不更新消息内容
                 // idle timer 已在 reader.read() 层自动重置
                 continue; // skip message update below
+              case "context_compressed":
+                // 上下文压缩事件: 暂存，下一个 iteration_start 时附加到新分组
+                pendingCompressedInfo = {
+                  beforeTokens: event.before_tokens,
+                  afterTokens: event.after_tokens,
+                };
+                break;
+              case "iteration_start":
+                // 思维链: 新迭代 → 新分组
+                currentChainGroup = {
+                  iteration: event.iteration,
+                  toolCalls: [],
+                  collapsed: false,
+                  ...(pendingCompressedInfo ? { contextCompressed: pendingCompressedInfo } : {}),
+                };
+                pendingCompressedInfo = null;
+                chainGroups = [...chainGroups, currentChainGroup];
+                break;
               case "thinking_start":
                 isThinking = true;
+                thinkingStartTime = Date.now();
+                currentThinkingContent = "";
+                // 容错: 如果后端未发送 iteration_start，自动创建分组
+                if (!currentChainGroup) {
+                  currentChainGroup = {
+                    iteration: chainGroups.length + 1,
+                    toolCalls: [],
+                    collapsed: false,
+                  };
+                  chainGroups = [...chainGroups, currentChainGroup];
+                }
                 break;
               case "thinking_delta":
                 currentThinking += event.content;
+                currentThinkingContent += event.content;
                 break;
-              case "thinking_end":
+              case "thinking_end": {
                 isThinking = false;
+                // 思维链: 记录 thinking 到当前组
+                const _thinkDuration = event.duration_ms || (Date.now() - thinkingStartTime);
+                const _preview = currentThinkingContent.split(/[。\n]/)[0].slice(0, 80);
+                if (currentChainGroup) {
+                  currentChainGroup = {
+                    ...currentChainGroup,
+                    thinking: {
+                      content: currentThinkingContent,
+                      durationMs: _thinkDuration,
+                      preview: _preview,
+                    },
+                  };
+                  chainGroups = chainGroups.map((g, i) =>
+                    i === chainGroups.length - 1 ? currentChainGroup! : g
+                  );
+                }
                 break;
+              }
               case "text_delta":
                 currentContent += event.content;
                 break;
               case "tool_call_start":
                 currentToolCalls = [...currentToolCalls, { tool: event.tool, args: event.args, status: "running", id: event.id }];
+                // 思维链: 追加工具调用到当前组
+                if (currentChainGroup) {
+                  const newTc: ChainToolCall = {
+                    toolId: event.id || genId(),
+                    tool: event.tool,
+                    args: event.args,
+                    status: "running",
+                    description: formatToolDescription(event.tool, event.args),
+                  };
+                  currentChainGroup = {
+                    ...currentChainGroup,
+                    toolCalls: [...currentChainGroup.toolCalls, newTc],
+                    summary: generateGroupSummary([...currentChainGroup.toolCalls, newTc]),
+                  };
+                  chainGroups = chainGroups.map((g, i) =>
+                    i === chainGroups.length - 1 ? currentChainGroup! : g
+                  );
+                }
                 break;
               case "tool_call_end": {
                 let matched = false;
@@ -1118,6 +1553,26 @@ export function ChatView({
                   }
                   return tc;
                 });
+                // 思维链: 更新工具状态（与旧版匹配逻辑一致：id 匹配优先，无 id 时按 name+status 匹配）
+                if (currentChainGroup) {
+                  let chainMatched = false;
+                  currentChainGroup = {
+                    ...currentChainGroup,
+                    toolCalls: currentChainGroup.toolCalls.map(tc => {
+                      if (chainMatched) return tc;
+                      const idMatch = event.id && tc.toolId === event.id;
+                      const nameMatch = !event.id && tc.tool === event.tool && tc.status === "running";
+                      if (idMatch || nameMatch) {
+                        chainMatched = true;
+                        return { ...tc, status: "done" as const, result: event.result };
+                      }
+                      return tc;
+                    }),
+                  };
+                  chainGroups = chainGroups.map((g, i) =>
+                    i === chainGroups.length - 1 ? currentChainGroup! : g
+                  );
+                }
                 break;
               }
               case "plan_created":
@@ -1182,6 +1637,7 @@ export function ChatView({
                     toolCalls: currentToolCalls.length > 0 ? currentToolCalls : null,
                     plan: currentPlan,
                     askUser: currentAsk,
+                    thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
                     streaming: true,
                   }];
                 });
@@ -1206,6 +1662,7 @@ export function ChatView({
                     plan: currentPlan ? { ...currentPlan } : null,
                     askUser: currentAsk ? { ...currentAsk } : null,
                     artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                    thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
                     streaming: event.type !== "done",
                   }
                 : m
@@ -1627,6 +2084,29 @@ export function ChatView({
             <IconMenu size={16} />
           </button>
           <div style={{ flex: 1 }} />
+
+          {/* 思维链开关 */}
+          <button
+            onClick={() => setShowChain(v => !v)}
+            className="chatTopBarBtn chainToggleBtn"
+            title={showChain ? t("chat.hideChain") : t("chat.showChain")}
+            style={{ opacity: showChain ? 1 : 0.4 }}
+          >
+            <IconZap size={14} />
+          </button>
+
+          {/* 模式切换: bubble <-> flat */}
+          <button
+            onClick={() => setDisplayMode(v => v === "bubble" ? "flat" : "bubble")}
+            className="chatTopBarBtn modeToggleBtn"
+            title={displayMode === "bubble" ? t("chat.flatMode") : t("chat.bubbleMode")}
+          >
+            <IconMessageCircle size={14} />
+            <span style={{ fontSize: 11, marginLeft: 2 }}>
+              {displayMode === "bubble" ? t("chat.flatMode") : t("chat.bubbleMode")}
+            </span>
+          </button>
+
           <button onClick={newConversation} className="chatTopBarBtn">
             <IconPlus size={14} /> <span>{t("chat.newConversation")}</span>
           </button>
@@ -1641,9 +2121,13 @@ export function ChatView({
               <div style={{ fontSize: 13, marginTop: 4 }}>{t("chat.emptyDesc")}</div>
             </div>
           )}
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} msg={msg} onAskAnswer={handleAskAnswer} apiBaseUrl={apiBaseUrl} />
-          ))}
+          {messages.map((msg) =>
+            displayMode === "flat" ? (
+              <FlatMessageItem key={msg.id} msg={msg} onAskAnswer={handleAskAnswer} apiBaseUrl={apiBaseUrl} showChain={showChain} />
+            ) : (
+              <MessageBubble key={msg.id} msg={msg} onAskAnswer={handleAskAnswer} apiBaseUrl={apiBaseUrl} showChain={showChain} />
+            )
+          )}
           <div ref={messagesEndRef} />
         </div>
 
