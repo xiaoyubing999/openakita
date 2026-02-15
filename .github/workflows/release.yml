@@ -27,10 +27,43 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.gh_release.outputs.id }}
+      is_stable: ${{ steps.detect_channel.outputs.is_stable }}
+      channel: ${{ steps.detect_channel.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.CHECKOUT_REF }}
+          fetch-depth: 0
+
+      # ── 判断发布渠道：tag 来自 v*.x 稳定分支 → stable，否则 → dev ──
+      - name: Detect release channel
+        id: detect_channel
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          # 从 tag 名提取 major.minor → 构造对应的稳定分支名 v{major}.{minor}.x
+          MAJOR_MINOR=$(echo "$TAG" | sed -E 's/^v([0-9]+\.[0-9]+)\..*/\1/')
+          STABLE_BRANCH="v${MAJOR_MINOR}.x"
+          echo "Tag: $TAG"
+          echo "Expected stable branch: $STABLE_BRANCH"
+
+          # 检查该稳定分支是否存在（远程）
+          if git ls-remote --exit-code --heads origin "$STABLE_BRANCH" > /dev/null 2>&1; then
+            # 检查 tag 的 commit 是否在该稳定分支上
+            TAG_SHA=$(git rev-list -n 1 "$TAG" 2>/dev/null || echo "")
+            if [ -n "$TAG_SHA" ] && git merge-base --is-ancestor "$TAG_SHA" "origin/$STABLE_BRANCH" 2>/dev/null; then
+              echo "is_stable=true" >> "$GITHUB_OUTPUT"
+              echo "channel=stable" >> "$GITHUB_OUTPUT"
+              echo "✅ Stable release (tag on $STABLE_BRANCH branch)"
+            else
+              echo "is_stable=false" >> "$GITHUB_OUTPUT"
+              echo "channel=dev" >> "$GITHUB_OUTPUT"
+              echo "⚠️ Dev release (tag not on $STABLE_BRANCH, likely from main)"
+            fi
+          else
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Dev release (no $STABLE_BRANCH branch exists)"
+          fi
 
       - name: Create or update draft release
         id: gh_release
@@ -39,7 +72,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           draft: true
           generate_release_notes: true
-          prerelease: false
+          prerelease: ${{ steps.detect_channel.outputs.is_stable != 'true' }}
 
   # ── Job 2a: Python 包发布 ──
   python_release:
@@ -334,7 +367,7 @@ jobs:
 
   # ── Job 3: 全部成功后发布 Release + 生成 latest.json ──
   publish_release:
-    needs: [python_release, desktop_release]
+    needs: [create_release, python_release, desktop_release]
     if: ${{ !cancelled() && needs.desktop_release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -360,36 +393,66 @@ jobs:
       - name: Generate latest.json for updater
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_STABLE: ${{ needs.create_release.outputs.is_stable }}
         run: |
+          CHANNEL="${{ needs.create_release.outputs.channel }}"
+          echo "Release channel: ${CHANNEL} (is_stable=${IS_STABLE})"
+
+          # 始终生成当前版本的 manifest
           python scripts/generate_latest_json.py \
             --tag "${{ env.RELEASE_TAG }}" \
-            --output latest.json \
+            --output latest-this.json \
             --repo "${{ github.repository }}"
-          echo "=== latest.json ==="
-          cat latest.json
 
-      - name: Upload latest.json as release asset
+          # 根据渠道决定文件名
+          if [ "$IS_STABLE" = "true" ]; then
+            cp latest-this.json latest.json
+            echo "📦 Stable release → latest.json"
+          else
+            cp latest-this.json latest-dev.json
+            echo "🔧 Dev release → latest-dev.json"
+          fi
+
+          echo "=== manifest ==="
+          cat latest-this.json
+
+      - name: Upload manifest as release asset
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_STABLE: ${{ needs.create_release.outputs.is_stable }}
         run: |
-          gh release upload "${{ env.RELEASE_TAG }}" latest.json --clobber
+          if [ "$IS_STABLE" = "true" ]; then
+            gh release upload "${{ env.RELEASE_TAG }}" latest.json --clobber
+          else
+            gh release upload "${{ env.RELEASE_TAG }}" latest-dev.json --clobber
+          fi
 
-      - name: Push latest.json to website repo
+      - name: Push latest.json / latest-dev.json to website repo
         if: ${{ secrets.WEBSITE_DEPLOY_TOKEN != '' }}
         env:
           GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+          IS_STABLE: ${{ needs.create_release.outputs.is_stable }}
         run: |
           git clone "https://x-access-token:${GH_TOKEN}@github.com/openakita/openakita-web.git" /tmp/openakita-web
           mkdir -p /tmp/openakita-web/api
-          cp latest.json /tmp/openakita-web/api/latest.json
           cd /tmp/openakita-web
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add api/latest.json
-          if git diff --cached --quiet; then
-            echo "No changes to latest.json"
+
+          if [ "$IS_STABLE" = "true" ]; then
+            cp "$GITHUB_WORKSPACE/latest.json" api/latest.json
+            git add api/latest.json
+            MSG="chore: update latest.json (stable) for ${{ env.RELEASE_TAG }}"
           else
-            git commit -m "chore: update latest.json for ${{ env.RELEASE_TAG }}"
+            cp "$GITHUB_WORKSPACE/latest-dev.json" api/latest-dev.json
+            git add api/latest-dev.json
+            MSG="chore: update latest-dev.json (dev) for ${{ env.RELEASE_TAG }}"
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "$MSG"
             git push
-            echo "latest.json pushed to openakita-web"
+            echo "Pushed to openakita-web"
           fi

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'v*.x']
   pull_request:
-    branches: [main]
+    branches: [main, 'v*.x']
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -169,9 +169,9 @@ jobs:
         if: ${{ hashFiles('apps/setup-center/src-tauri/Cargo.toml') == '' }}
         run: echo "apps/setup-center/src-tauri not present in repository; skipping."
 
-  # ── Tauri 完整构建检查（仅 Linux，push to main 时执行） ──
+  # ── Tauri 完整构建检查（仅 Linux，push to main 或 v*.x 稳定分支时执行） ──
   tauri_full_build_check:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v'))
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
