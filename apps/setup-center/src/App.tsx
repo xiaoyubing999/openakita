@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { check as checkUpdate, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 // Window controls are handled by native title bar
 import { ChatView } from "./views/ChatView";
 import { SkillManager } from "./views/SkillManager";
@@ -583,6 +585,9 @@ export function App() {
   const [pendingStartWsId, setPendingStartWsId] = useState<string | null>(null); // workspace ID waiting for conflict resolution
   const [versionMismatch, setVersionMismatch] = useState<{ backend: string; desktop: string } | null>(null);
   const [newRelease, setNewRelease] = useState<{ latest: string; current: string; url: string } | null>(null);
+  // ── Auto-updater state ──
+  const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<{ status: "idle" | "downloading" | "installing" | "done" | "error"; percent?: number; error?: string }>({ status: "idle" });
   const [desktopVersion, setDesktopVersion] = useState("0.0.0");
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
   const GITHUB_REPO = "openakita/openakita";
@@ -3160,93 +3165,83 @@ export function App() {
   }
 
   /**
-   * 检查 GitHub 是否有新版本发布。
-   *
-   * 缓存策略（localStorage）：
-   * - 成功：缓存 24 小时，期间不再请求
-   * - 失败：指数退避 — 1h → 4h → 12h → 48h → 72h（上限），
-   *   适应国内网络环境下 GitHub API 不可达的情况
+   * 使用 Tauri Plugin Updater 检查更新。
+   * 回退机制：如果 Tauri updater 端点不可用，降级到 GitHub API 检查。
    */
-  async function checkGitHubRelease() {
-    const cacheKey = "openakita_release_check";
-    const failKey = "openakita_release_fail";
+  async function checkForAppUpdate() {
     const dismissKey = "openakita_release_dismissed";
-    const SUCCESS_TTL = 24 * 60 * 60 * 1000;   // 24h
-    const BACKOFF_BASE = 60 * 60 * 1000;        // 1h
-    const BACKOFF_MAX = 72 * 60 * 60 * 1000;    // 72h
-    const FETCH_TIMEOUT = 4000;                  // 4s (shorter — don't block UX)
-
     try {
-      // ── 1. Check success cache ──
-      const cached = localStorage.getItem(cacheKey);
-      if (cached) {
-        try {
-          const { ts, tag } = JSON.parse(cached);
-          if (Date.now() - ts < SUCCESS_TTL) {
-            // Still within cache window — show notification if newer
-            const dismissed = localStorage.getItem(dismissKey);
-            if (tag && compareSemver(tag, desktopVersion) > 0 && dismissed !== tag) {
-              setNewRelease({
-                latest: tag,
-                current: desktopVersion,
-                url: `https://github.com/${GITHUB_REPO}/releases/tag/v${tag}`,
-              });
-            }
-            return;
-          }
-        } catch { /* corrupted cache, proceed to fetch */ }
-      }
-
-      // ── 2. Check failure backoff ──
-      const failRaw = localStorage.getItem(failKey);
-      if (failRaw) {
-        try {
-          const { ts, count } = JSON.parse(failRaw);
-          const backoff = Math.min(BACKOFF_BASE * Math.pow(2, count - 1), BACKOFF_MAX);
-          if (Date.now() - ts < backoff) {
-            return; // Still in cooldown after previous failure
-          }
-        } catch { /* corrupted, proceed */ }
-      }
-
-      // ── 3. Fetch from GitHub API ──
-      const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-        signal: AbortSignal.timeout(FETCH_TIMEOUT),
-        headers: { Accept: "application/vnd.github.v3+json" },
-      });
-
-      if (!res.ok) {
-        // HTTP error (403 rate limit, 404, etc.) — record failure for backoff
-        const prev = failRaw ? JSON.parse(failRaw) : { count: 0 };
-        localStorage.setItem(failKey, JSON.stringify({ ts: Date.now(), count: (prev.count || 0) + 1 }));
-        return;
-      }
-
-      // ── 4. Parse response ──
-      const data = await res.json();
-      const tagName = (data.tag_name || "").replace(/^v/, "");
-
-      // Success — cache result and clear failure counter
-      localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), tag: tagName }));
-      localStorage.removeItem(failKey);
-
-      if (tagName && compareSemver(tagName, desktopVersion) > 0) {
+      const update = await checkUpdate();
+      if (update) {
         const dismissed = localStorage.getItem(dismissKey);
-        if (dismissed !== tagName) {
+        if (dismissed !== update.version) {
+          setUpdateAvailable(update);
           setNewRelease({
-            latest: tagName,
+            latest: update.version,
             current: desktopVersion,
-            url: data.html_url || `https://github.com/${GITHUB_REPO}/releases`,
+            url: `https://github.com/${GITHUB_REPO}/releases/tag/v${update.version}`,
           });
         }
       }
     } catch {
-      // Network error / timeout — record failure for exponential backoff
+      // Tauri updater failed (e.g., endpoint unreachable) — fallback to GitHub API
       try {
-        const prevRaw = localStorage.getItem(failKey);
-        const prevCount = prevRaw ? (JSON.parse(prevRaw).count || 0) : 0;
-        localStorage.setItem(failKey, JSON.stringify({ ts: Date.now(), count: prevCount + 1 }));
-      } catch { /* localStorage full or unavailable */ }
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+          signal: AbortSignal.timeout(4000),
+          headers: { Accept: "application/vnd.github.v3+json" },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const tagName = (data.tag_name || "").replace(/^v/, "");
+        if (tagName && compareSemver(tagName, desktopVersion) > 0) {
+          const dismissed = localStorage.getItem(dismissKey);
+          if (dismissed !== tagName) {
+            setNewRelease({
+              latest: tagName,
+              current: desktopVersion,
+              url: data.html_url || `https://github.com/${GITHUB_REPO}/releases`,
+            });
+          }
+        }
+      } catch { /* both methods failed, silently ignore */ }
+    }
+  }
+
+  /**
+   * 用户确认更新后，下载并安装更新包。
+   */
+  async function doDownloadAndInstall() {
+    if (!updateAvailable) return;
+    setUpdateProgress({ status: "downloading", percent: 0 });
+    try {
+      let totalBytes = 0;
+      let downloadedBytes = 0;
+      await updateAvailable.downloadAndInstall((event) => {
+        if (event.event === "Started" && event.data.contentLength) {
+          totalBytes = event.data.contentLength;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          const percent = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+          setUpdateProgress({ status: "downloading", percent });
+        } else if (event.event === "Finished") {
+          setUpdateProgress({ status: "installing" });
+        }
+      });
+      setUpdateProgress({ status: "done" });
+    } catch (err) {
+      setUpdateProgress({ status: "error", error: String(err) });
+    }
+  }
+
+  /**
+   * 更新安装完成后重启应用。
+   */
+  async function doRelaunchAfterUpdate() {
+    try {
+      await relaunch();
+    } catch {
+      // Fallback: just tell the user to restart manually
+      setUpdateProgress({ status: "error", error: "请手动重启应用以完成更新" });
     }
   }
 
@@ -3372,10 +3367,10 @@ export function App() {
     await doStartLocalService(wsId);
   }
 
-  // ── Check GitHub release once desktop version is known ──
+  // ── Check for app updates once desktop version is known ──
   useEffect(() => {
     if (desktopVersion === "0.0.0") return; // not yet loaded
-    checkGitHubRelease();
+    checkForAppUpdate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desktopVersion]);
 
@@ -7743,26 +7738,69 @@ export function App() {
           </div>
         )}
 
-        {/* ── New release notification ── */}
+        {/* ── Update notification with download/install support ── */}
         {newRelease && (
-          <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 9998, background: "#e3f2fd", border: "1px solid #90caf9", borderRadius: 10, padding: "12px 20px", maxWidth: 380, boxShadow: "0 4px 20px rgba(0,0,0,0.08)", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 9998, background: "#e3f2fd", border: "1px solid #90caf9", borderRadius: 10, padding: "12px 20px", maxWidth: 400, boxShadow: "0 4px 20px rgba(0,0,0,0.08)", display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 16 }}>🎉</span>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{t("version.newRelease")}</span>
-              <button style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#999" }} onClick={() => {
-                setNewRelease(null);
-                localStorage.setItem("openakita_release_dismissed", newRelease.latest);
-              }}>&times;</button>
+              <span style={{ fontSize: 16 }}>{updateProgress.status === "done" ? "✅" : updateProgress.status === "error" ? "❌" : "🎉"}</span>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>
+                {updateProgress.status === "done" ? t("version.updateReady") : updateProgress.status === "error" ? t("version.updateFailed") : t("version.newRelease")}
+              </span>
+              {updateProgress.status === "idle" && (
+                <button style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#999" }} onClick={() => {
+                  setNewRelease(null);
+                  localStorage.setItem("openakita_release_dismissed", newRelease.latest);
+                }}>&times;</button>
+              )}
             </div>
+
+            {/* Version info */}
             <div style={{ fontSize: 12, color: "#0d47a1", lineHeight: 1.6 }}>
               {t("version.newReleaseDetail", { latest: newRelease.latest, current: newRelease.current })}
             </div>
+
+            {/* Download progress bar */}
+            {updateProgress.status === "downloading" && (
+              <div style={{ width: "100%", background: "#bbdefb", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                <div style={{ width: `${updateProgress.percent || 0}%`, background: "#1976d2", height: "100%", borderRadius: 4, transition: "width 0.3s" }} />
+              </div>
+            )}
+            {updateProgress.status === "downloading" && (
+              <div style={{ fontSize: 11, color: "#1565c0" }}>{t("version.downloading")} {updateProgress.percent || 0}%</div>
+            )}
+            {updateProgress.status === "installing" && (
+              <div style={{ fontSize: 11, color: "#1565c0" }}>{t("version.installing")}</div>
+            )}
+            {updateProgress.status === "error" && (
+              <div style={{ fontSize: 11, color: "#c62828" }}>{updateProgress.error}</div>
+            )}
+
+            {/* Action buttons */}
             <div style={{ display: "flex", gap: 8 }}>
-              <a href={newRelease.url} target="_blank" rel="noreferrer" className="btnSmall btnSmallPrimary" style={{ fontSize: 11, textDecoration: "none" }}>{t("version.viewRelease")}</a>
-              <button className="btnSmall" style={{ fontSize: 11 }} onClick={() => {
-                setNewRelease(null);
-                localStorage.setItem("openakita_release_dismissed", newRelease.latest);
-              }}>{t("version.dismiss")}</button>
+              {updateProgress.status === "idle" && updateAvailable && (
+                <button className="btnSmall btnSmallPrimary" style={{ fontSize: 11 }} onClick={doDownloadAndInstall}>
+                  {t("version.updateNow")}
+                </button>
+              )}
+              {updateProgress.status === "idle" && !updateAvailable && (
+                <a href={newRelease.url} target="_blank" rel="noreferrer" className="btnSmall btnSmallPrimary" style={{ fontSize: 11, textDecoration: "none" }}>{t("version.viewRelease")}</a>
+              )}
+              {updateProgress.status === "done" && (
+                <button className="btnSmall btnSmallPrimary" style={{ fontSize: 11 }} onClick={doRelaunchAfterUpdate}>
+                  {t("version.restartNow")}
+                </button>
+              )}
+              {updateProgress.status === "idle" && (
+                <button className="btnSmall" style={{ fontSize: 11 }} onClick={() => {
+                  setNewRelease(null);
+                  localStorage.setItem("openakita_release_dismissed", newRelease.latest);
+                }}>{t("version.dismiss")}</button>
+              )}
+              {updateProgress.status === "error" && (
+                <button className="btnSmall" style={{ fontSize: 11 }} onClick={() => {
+                  setUpdateProgress({ status: "idle" });
+                }}>{t("version.retry")}</button>
+              )}
             </div>
           </div>
         )}

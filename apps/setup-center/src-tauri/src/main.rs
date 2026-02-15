@@ -1,5 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod migrations;
+
 use base64::Engine as _;
 use dirs_next::home_dir;
 use once_cell::sync::Lazy;
@@ -64,6 +66,8 @@ struct WorkspaceSummary {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AppStateFile {
+    #[serde(default = "default_config_version")]
+    config_version: u32,
     #[serde(default)]
     current_workspace_id: Option<String>,
     #[serde(default)]
@@ -74,6 +78,10 @@ struct AppStateFile {
     last_installed_version: Option<String>,
     #[serde(default)]
     install_mode: Option<String>,
+}
+
+fn default_config_version() -> u32 {
+    migrations::CURRENT_CONFIG_VERSION
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1561,9 +1569,18 @@ fn main() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // ── 启动对账：清理残留 .lock 和 stale PID 文件 ──
             startup_reconcile();
+
+            // ── 配置文件版本迁移 ──
+            let root = openakita_root_dir();
+            let state_path = state_file_path();
+            if let Err(e) = migrations::run_migrations(&state_path, &root) {
+                eprintln!("Config migration error: {e}");
+            }
 
             setup_tray(app)?;
 

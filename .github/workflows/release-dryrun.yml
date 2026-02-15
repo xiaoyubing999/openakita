@@ -1,0 +1,175 @@
+name: Release Dry Run
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['release/**']
+
+concurrency:
+  group: release-dryrun-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dryrun_build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            bundles: "nsis"
+            build_mode: "core"
+            suffix: "-core"
+          - platform: ubuntu-22.04
+            bundles: "deb,appimage"
+            build_mode: "core"
+            suffix: ""
+          - platform: macos-latest
+            bundles: "dmg"
+            build_mode: "core"
+            suffix: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2 \
+            rpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/setup-center/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/setup-center/src-tauri -> target
+
+      - name: Install Python project and PyInstaller
+        run: |
+          pip install -e ".[all]"
+          pip install "pyinstaller>=6.18.0"
+
+      - name: Clean previous PyInstaller output
+        shell: bash
+        run: |
+          rm -rf dist/
+          rm -rf build/openakita-server
+          rm -rf build/pyinstaller_work
+          rm -rf build/modules
+
+      - name: Package Python backend (PyInstaller)
+        run: python build/build_backend.py --mode ${{ matrix.build_mode }}
+
+      - name: Copy backend to Tauri resources
+        shell: bash
+        run: |
+          RESOURCE_DIR="apps/setup-center/src-tauri/resources"
+          mkdir -p "$RESOURCE_DIR"
+          rm -rf "$RESOURCE_DIR/openakita-server"
+          cp -r dist/openakita-server "$RESOURCE_DIR/openakita-server"
+          echo "Resources copied:"
+          du -sh "$RESOURCE_DIR"/*
+
+      - name: Create gitignored placeholders for Rust build
+        shell: bash
+        run: |
+          mkdir -p identity/personas
+          if [ ! -f identity/personas/user_custom.md ]; then
+            echo "# User Custom Persona (placeholder)" > identity/personas/user_custom.md
+          fi
+
+      - name: Install frontend dependencies
+        working-directory: apps/setup-center
+        run: npm ci
+
+      - name: Build Tauri bundles
+        working-directory: apps/setup-center
+        run: npx tauri build --bundles "${{ matrix.bundles }}"
+
+      - name: Collect installer bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLE_DIR="apps/setup-center/src-tauri/target/release/bundle"
+          OUT_DIR="${BUNDLE_DIR}/_upload"
+          rm -rf "${OUT_DIR}"
+          mkdir -p "${OUT_DIR}"
+
+          SUFFIX="${{ matrix.suffix }}"
+          copy_norm() {
+            local f="$1"
+            local base
+            base="$(basename "$f")"
+            local norm="${base// /.}"
+            if [ -n "${SUFFIX}" ]; then
+              local ext="${norm##*.}"
+              local name="${norm%.*}"
+              norm="${name}${SUFFIX}.${ext}"
+            fi
+            cp -f "$f" "${OUT_DIR}/${norm}"
+          }
+
+          want=()
+          case "${RUNNER_OS}" in
+            Windows) want=("exe") ;;
+            macOS) want=("dmg") ;;
+            Linux) want=("deb" "AppImage") ;;
+            *) echo "Unsupported RUNNER_OS=${RUNNER_OS}" >&2; exit 2 ;;
+          esac
+
+          found=0
+          for ext in "${want[@]}"; do
+            while IFS= read -r -d '' f; do
+              if [ "${RUNNER_OS}" = "Windows" ]; then
+                case "$f" in
+                  */nsis/*.exe)
+                    if [ "$(basename "$f")" = "uninstall.exe" ]; then
+                      continue
+                    fi
+                    ;;
+                  *)
+                    continue
+                    ;;
+                esac
+              fi
+              copy_norm "$f"
+              found=$((found+1))
+            done < <(find "${BUNDLE_DIR}" -type f -name "*.${ext}" -print0)
+          done
+
+          echo "Collected ${found} installer(s) into ${OUT_DIR}:"
+          ls -la "${OUT_DIR}" || true
+
+          if [ "${found}" -eq 0 ]; then
+            echo "ERROR: no installer bundles found." >&2
+            exit 1
+          fi
+
+      - name: Upload build artifacts (for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dryrun-${{ matrix.platform }}-${{ matrix.build_mode }}
+          path: apps/setup-center/src-tauri/target/release/bundle/_upload/
+          retention-days: 3

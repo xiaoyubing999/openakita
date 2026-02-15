@@ -7,22 +7,47 @@ on:
         description: "要上传/发布到的 tag（例如 v1.2.7）。留空则使用当前 ref。"
         required: false
         default: ""
+      ref:
+        description: "要构建的 commit SHA 或分支（留空则用 tag 指向的 commit）"
+        required: false
+        default: ""
   push:
     tags:
       - 'v*'
 
 env:
   RELEASE_TAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag) || github.ref_name }}
+  CHECKOUT_REF: ${{ (github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag) || github.ref_name }}
 
 jobs:
+  # ── Job 1: 创建 / 更新 Draft Release ──
+  create_release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.gh_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      - name: Create or update draft release
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
+          generate_release_notes: true
+          prerelease: false
+
+  # ── Job 2a: Python 包发布 ──
   python_release:
+    needs: create_release
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
-
-    outputs:
-      release_id: ${{ steps.gh_release.outputs.id }}
 
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
@@ -30,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,12 +76,11 @@ jobs:
         run: python -m build
       
       - name: Upload Python artifacts to GitHub Release
-        id: gh_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
-          generate_release_notes: true
+          draft: true
           overwrite_files: true
       
       - name: Publish to PyPI (Trusted Publishing / OIDC)
@@ -75,9 +99,9 @@ jobs:
           pip install twine
           twine upload dist/* --skip-existing
 
+  # ── Job 2b: Desktop 安装包构建（多平台矩阵） ──
   desktop_release:
-    needs: python_release
-    if: always()  # 无论 python_release 成功与否都运行
+    needs: create_release
     permissions:
       contents: write
     strategy:
@@ -112,7 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install Linux system dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -200,6 +224,8 @@ jobs:
         env:
           # full 构建需要额外包含 modules 资源目录；core 构建不设置此变量（空字符串会导致 JSON 解析失败）
           TAURI_CONFIG: ${{ matrix.build_mode == 'full' && '{"bundle":{"resources":["resources/openakita-server/","resources/modules/"]}}' || '{}' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --bundles "${{ matrix.bundles }}" ${{ matrix.args }}
 
       - name: List bundle outputs
@@ -268,6 +294,16 @@ jobs:
             done < <(find "${BUNDLE_DIR}" -type f -name "*.${ext}" -print0)
           done
 
+          # 同时收集 .sig 签名文件（如果存在）
+          sig_count=0
+          while IFS= read -r -d '' sigf; do
+            cp -f "$sigf" "${OUT_DIR}/"
+            sig_count=$((sig_count+1))
+          done < <(find "${BUNDLE_DIR}" -type f -name "*.sig" -print0)
+          if [ "${sig_count}" -gt 0 ]; then
+            echo "Collected ${sig_count} signature file(s)."
+          fi
+
           echo "Collected ${found} installer(s) into ${OUT_DIR}:"
           ls -la "${OUT_DIR}" || true
 
@@ -286,3 +322,74 @@ jobs:
           OUT_DIR="${BUNDLE_DIR}/_upload"
           ls -la "${OUT_DIR}"
           gh release upload "${RELEASE_TAG}" "${OUT_DIR}"/* --clobber
+
+      - name: Upload signature files as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signatures-${{ matrix.platform }}-${{ matrix.build_mode }}
+          path: apps/setup-center/src-tauri/target/release/bundle/_upload/*.sig
+          if-no-files-found: ignore
+          retention-days: 5
+
+  # ── Job 3: 全部成功后发布 Release + 生成 latest.json ──
+  publish_release:
+    needs: [python_release, desktop_release]
+    if: ${{ !cancelled() && needs.desktop_release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Publish release (remove draft flag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false
+
+      - name: Generate latest.json for updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/generate_latest_json.py \
+            --tag "${{ env.RELEASE_TAG }}" \
+            --output latest.json \
+            --repo "${{ github.repository }}"
+          echo "=== latest.json ==="
+          cat latest.json
+
+      - name: Upload latest.json as release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ env.RELEASE_TAG }}" latest.json --clobber
+
+      - name: Push latest.json to website repo
+        if: ${{ secrets.WEBSITE_DEPLOY_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/openakita/openakita-web.git" /tmp/openakita-web
+          mkdir -p /tmp/openakita-web/api
+          cp latest.json /tmp/openakita-web/api/latest.json
+          cd /tmp/openakita-web
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add api/latest.json
+          if git diff --cached --quiet; then
+            echo "No changes to latest.json"
+          else
+            git commit -m "chore: update latest.json for ${{ env.RELEASE_TAG }}"
+            git push
+            echo "latest.json pushed to openakita-web"
+          fi

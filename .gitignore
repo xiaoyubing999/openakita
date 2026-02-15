@@ -200,3 +200,6 @@ scripts/add_log_injection.py
 scripts/apply_agent_changes.py
 scripts/refactor_agent_tools.py
 scripts/update_version.py
+
+# Tauri signing keys (NEVER commit private keys)
+.tauri/

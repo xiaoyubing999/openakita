@@ -539,7 +539,14 @@
     "newReleaseDetail": "OpenAkita {{latest}} is available (current: {{current}})",
     "viewRelease": "View Release",
     "dismiss": "Later",
-    "checking": "Checking for updates..."
+    "checking": "Checking for updates...",
+    "updateNow": "Update Now",
+    "downloading": "Downloading update...",
+    "installing": "Installing update...",
+    "updateReady": "Update Ready",
+    "updateFailed": "Update Failed",
+    "restartNow": "Restart Now",
+    "retry": "Retry"
   },
   "onboarding": {
     "defaultWorkspace": "Default Workspace",
