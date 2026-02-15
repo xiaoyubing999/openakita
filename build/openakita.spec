@@ -143,6 +143,12 @@ excludes_core = [
     "unittest",
     "test",
     "tests",
+    # GUI toolkits (not needed for headless server)
+    "PyQt5",
+    "PyQt6",
+    "PySide2",
+    "PySide6",
+    "wx",
 ]
 
 excludes = excludes_core if BUILD_MODE == "core" else []
@@ -192,10 +198,20 @@ datas.append((_pip_dir, "pip"))
 # pip vendor dependencies (pip._vendor contains requests, urllib3 etc.)
 # Already included in pip directory, no extra handling needed
 
-# Built-in system skills
+# Built-in system skills (64 core skills: tool wrappers, memory, planning, etc.)
 skills_dir = PROJECT_ROOT / "skills" / "system"
 if skills_dir.exists():
     datas.append((str(skills_dir), "openakita/builtin_skills/system"))
+
+# External/extended skills (29 skills: document generation, browser testing, etc.)
+# These are discovered at runtime via SKILL_DIRECTORIES → "skills" relative to project_root
+# In bundled mode, _builtin_skills_root() resolves to _internal/openakita/builtin_skills/
+# so we place external skills alongside system skills
+_skills_root = PROJECT_ROOT / "skills"
+if _skills_root.exists():
+    for _skill_entry in _skills_root.iterdir():
+        if _skill_entry.is_dir() and _skill_entry.name != "system" and _skill_entry.name != ".gitkeep":
+            datas.append((str(_skill_entry), f"openakita/builtin_skills/{_skill_entry.name}"))
 
 # ============== Analysis ==============
 
