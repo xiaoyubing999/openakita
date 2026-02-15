@@ -166,6 +166,7 @@ BROWSER_TOOLS = [
                     "default": True,
                 },
             },
+            "required": [],
         },
     },
     # ---------- browser_navigate ----------
@@ -231,7 +232,7 @@ BROWSER_TOOLS = [
         "category": "Browser",
         "description": "Extract page content and element text from current webpage. When you need to: (1) Read page information, (2) Get element values, (3) Scrape data, (4) Verify page content.",
         "detail": build_detail(
-            summary="获取页面内容（文本）。",
+            summary="获取页面内容（文本或 HTML）。",
             scenarios=[
                 "读取页面信息",
                 "获取元素值",
@@ -240,10 +241,12 @@ BROWSER_TOOLS = [
             ],
             params_desc={
                 "selector": "元素选择器（可选，不填则获取整个页面）",
+                "format": "返回格式：text（纯文本，默认）或 html（HTML 源码）",
             },
             notes=[
                 "不指定 selector：获取整个页面文本",
                 "指定 selector：获取特定元素的文本",
+                "format 默认为 text，如需 HTML 源码请指定为 html",
             ],
         ),
         "triggers": [
@@ -266,6 +269,11 @@ BROWSER_TOOLS = [
                 "params": {"selector": ".article-body"},
                 "expected": "Returns text content of article body",
             },
+            {
+                "scenario": "获取页面 HTML 源码",
+                "params": {"format": "html"},
+                "expected": "Returns full page HTML content",
+            },
         ],
         "related_tools": [
             {"name": "browser_navigate", "relation": "load page before getting content"},
@@ -278,7 +286,14 @@ BROWSER_TOOLS = [
                     "type": "string",
                     "description": "元素选择器（可选，不填则获取整个页面）",
                 },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "html"],
+                    "description": "返回格式：text（纯文本，默认）或 html（HTML 源码）",
+                    "default": "text",
+                },
             },
+            "required": [],
         },
     },
     # ---------- browser_screenshot ----------
@@ -294,11 +309,13 @@ BROWSER_TOOLS = [
                 "调试页面问题",
             ],
             params_desc={
+                "full_page": "是否截取整个页面（包含滚动区域），默认 False 只截取可视区域",
                 "path": "保存路径（可选，不填自动生成）",
             },
             notes=[
                 "仅截取浏览器页面内容",
                 "如需截取桌面或其他应用，请使用 desktop_screenshot",
+                "full_page=True 会截取页面的完整内容（包含需要滚动才能看到的部分）",
             ],
         ),
         "triggers": [
@@ -317,6 +334,11 @@ BROWSER_TOOLS = [
                 "expected": "Saves screenshot with auto-generated filename",
             },
             {
+                "scenario": "截取完整页面",
+                "params": {"full_page": True},
+                "expected": "Saves full-page screenshot including scrollable content",
+            },
+            {
                 "scenario": "保存到指定路径",
                 "params": {"path": "C:/screenshots/result.png"},
                 "expected": "Saves screenshot to specified path",
@@ -332,8 +354,14 @@ BROWSER_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "保存路径（可选）"},
+                "full_page": {
+                    "type": "boolean",
+                    "description": "是否截取整个页面（包含滚动区域），默认只截取可视区域",
+                    "default": False,
+                },
+                "path": {"type": "string", "description": "保存路径（可选，不填自动生成）"},
             },
+            "required": [],
         },
     },
     # ---------- browser_close ----------
@@ -375,6 +403,7 @@ BROWSER_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+            "required": [],
         },
     },
 ]

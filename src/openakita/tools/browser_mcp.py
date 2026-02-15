@@ -270,7 +270,9 @@ class BrowserMCP:
     基于 Playwright 的浏览器自动化服务
     """
 
-    # 暴露给 LLM 的工具定义（精简后的 6 个）
+    # MCP 格式的工具定义（用于 get_tools() 返回 MCP 格式 schema）
+    # 注意：LLM API 实际使用的 schema 来自 tools/definitions/browser.py 中的 BROWSER_TOOLS，
+    # 修改参数 schema 时请同步更新两处！
     TOOLS = [
         BrowserTool(
             name="browser_task",
@@ -303,6 +305,7 @@ class BrowserMCP:
                         "default": True,
                     },
                 },
+                "required": [],
             },
         ),
         BrowserTool(
@@ -324,8 +327,14 @@ class BrowserMCP:
                         "type": "string",
                         "description": "元素选择器 (可选，默认整个页面)",
                     },
-                    "format": {"type": "string", "enum": ["text", "html"], "default": "text"},
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "html"],
+                        "description": "返回格式：text（纯文本，默认）或 html（HTML 源码）",
+                        "default": "text",
+                    },
                 },
+                "required": [],
             },
         ),
         BrowserTool(
@@ -336,17 +345,18 @@ class BrowserMCP:
                 "properties": {
                     "full_page": {
                         "type": "boolean",
-                        "description": "是否截取整个页面",
+                        "description": "是否截取整个页面（包含滚动区域）",
                         "default": False,
                     },
                     "path": {"type": "string", "description": "保存路径 (可选)"},
                 },
+                "required": [],
             },
         ),
         BrowserTool(
             name="browser_close",
             description="关闭浏览器，释放资源",
-            arguments={"type": "object", "properties": {}},
+            arguments={"type": "object", "properties": {}, "required": []},
         ),
     ]
 
