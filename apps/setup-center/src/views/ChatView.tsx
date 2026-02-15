@@ -1525,7 +1525,7 @@ export function ChatView({
                 currentToolCalls = [...currentToolCalls, { tool: event.tool, args: event.args, status: "running", id: event.id }];
                 // 思维链: 追加工具调用到当前组
                 if (currentChainGroup) {
-                  const grp = currentChainGroup;
+                  const grp: ChainGroup = currentChainGroup;
                   const newTc: ChainToolCall = {
                     toolId: event.id || genId(),
                     tool: event.tool,
@@ -1557,7 +1557,7 @@ export function ChatView({
                 });
                 // 思维链: 更新工具状态（与旧版匹配逻辑一致：id 匹配优先，无 id 时按 name+status 匹配）
                 if (currentChainGroup) {
-                  const grp = currentChainGroup;
+                  const grp: ChainGroup = currentChainGroup;
                   let chainMatched = false;
                   currentChainGroup = {
                     ...grp,
