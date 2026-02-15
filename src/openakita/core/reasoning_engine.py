@@ -371,6 +371,7 @@ class ReasoningEngine:
         conversation_id: str | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        progress_callback: Any = None,
     ) -> str:
         """
         主推理循环: Reason -> Act -> Observe。
@@ -387,6 +388,7 @@ class ReasoningEngine:
             conversation_id: 对话 ID
             thinking_mode: 思考模式覆盖 ('auto'/'on'/'off'/None)
             thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
+            progress_callback: 进度回调 async fn(str) -> None，用于 IM 实时输出思维链
 
         Returns:
             最终响应文本
@@ -405,6 +407,14 @@ class ReasoningEngine:
         })
 
         max_iterations = settings.max_iterations
+
+        # 进度回调辅助（安全调用，忽略异常）
+        async def _emit_progress(text: str) -> None:
+            if progress_callback and text:
+                try:
+                    await progress_callback(text)
+                except Exception:
+                    pass
 
         # 保存原始用户消息（用于模型切换时重置上下文）
         state.original_user_messages = [
@@ -524,6 +534,9 @@ class ReasoningEngine:
                         "before_tokens": _before_tokens,
                         "after_tokens": _after_tokens,
                     }
+                    await _emit_progress(
+                        f"📦 上下文压缩: {_before_tokens//1000}k → {_after_tokens//1000}k tokens"
+                    )
                     logger.info(
                         f"[ReAct] Context compressed: {_before_tokens} → {_after_tokens} tokens"
                     )
@@ -570,6 +583,18 @@ class ReasoningEngine:
                     raise
 
             _thinking_duration_ms = int((time.time() - _thinking_t0) * 1000)  # 思维链: 计算 thinking 耗时
+
+            # === IM 进度: thinking 内容 ===
+            if decision.thinking_content:
+                _think_preview = decision.thinking_content[:200].strip()
+                if len(decision.thinking_content) > 200:
+                    _think_preview += "..."
+                await _emit_progress(f"💭 _{_think_preview}_")
+
+            # === IM 进度: LLM 推理意图 ===
+            _decision_text_run = (decision.text_content or "").strip()
+            if _decision_text_run and decision.type == DecisionType.TOOL_CALLS:
+                await _emit_progress(_decision_text_run[:300])
 
             if task_monitor:
                 task_monitor.end_iteration(decision.text_content or "")
@@ -652,6 +677,7 @@ class ReasoningEngine:
                     return result
                 else:
                     # 需要继续循环（验证不通过）
+                    await _emit_progress("🔄 任务尚未完成，继续处理...")
                     logger.info(f"[ReAct] Iter {iteration+1} — VERIFY: incomplete, continuing loop")
                     react_trace.append(_iter_trace)
                     state.transition(TaskStatus.VERIFYING)
@@ -807,6 +833,12 @@ class ReasoningEngine:
                     tracer.end_trace(metadata={"result": "cancelled", "iterations": iteration + 1})
                     return "✅ 任务已停止。"
 
+                # === IM 进度: 描述即将执行的工具 ===
+                for tc in (decision.tool_calls or []):
+                    _tc_name = tc.get("name", "unknown")
+                    _tc_args = tc.get("input", tc.get("arguments", {}))
+                    await _emit_progress(f"🔧 {self._describe_tool_call(_tc_name, _tc_args)}")
+
                 # 执行工具
                 tool_results, executed, receipts = await self._tool_executor.execute_batch(
                     decision.tool_calls,
@@ -821,7 +853,7 @@ class ReasoningEngine:
                     executed_tool_names.extend(executed)
                     state.record_tool_execution(executed)
 
-                    # 记录工具成功/失败状态
+                    # 记录工具成功/失败状态 + IM 进度
                     for i, tool_name in enumerate(executed):
                         result_content = ""
                         if i < len(tool_results):
@@ -829,6 +861,11 @@ class ReasoningEngine:
                             result_content = str(r.get("content", "")) if isinstance(r, dict) else str(r)
                         is_error = any(m in result_content for m in ["❌", "⚠️ 工具执行错误", "错误类型:"])
                         self._record_tool_result(tool_name, success=not is_error)
+                        # IM 进度: 工具结果摘要
+                        _r_summary = self._summarize_tool_result(tool_name, result_content)
+                        if _r_summary:
+                            _icon = "❌" if is_error else "✅"
+                            await _emit_progress(f"{_icon} {_r_summary}")
 
                 if receipts:
                     delivery_receipts = receipts

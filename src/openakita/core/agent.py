@@ -2985,10 +2985,21 @@ search_github → install_skill → 使用
                 except Exception:
                     pass
 
+            # === 构建 IM 思维链进度回调 ===
+            _progress_cb = None
+            if gateway and session:
+                async def _im_chain_progress(text: str) -> None:
+                    try:
+                        await gateway.emit_progress_event(session, text)
+                    except Exception:
+                        pass
+                _progress_cb = _im_chain_progress
+
             # === 核心推理 (同步返回) ===
             response_text = await self._chat_with_tools_and_context(
                 messages, task_monitor=task_monitor, session_type=session_type,
                 thinking_mode=_thinking_mode, thinking_depth=_thinking_depth,
+                progress_callback=_progress_cb,
             )
 
             # === 共享收尾 ===
@@ -3517,6 +3528,7 @@ NEXT: 建议的下一步（如有）"""
         session_type: str = "cli",
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        progress_callback: Any = None,
     ) -> str:
         """
         使用指定的消息上下文进行对话（委托给 ReasoningEngine）
@@ -3531,6 +3543,7 @@ NEXT: 建议的下一步（如有）"""
             session_type: 会话类型 ("cli" 或 "im")
             thinking_mode: 思考模式覆盖 ('auto'/'on'/'off'/None)
             thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
+            progress_callback: 进度回调 async fn(str) -> None，IM 实时思维链
 
         Returns:
             最终响应文本
@@ -3570,6 +3583,7 @@ NEXT: 建议的下一步（如有）"""
             conversation_id=conversation_id,
             thinking_mode=thinking_mode,
             thinking_depth=thinking_depth,
+            progress_callback=progress_callback,
         )
 
         # ==================== 以下为旧代码（保留参考，后续完全清理） ====================
