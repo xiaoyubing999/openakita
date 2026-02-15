@@ -115,6 +115,8 @@
     "restarting": "正在重启...",
     "unresponsive": "后端无响应",
     "degradedHint": "后端进程存活但 HTTP 不可达，可能正忙于处理任务。可等待恢复或手动重启。",
+    "backendNotRunning": "后端服务未启动",
+    "backendNotRunningHint": "聊天、IM 通道、技能等功能需要后端服务运行。点击右侧按钮启动服务。",
     "backendDied": "OpenAkita 后端服务已停止",
     "backendDiedDesc": "后端进程已退出，请检查日志或重新启动服务。",
     "stopFailed": "服务仍在运行，可能需要手动关闭进程",

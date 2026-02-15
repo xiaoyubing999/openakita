@@ -115,6 +115,8 @@
     "restarting": "Restarting...",
     "unresponsive": "Backend Unresponsive",
     "degradedHint": "Backend process is alive but HTTP is unreachable. It may be busy processing. Wait or restart manually.",
+    "backendNotRunning": "Backend Service Not Running",
+    "backendNotRunningHint": "Chat, IM channels, skills and other features require the backend service. Click the button to start it.",
     "backendDied": "OpenAkita backend service has stopped",
     "backendDiedDesc": "The backend process has exited. Check logs or restart the service.",
     "stopFailed": "Service is still running. You may need to stop the process manually.",

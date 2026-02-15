@@ -753,6 +753,9 @@ export function App() {
           await obProbeRunningService();
           setView("onboarding");
           obLoadEnvCheck();
+        } else {
+          // 非首次启动：直接进入状态页面
+          setView("status");
         }
       } catch {
         // is_first_run 命令不可用（开发模式），忽略
@@ -3600,6 +3603,34 @@ export function App() {
 
     return (
       <>
+        {/* Banner: backend not running */}
+        {!serviceStatus?.running && effectiveWsId && (
+          <div style={{
+            marginBottom: 16, padding: "16px 20px", borderRadius: 10,
+            background: "linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%)",
+            border: "1px solid #ffcc80",
+            display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+          }}>
+            <div style={{ fontSize: 28, lineHeight: 1 }}>&#9888;</div>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#e65100", marginBottom: 4 }}>
+                {t("status.backendNotRunning")}
+              </div>
+              <div style={{ fontSize: 13, color: "#bf360c", opacity: 0.85 }}>
+                {t("status.backendNotRunningHint")}
+              </div>
+            </div>
+            <button
+              className="btnSmall btnSmallPrimary"
+              style={{ padding: "8px 20px", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}
+              onClick={async () => { await startLocalServiceWithConflictCheck(effectiveWsId); }}
+              disabled={!!busy}
+            >
+              {busy || t("topbar.start")}
+            </button>
+          </div>
+        )}
+
         {/* Top row: service + system info */}
         <div className="statusGrid3">
           {/* Service */}
