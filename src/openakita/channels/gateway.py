@@ -1692,6 +1692,45 @@ class MessageGateway:
 
         self._progress_flush_tasks[session_key] = asyncio.create_task(_flush())
 
+    async def flush_progress(self, session: Session) -> None:
+        """
+        立即 flush 指定 session 的进度缓冲区。
+
+        在最终回答发送前调用，确保思维链消息先于回答到达。
+        """
+        if not session:
+            return
+        session_key = session.session_key
+
+        # 取消未触发的延迟 flush task
+        existing = self._progress_flush_tasks.pop(session_key, None)
+        if existing and not existing.done():
+            existing.cancel()
+
+        lines = self._progress_buffers.get(session_key, [])
+        if not lines:
+            return
+
+        combined = "\n".join(lines[:20])
+        self._progress_buffers[session_key] = []
+
+        # reply_to 逻辑与 emit_progress_event 一致
+        reply_to = None
+        try:
+            current_message = session.get_metadata("_current_message")
+            reply_to = (
+                getattr(current_message, "channel_message_id", None)
+                if current_message
+                else None
+            )
+        except Exception:
+            reply_to = None
+
+        try:
+            await self.send_to_session(session, combined, role="system", reply_to=reply_to)
+        except Exception as e:
+            logger.warning(f"[Progress] flush_progress failed: {e}")
+
     async def broadcast(
         self,
         text: str,

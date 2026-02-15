@@ -3002,6 +3002,13 @@ search_github → install_skill → 使用
                 progress_callback=_progress_cb,
             )
 
+            # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
+            if gateway and session:
+                try:
+                    await gateway.flush_progress(session)
+                except Exception:
+                    pass
+
             # === 共享收尾 ===
             await self._finalize_session(
                 response_text=response_text,

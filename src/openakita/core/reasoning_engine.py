@@ -586,15 +586,18 @@ class ReasoningEngine:
 
             # === IM 进度: thinking 内容 ===
             if decision.thinking_content:
-                _think_preview = decision.thinking_content[:200].strip()
+                _think_preview = decision.thinking_content[:200].strip().replace("\n", " ")
                 if len(decision.thinking_content) > 200:
                     _think_preview += "..."
-                await _emit_progress(f"💭 _{_think_preview}_")
+                await _emit_progress(f"💭 {_think_preview}")
 
             # === IM 进度: LLM 推理意图 ===
-            _decision_text_run = (decision.text_content or "").strip()
+            _decision_text_run = (decision.text_content or "").strip().replace("\n", " ")
             if _decision_text_run and decision.type == DecisionType.TOOL_CALLS:
-                await _emit_progress(_decision_text_run[:300])
+                _text_preview = _decision_text_run[:300]
+                if len(_decision_text_run) > 300:
+                    _text_preview += "..."
+                await _emit_progress(_text_preview)
 
             if task_monitor:
                 task_monitor.end_iteration(decision.text_content or "")
