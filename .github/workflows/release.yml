@@ -48,6 +48,8 @@ jobs:
 
           # 检查该稳定分支是否存在（远程）
           if git ls-remote --exit-code --heads origin "$STABLE_BRANCH" > /dev/null 2>&1; then
+            # 必须先 fetch 稳定分支，否则本地没有 origin/$STABLE_BRANCH 引用
+            git fetch origin "$STABLE_BRANCH"
             # 检查 tag 的 commit 是否在该稳定分支上
             TAG_SHA=$(git rev-list -n 1 "$TAG" 2>/dev/null || echo "")
             if [ -n "$TAG_SHA" ] && git merge-base --is-ancestor "$TAG_SHA" "origin/$STABLE_BRANCH" 2>/dev/null; then
@@ -415,11 +417,7 @@ jobs:
               OLD_VER=$(python -c "import json; print(json.load(open('existing-latest.json'))['version'])" 2>/dev/null || echo "0.0.0")
               echo "Existing stable version: ${OLD_VER}"
               # 比较版本号：如果新版本不大于旧版本，跳过更新
-              IS_NEWER=$(python -c "
-          old = list(map(int, '${OLD_VER}'.split('.')))
-          new = list(map(int, '${NEW_VER}'.split('.')))
-          print('true' if new > old else 'false')
-          ")
+              IS_NEWER=$(python -c "old=list(map(int,'${OLD_VER}'.split('.')));new=list(map(int,'${NEW_VER}'.split('.')));print('true' if new>old else 'false')")
               if [ "$IS_NEWER" = "false" ]; then
                 echo "⏭️ Skipping latest.json update: ${NEW_VER} <= ${OLD_VER}"
                 SHOULD_UPDATE="false"
