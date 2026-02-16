@@ -477,7 +477,7 @@ class IMChannelHandler:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, str):
-                output += f"[{role}] {content[:200]}{'...' if len(content) > 200 else ''}\n"
+                output += f"[{role}] {content[:1000]}{'...' if len(content) > 1000 else ''}\n"
             else:
                 output += f"[{role}] [复杂内容]\n"
 

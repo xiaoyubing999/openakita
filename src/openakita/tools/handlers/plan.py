@@ -575,9 +575,9 @@ class PlanHandler:
             desc = step.get("description", step["id"])
             result_hint = ""
             if step["status"] == "completed" and step.get("result"):
-                result_hint = f" => {step['result'][:80]}"
+                result_hint = f" => {step['result'][:300]}"
             elif step["status"] == "failed" and step.get("result"):
-                result_hint = f" => FAIL: {step['result'][:60]}"
+                result_hint = f" => FAIL: {step['result'][:300]}"
             lines.append(f"  [{icon}] {num}. {desc}{result_hint}")
 
         lines.append("")
