@@ -1929,10 +1929,20 @@ export function ChatView({
                 break;
               case "done":
                 gracefulDone = true;
-                // 任务结束时，如果 Plan 仍在进行中，自动标记为 completed
+                // 任务结束时，如果当前 Plan 仍在进行中，自动标记为 completed
                 if (currentPlan && currentPlan.status === "in_progress") {
-                  currentPlan = { ...currentPlan, status: "completed" as const };
+                  currentPlan = { ...(currentPlan as ChatPlan), status: "completed" as const };
                 }
+                // 同时清理之前消息中遗留的旧 Plan（防止浮动进度条显示过时 Plan）
+                setMessages((prev) => {
+                  const hasStaleplan = prev.some((m) => m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed");
+                  if (!hasStaleplan) return prev;
+                  return prev.map((m) =>
+                    m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed"
+                      ? { ...m, plan: { ...m.plan, status: "completed" as const } }
+                      : m
+                  );
+                });
                 break;
             }
 
