@@ -52,7 +52,7 @@ PERSONA_TOOLS = [
     {
         "name": "update_persona_trait",
         "category": "Persona",
-        "description": "Update a specific persona preference dimension (formality, humor, emoji, etc.) based on user feedback or explicit request.",
+        "description": "Update a specific persona preference dimension (formality, humor, emoji_usage, sticker_preference, etc.) based on user feedback or explicit request. Use this for ALL communication-style preferences including sticker/emoji/humor settings.",
         "detail": """更新用户的人格偏好维度。
 
 **支持的维度**：
