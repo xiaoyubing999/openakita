@@ -260,10 +260,11 @@ class ScheduledHandler:
         """
         将用户指定的通道名解析为 (channel_id, chat_id)
 
-        策略:
+        策略（逐级回退）:
         1. 检查 gateway 中是否有该通道的适配器（即通道已配置并启动）
         2. 从 session_manager 中找到该通道最近活跃的 session
-        3. 如果没有 session，尝试从持久化文件中查找
+        3. 如果没有活跃 session，尝试从持久化文件 sessions.json 中查找
+        4. 从通道注册表 channel_registry.json 查找历史记录（不受 session 过期影响）
 
         Args:
             target_channel: 通道名（如 wework、telegram、dingtalk 等）
@@ -326,8 +327,19 @@ class ScheduledHandler:
                     except Exception as e:
                         logger.error(f"Failed to read sessions file: {e}")
 
+        # 4. 从通道注册表查找历史记录（不受 session 过期影响）
+        if session_manager and hasattr(session_manager, "get_known_channel_target"):
+            known = session_manager.get_known_channel_target(target_channel)
+            if known:
+                logger.info(
+                    f"Resolved target_channel='{target_channel}' from channel registry: "
+                    f"chat_id={known[1]}"
+                )
+                return known
+
         logger.warning(
-            f"Channel '{target_channel}' is configured but no session found. "
+            f"Channel '{target_channel}' is configured but no session found "
+            f"(neither active session nor channel registry). "
             f"Please send at least one message through this channel first."
         )
         return None

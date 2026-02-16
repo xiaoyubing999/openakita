@@ -56,6 +56,12 @@ class SessionManager:
         # 活跃会话缓存 {session_key: Session}
         self._sessions: dict[str, Session] = {}
 
+        # 通道注册表：记录每个 IM 通道最后已知的 chat_id / user_id
+        # 不受 session 过期清理影响，用于定时任务等场景回溯通道目标
+        # 格式: {channel_name: {"chat_id": str, "user_id": str, "last_seen": str}}
+        self._channel_registry: dict[str, dict[str, str]] = {}
+        self._load_channel_registry()
+
         # 用户管理器
         self.user_manager = UserManager(self.storage_path / "users")
 
@@ -176,6 +182,9 @@ class SessionManager:
 
         # 设置记忆范围
         session.context.memory_scope = f"session_{session.id}"
+
+        # 更新通道注册表（持久记录 channel→chat_id 映射，不受 session 过期影响）
+        self._update_channel_registry(channel, chat_id, user_id)
 
         return session
 
@@ -324,8 +333,24 @@ class SessionManager:
                             self._clean_large_content_in_messages(session.context.messages)
 
                         self._sessions[session.session_key] = session
+
+                    # 无论是否过期/被加载，都更新通道注册表（内存）
+                    # 这样即使 session 已过期不被加载到内存，chat_id 仍被记录
+                    # 只在 session 比已有记录更新时才覆盖，避免用旧 session 回退 registry
+                    session_ts = session.last_active.isoformat()
+                    existing = self._channel_registry.get(session.channel)
+                    if not existing or session_ts >= existing.get("last_seen", ""):
+                        self._channel_registry[session.channel] = {
+                            "chat_id": session.chat_id,
+                            "user_id": session.user_id,
+                            "last_seen": session_ts,
+                        }
                 except Exception as e:
                     logger.warning(f"Failed to load session: {e}")
+
+            # 加载完毕后统一持久化通道注册表
+            if self._channel_registry:
+                self._save_channel_registry()
 
             logger.info(
                 f"Loaded {len(self._sessions)} sessions from storage (cleaned {cleaned_count} stale contexts)"
@@ -360,6 +385,65 @@ class SessionManager:
                                         result_content[:2000]
                                         + f"\n...[内容已截断，原长度: {len(result_content)}]"
                                     )
+
+    # ==================== 通道注册表 ====================
+
+    def _load_channel_registry(self) -> None:
+        """从文件加载通道注册表"""
+        registry_file = self.storage_path / "channel_registry.json"
+        if not registry_file.exists():
+            return
+        try:
+            with open(registry_file, encoding="utf-8") as f:
+                self._channel_registry = json.load(f)
+            logger.debug(
+                "Loaded channel registry: %s",
+                ", ".join(self._channel_registry.keys()) or "(empty)",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load channel registry: {e}")
+
+    def _save_channel_registry(self) -> None:
+        """保存通道注册表到文件"""
+        registry_file = self.storage_path / "channel_registry.json"
+        try:
+            with open(registry_file, "w", encoding="utf-8") as f:
+                json.dump(self._channel_registry, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save channel registry: {e}")
+
+    def _update_channel_registry(
+        self, channel: str, chat_id: str, user_id: str
+    ) -> None:
+        """
+        更新通道注册表
+
+        每当有新 session 创建时调用，持久记录 channel→chat_id 映射。
+        对于同一 channel，只保留最近活跃的 chat_id。
+        """
+        self._channel_registry[channel] = {
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "last_seen": datetime.now().isoformat(),
+        }
+        self._save_channel_registry()
+
+    def get_known_channel_target(
+        self, channel: str
+    ) -> tuple[str, str] | None:
+        """
+        从通道注册表查找通道的最后已知 chat_id
+
+        用于定时任务等场景：即使当前没有活跃 session，
+        也能通过历史记录找到推送目标。
+
+        Returns:
+            (channel_name, chat_id) 或 None
+        """
+        entry = self._channel_registry.get(channel)
+        if entry and entry.get("chat_id"):
+            return (channel, entry["chat_id"])
+        return None
 
     def _save_sessions(self) -> None:
         """

@@ -83,7 +83,10 @@ async def list_sessions(request: Request, channel: str = Query("")):
             continue
         msg_count = 0
         last_msg = None
-        history = getattr(sess, "history", []) or getattr(sess, "messages", [])
+
+        # 消息存储在 sess.context.messages（而非 sess.history/sess.messages）
+        ctx = getattr(sess, "context", None)
+        history = getattr(ctx, "messages", []) if ctx else []
         if history:
             msg_count = len(history)
             last_item = history[-1]
@@ -92,12 +95,16 @@ async def list_sessions(request: Request, channel: str = Query("")):
             else:
                 last_msg = str(getattr(last_item, "content", ""))[:100]
 
+        # SessionState 是 Enum，需要取 .value 才能 JSON 序列化
+        state = getattr(sess, "state", "active")
+        state_str = state.value if hasattr(state, "value") else str(state)
+
         result.append({
             "sessionId": str(sid),
             "channel": sess_channel,
             "chatId": getattr(sess, "chat_id", None),
             "userId": getattr(sess, "user_id", None),
-            "state": getattr(sess, "state", "active"),
+            "state": state_str,
             "lastActive": str(getattr(sess, "last_active", None) or getattr(sess, "updated_at", "")),
             "messageCount": msg_count,
             "lastMessage": last_msg,
@@ -123,7 +130,9 @@ async def get_session_messages(
     if sess is None:
         return JSONResponse(content={"messages": [], "total": 0, "hasMore": False})
 
-    history = getattr(sess, "history", []) or getattr(sess, "messages", [])
+    # 消息存储在 sess.context.messages
+    ctx = getattr(sess, "context", None)
+    history = getattr(ctx, "messages", []) if ctx else []
     total = len(history)
     page = history[offset: offset + limit]
 

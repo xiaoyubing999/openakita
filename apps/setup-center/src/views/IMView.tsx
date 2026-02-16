@@ -1,6 +1,6 @@
 // ─── IMView: IM Channel Viewer (read-only) ───
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconIM, IconMessageCircle, IconRefresh, IconFile, IconImage, IconVolume,
@@ -56,7 +56,6 @@ export function IMView({ serviceRunning }: { serviceRunning: boolean }) {
   const [messages, setMessages] = useState<IMMessage[]>([]);
   const [totalMessages, setTotalMessages] = useState(0);
   const [loading, setLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchChannels = useCallback(async () => {
     if (!serviceRunning) return;
@@ -69,15 +68,18 @@ export function IMView({ serviceRunning }: { serviceRunning: boolean }) {
     } catch { /* ignore */ }
   }, [serviceRunning]);
 
-  const fetchSessions = useCallback(async (channel: string) => {
-    if (!serviceRunning) return;
+  const fetchSessions = useCallback(async (channel: string): Promise<IMSession[]> => {
+    if (!serviceRunning) return [];
     try {
       const res = await fetch(`${API_BASE}/api/im/sessions?channel=${encodeURIComponent(channel)}`);
       if (res.ok) {
         const data = await res.json();
-        setSessions(data.sessions || []);
+        const list: IMSession[] = data.sessions || [];
+        setSessions(list);
+        return list;
       }
     } catch { /* ignore */ }
+    return [];
   }, [serviceRunning]);
 
   const fetchMessages = useCallback(async (sessionId: string, limit = 50, offset = 0) => {
@@ -96,23 +98,38 @@ export function IMView({ serviceRunning }: { serviceRunning: boolean }) {
     fetchChannels();
   }, [fetchChannels]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh: channels every 15s, active session messages every 8s
   useEffect(() => {
     if (!serviceRunning) return;
-    pollRef.current = setInterval(() => {
+    const channelTimer = setInterval(() => {
       fetchChannels();
       if (selectedChannel) fetchSessions(selectedChannel);
-      if (selectedSessionId) fetchMessages(selectedSessionId);
-    }, 30000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [serviceRunning, selectedChannel, selectedSessionId, fetchChannels, fetchSessions, fetchMessages]);
+    }, 15000);
+    return () => clearInterval(channelTimer);
+  }, [serviceRunning, selectedChannel, fetchChannels, fetchSessions]);
 
-  const handleSelectChannel = useCallback((ch: string) => {
+  useEffect(() => {
+    if (!serviceRunning || !selectedSessionId) return;
+    // 选中 session 后立即刷新一次，然后每 8 秒轮询
+    fetchMessages(selectedSessionId);
+    const msgTimer = setInterval(() => {
+      fetchMessages(selectedSessionId);
+    }, 8000);
+    return () => clearInterval(msgTimer);
+  }, [serviceRunning, selectedSessionId, fetchMessages]);
+
+  const handleSelectChannel = useCallback(async (ch: string) => {
     setSelectedChannel(ch);
     setSelectedSessionId(null);
     setMessages([]);
-    fetchSessions(ch);
-  }, [fetchSessions]);
+    const list = await fetchSessions(ch);
+    // 自动选中第一个 session，直接展示消息（无需再点一次）
+    if (list.length > 0) {
+      const first = list[0];
+      setSelectedSessionId(first.sessionId);
+      fetchMessages(first.sessionId);
+    }
+  }, [fetchSessions, fetchMessages]);
 
   const handleSelectSession = useCallback((sid: string) => {
     setSelectedSessionId(sid);
