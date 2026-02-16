@@ -49,6 +49,7 @@ _VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     },
     TaskStatus.ACTING: {
         TaskStatus.OBSERVING,
+        TaskStatus.REASONING,  # 恢复路径：上次任务卡在 ACTING 后新消息需回到 REASONING
         TaskStatus.WAITING_USER,
         TaskStatus.CANCELLED,
         TaskStatus.FAILED,

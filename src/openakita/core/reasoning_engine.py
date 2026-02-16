@@ -403,6 +403,12 @@ class ReasoningEngine:
         if not state or not state.is_active:
             # 无任务 或 上一个任务已结束（COMPLETED/FAILED/CANCELLED/IDLE），需新建
             state = self._state.begin_task()
+        elif state.status == TaskStatus.ACTING:
+            # 上次任务卡在 ACTING（工具执行中途异常），强制重置避免状态机死锁
+            logger.warning(
+                f"[State] Previous task stuck in {state.status.value}, force resetting for new message"
+            )
+            state = self._state.begin_task()
 
         # 启动 Trace（非上下文管理器，因为 run() 有多个 return 路径）
         tracer = get_tracer()
@@ -1018,6 +1024,12 @@ class ReasoningEngine:
         # Task state
         state = self._state.current_task
         if not state or not state.is_active:
+            state = self._state.begin_task()
+        elif state.status == TaskStatus.ACTING:
+            # 上次任务卡在 ACTING（工具执行中途异常），强制重置避免状态机死锁
+            logger.warning(
+                f"[State] Previous task stuck in {state.status.value}, force resetting for new message"
+            )
             state = self._state.begin_task()
 
         try:
