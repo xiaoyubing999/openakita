@@ -152,16 +152,7 @@ hidden_imports_core = [
     "yarl",                     # aiohttp 依赖: URL 解析
     "frozenlist",               # aiohttp 依赖: 不可变列表
     "aiosignal",                # aiohttp 依赖: 异步信号
-    # -- Python stdlib modules needed by external optional modules (torch/whisper etc.) --
-    # PyInstaller only bundles stdlib modules referenced by the main app; external modules
-    # loaded at runtime via sys.path.append may need additional stdlib modules.
-    "timeit",                   # torch benchmark; whisper → torch → timeit
-    "cmath",                    # torch complex math support
-    "lzma",                     # torch serialization / model loading
-    "bz2",                      # compression (torch checkpoint loading)
-    "opcode",                   # torch JIT compiler (dis → opcode)
-    "dis",                      # torch JIT disassembly
-    "tokenize",                 # torch scripting
+    # (Python stdlib 模块通过下方 _collect_stdlib_modules() 自动收集，无需在此手动列举)
     # -- MCP (Model Context Protocol) --
     "mcp.server.fastmcp",       # FastMCP 服务端 (web_search MCP server)
     "mcp.client.stdio",         # MCP stdio 客户端
@@ -213,7 +204,47 @@ hidden_imports_full = [
     "whisper",
 ]
 
-hidden_imports = hidden_imports_core
+# ============== Auto-collect Python stdlib ==============
+# 外部可选模块（whisper/torch/chromadb 等）通过 sys.path.append 在运行时加载，
+# 它们可能 import 任何标准库模块。PyInstaller 默认只打包主程序引用到的标准库，
+# 导致外部模块运行时出现 "No module named 'xxx'" 错误（已多次出现 timeit/lzma 等）。
+# 解决方案：自动收集 Python 全部标准库模块，一劳永逸消除此类问题。
+# 额外包体积约 5-10MB（相比 torch 500MB+ 微不足道）。
+
+def _collect_stdlib_modules():
+    """收集 Python 全部标准库顶层模块名（纯 Python + C 扩展）"""
+    import pkgutil
+
+    # 跳过：测试框架、IDE 工具、GUI 框架、打包工具等不需要的模块
+    _SKIP = {
+        "test", "tests", "idlelib", "tkinter", "turtledemo", "turtle",
+        "lib2to3", "ensurepip", "venv", "distutils", "pydoc_data",
+        "pydoc", "antigravity", "this",
+    }
+    _SKIP_PREFIXES = ("__", "_pyrepl")
+
+    stdlib_names = set()
+
+    # 方式 1: sys.stdlib_module_names (Python 3.10+)，包含全部标准库（含 C 扩展）
+    if hasattr(sys, "stdlib_module_names"):
+        for name in sys.stdlib_module_names:
+            if name in _SKIP or any(name.startswith(p) for p in _SKIP_PREFIXES):
+                continue
+            stdlib_names.add(name)
+
+    # 方式 2: 遍历 Lib 目录，捕获 sys.stdlib_module_names 可能遗漏的包
+    stdlib_path = os.path.dirname(os.__file__)
+    for importer, modname, ispkg in pkgutil.iter_modules([stdlib_path]):
+        if modname in _SKIP or any(modname.startswith(p) for p in _SKIP_PREFIXES):
+            continue
+        stdlib_names.add(modname)
+
+    return sorted(stdlib_names)
+
+_stdlib_modules = _collect_stdlib_modules()
+print(f"[spec] Auto-collected {len(_stdlib_modules)} stdlib modules")
+
+hidden_imports = hidden_imports_core + _stdlib_modules
 if BUILD_MODE == "full":
     hidden_imports += hidden_imports_full
 
@@ -251,9 +282,8 @@ excludes_core = [
     "PySide2",
     "PySide6",
     "wx",
-    # Test frameworks
-    "unittest",
-    "test",
+    # Test frameworks (不排除 unittest — 属于标准库，torch 等外部模块可能依赖)
+    "test",                 # CPython 内部测试套件
     "tests",
     "pytest",
     "_pytest",
