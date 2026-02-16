@@ -172,7 +172,7 @@ jobs:
   # ── Tauri 完整构建检查（仅 Linux，push to main 或 v*.x 稳定分支时执行） ──
   tauri_full_build_check:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v'))
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

@@ -156,7 +156,12 @@ jobs:
             suffix: "-full"
           # Linux
           - platform: ubuntu-22.04
-            bundles: "deb,appimage"
+            bundles: "deb"
+            args: ""
+            build_mode: "core"
+            suffix: ""
+          - platform: ubuntu-24.04
+            bundles: "appimage"
             args: ""
             build_mode: "core"
             suffix: ""
@@ -174,7 +179,7 @@ jobs:
           ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install Linux system dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
