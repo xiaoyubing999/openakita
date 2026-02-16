@@ -452,6 +452,7 @@
     "baseUrl": "API URL",
     "baseUrlHint": "Modify when using a proxy or relay service",
     "advanced": "Advanced Options",
+    "advancedParams": "Advanced Parameters",
     "compiler": "Prompt Compiler Model",
     "compilerHint": "Lightweight model for preprocessing, use a fast small model",
     "addCompiler": "Add Compiler Endpoint",

@@ -919,6 +919,9 @@ export function App() {
   const [apiKeyEnvTouched, setApiKeyEnvTouched] = useState(false);
   const [endpointNameTouched, setEndpointNameTouched] = useState(false);
   const [llmAdvancedOpen, setLlmAdvancedOpen] = useState(false);
+  const [addEpMaxTokens, setAddEpMaxTokens] = useState(0);
+  const [addEpContextWindow, setAddEpContextWindow] = useState(150000);
+  const [addEpTimeout, setAddEpTimeout] = useState(180);
 
   // Compiler endpoint form state
   const [compilerProviderSlug, setCompilerProviderSlug] = useState("");
@@ -945,6 +948,9 @@ export function App() {
     apiKeyValue: string; // optional; blank means don't change
     modelId: string;
     caps: string[];
+    maxTokens: number;
+    contextWindow: number;
+    timeout: number;
   } | null>(null);
   const dragNameRef = useRef<string | null>(null);
   const [editModels, setEditModels] = useState<ListedModel[]>([]); // models fetched inside the edit modal
@@ -2396,6 +2402,9 @@ export function App() {
       apiKeyValue: "",
       modelId: ep.model || "",
       caps: Array.isArray(ep.capabilities) && ep.capabilities.length ? ep.capabilities : ["text"],
+      maxTokens: typeof ep.max_tokens === "number" ? ep.max_tokens : 0,
+      contextWindow: typeof ep.context_window === "number" ? ep.context_window : 150000,
+      timeout: typeof ep.timeout === "number" ? ep.timeout : 180,
     });
     setEditModalOpen(true);
     setConnTestResult(null);
@@ -2503,8 +2512,6 @@ export function App() {
         throw new Error(`端点名称已存在：${editDraft.name.trim()}（请换一个）`);
       }
       const idx = endpoints.findIndex((e: any) => String(e?.name || "") === editingOriginalName);
-      // 编辑时保留原端点的 max_tokens/context_window/timeout（UI 不暴露这些高级字段）
-      const existing = idx >= 0 ? endpoints[idx] : null;
       const next = {
         name: editDraft.name.trim().slice(0, 64),
         provider: editDraft.providerSlug || "custom",
@@ -2513,9 +2520,9 @@ export function App() {
         api_key_env: editDraft.apiKeyEnv.trim(),
         model: editDraft.modelId.trim(),
         priority: normalizePriority(editDraft.priority, 1),
-        max_tokens: existing?.max_tokens ?? 0,
-        context_window: existing?.context_window ?? 150000,
-        timeout: existing?.timeout ?? 180,
+        max_tokens: editDraft.maxTokens ?? 0,
+        context_window: editDraft.contextWindow ?? 150000,
+        timeout: editDraft.timeout ?? 180,
         capabilities: editDraft.caps?.length ? editDraft.caps : ["text"],
         extra_params:
           (editDraft.caps || []).includes("thinking") && editDraft.providerSlug === "dashscope"
@@ -2629,9 +2636,9 @@ export function App() {
           api_key_env: effectiveApiKeyEnv,
           model: selectedModelId,
           priority: normalizePriority(endpointPriority, 1),
-          max_tokens: 0,
-          context_window: 150000,
-          timeout: 180,
+          max_tokens: addEpMaxTokens,
+          context_window: addEpContextWindow,
+          timeout: addEpTimeout,
           capabilities: capList,
           // DashScope 思考模式：OpenAkita 的 OpenAI provider 会识别 enable_thinking
           extra_params:
@@ -5014,6 +5021,23 @@ export function App() {
                     <div className="dialogLabel">Priority</div>
                     <input type="number" value={String(endpointPriority)} onChange={(e) => setEndpointPriority(Number(e.target.value))} style={{ width: 80, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }} />
                   </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 10 }}>
+                    <div>
+                      <div className="dialogLabel">Max Tokens</div>
+                      <input type="number" min={0} value={addEpMaxTokens} onChange={(e) => setAddEpMaxTokens(Math.max(0, parseInt(e.target.value) || 0))} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }} />
+                      <div className="help" style={{ fontSize: 11, marginTop: 2 }}>0 = 使用模型默认值</div>
+                    </div>
+                    <div>
+                      <div className="dialogLabel">Context Window</div>
+                      <input type="number" min={1024} value={addEpContextWindow} onChange={(e) => setAddEpContextWindow(Math.max(1024, parseInt(e.target.value) || 150000))} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }} />
+                      <div className="help" style={{ fontSize: 11, marginTop: 2 }}>上下文窗口 (tokens)</div>
+                    </div>
+                    <div>
+                      <div className="dialogLabel">Timeout (s)</div>
+                      <input type="number" min={10} value={addEpTimeout} onChange={(e) => setAddEpTimeout(Math.max(10, parseInt(e.target.value) || 180))} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }} />
+                      <div className="help" style={{ fontSize: 11, marginTop: 2 }}>请求超时 (秒)</div>
+                    </div>
+                  </div>
                 </div>
               </details>
               </div>
@@ -5093,6 +5117,47 @@ export function App() {
                   </div>
                 )}
               </div>
+              {/* 高级参数设置 */}
+              <details style={{ margin: "8px 0 4px 0" }}>
+                <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 500, color: "var(--fg-secondary, #888)", userSelect: "none", padding: "4px 0" }}>
+                  ⚙ {t("llm.advancedParams") || t("llm.advanced") || "高级参数"}
+                </summary>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "8px 0 4px 0" }}>
+                  <div className="dialogSection" style={{ margin: 0 }}>
+                    <div className="dialogLabel" style={{ fontSize: 12 }}>Max Tokens</div>
+                    <input
+                      type="number"
+                      min={0}
+                      value={editDraft.maxTokens}
+                      onChange={(e) => setEditDraft({ ...editDraft, maxTokens: Math.max(0, parseInt(e.target.value) || 0) })}
+                      style={{ width: "100%" }}
+                    />
+                    <div className="help" style={{ fontSize: 11, marginTop: 2 }}>0 = 使用模型默认值</div>
+                  </div>
+                  <div className="dialogSection" style={{ margin: 0 }}>
+                    <div className="dialogLabel" style={{ fontSize: 12 }}>Context Window</div>
+                    <input
+                      type="number"
+                      min={1024}
+                      value={editDraft.contextWindow}
+                      onChange={(e) => setEditDraft({ ...editDraft, contextWindow: Math.max(1024, parseInt(e.target.value) || 150000) })}
+                      style={{ width: "100%" }}
+                    />
+                    <div className="help" style={{ fontSize: 11, marginTop: 2 }}>上下文窗口 (tokens)</div>
+                  </div>
+                  <div className="dialogSection" style={{ margin: 0 }}>
+                    <div className="dialogLabel" style={{ fontSize: 12 }}>Timeout (s)</div>
+                    <input
+                      type="number"
+                      min={10}
+                      value={editDraft.timeout}
+                      onChange={(e) => setEditDraft({ ...editDraft, timeout: Math.max(10, parseInt(e.target.value) || 180) })}
+                      style={{ width: "100%" }}
+                    />
+                    <div className="help" style={{ fontSize: 11, marginTop: 2 }}>请求超时 (秒)</div>
+                  </div>
+                </div>
+              </details>
               </div>
 
               {/* 连接测试结果 */}
