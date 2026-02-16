@@ -186,10 +186,10 @@ class ResponseHandler:
         verify_prompt = f"""请判断以下交互是否已经**完成**用户的意图。
 
 ## 用户消息
-{user_request[:500]}
+{user_request[:2000]}
 
 ## 助手响应
-{assistant_response[:800]}
+{assistant_response[:4000]}
 
 ## 已执行的工具
 {", ".join(executed_tools) if executed_tools else "无"}
@@ -338,11 +338,11 @@ NEXT: 建议的下一步"""
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and not content.startswith("[系统]"):
-                    return content[:500]
+                    return content[:2000]
                 elif isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
                             if not text.startswith("[系统]"):
-                                return text[:500]
+                                return text[:2000]
         return ""

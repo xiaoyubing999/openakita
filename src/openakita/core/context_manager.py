@@ -422,13 +422,13 @@ class ContextManager:
                         name = item.get("name", "unknown")
                         input_data = item.get("input", {})
                         input_summary = json.dumps(input_data, ensure_ascii=False)
-                        if len(input_summary) > 500:
-                            input_summary = input_summary[:300] + "...(省略)..." + input_summary[-100:]
+                        if len(input_summary) > 2000:
+                            input_summary = input_summary[:1500] + "...(省略)..." + input_summary[-400:]
                         texts.append(f"[调用工具: {name}, 参数: {input_summary}]")
                     elif item.get("type") == "tool_result":
                         result_text = str(item.get("content", ""))
-                        if len(result_text) > 2000:
-                            result_text = result_text[:1000] + "...(省略)..." + result_text[-500:]
+                        if len(result_text) > 8000:
+                            result_text = result_text[:6000] + "...(省略)..." + result_text[-1500:]
                         is_error = item.get("is_error", False)
                         status = "错误" if is_error else "成功"
                         texts.append(f"[工具结果({status}): {result_text}]")

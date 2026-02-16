@@ -1252,7 +1252,7 @@ class ReasoningEngine:
                 _decision_text = (decision.text_content or "").strip()
                 if _decision_text and decision.type == DecisionType.TOOL_CALLS:
                     # LLM 在调用工具前输出的思路文字
-                    yield {"type": "chain_text", "content": _decision_text[:800]}
+                    yield {"type": "chain_text", "content": _decision_text[:2000]}
 
                 if task_monitor:
                     task_monitor.end_iteration(decision.text_content or "")
@@ -1384,13 +1384,13 @@ class ReasoningEngine:
                                 r = str(r) if r else ""
                             except Exception as exc:
                                 r = f"Tool error: {exc}"
-                            yield {"type": "tool_call_end", "tool": t_name, "result": r[:2000], "id": t_id}
+                            yield {"type": "tool_call_end", "tool": t_name, "result": r[:8000], "id": t_id}
                             # chain_text: 结果摘要
                             _ask_result_summary = self._summarize_tool_result(t_name, r)
                             if _ask_result_summary:
                                 yield {"type": "chain_text", "content": _ask_result_summary}
                             tool_results_for_msg.append({
-                                "type": "tool_result", "tool_use_id": t_id, "content": r[:4000],
+                                "type": "tool_result", "tool_use_id": t_id, "content": r,
                             })
 
                         # ask_user 事件
@@ -1464,7 +1464,7 @@ class ReasoningEngine:
                         except Exception as exc:
                             result_text = f"Tool error: {exc}"
 
-                        yield {"type": "tool_call_end", "tool": tool_name, "result": result_text[:2000], "id": tool_id}
+                        yield {"type": "tool_call_end", "tool": tool_name, "result": result_text[:8000], "id": tool_id}
 
                         # === chain_text: 简述工具返回结果 ===
                         _result_summary = self._summarize_tool_result(tool_name, result_text)
@@ -1508,7 +1508,7 @@ class ReasoningEngine:
                         tool_results_for_msg.append({
                             "type": "tool_result",
                             "tool_use_id": tool_id,
-                            "content": result_text[:4000],
+                            "content": result_text,
                         })
 
                     if decision.tool_calls:

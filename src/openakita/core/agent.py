@@ -2298,16 +2298,14 @@ search_github → install_skill → 使用
                     elif item.get("type") == "tool_use":
                         name = item.get("name", "unknown")
                         input_data = item.get("input", {})
-                        # 工具输入只保留关键信息
                         input_summary = json.dumps(input_data, ensure_ascii=False)
-                        if len(input_summary) > 500:
-                            input_summary = input_summary[:300] + "...(省略)..." + input_summary[-100:]
+                        if len(input_summary) > 2000:
+                            input_summary = input_summary[:1500] + "...(省略)..." + input_summary[-400:]
                         texts.append(f"[调用工具: {name}, 参数: {input_summary}]")
                     elif item.get("type") == "tool_result":
                         result_text = str(item.get("content", ""))
-                        # 工具结果先截断到合理长度
-                        if len(result_text) > 2000:
-                            result_text = result_text[:1000] + "...(省略)..." + result_text[-500:]
+                        if len(result_text) > 8000:
+                            result_text = result_text[:6000] + "...(省略)..." + result_text[-1500:]
                         is_error = item.get("is_error", False)
                         status = "错误" if is_error else "成功"
                         texts.append(f"[工具结果({status}): {result_text}]")
@@ -3403,14 +3401,14 @@ search_github → install_skill → 使用
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and not content.startswith("[系统]"):
-                    return content[:500]  # 截取前500字符
+                    return content[:2000]
                 elif isinstance(content, list):
                     # 多模态消息，提取文本部分
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
                             if not text.startswith("[系统]"):
-                                return text[:500]
+                                return text[:2000]
         return ""
 
     async def _verify_task_completion(
@@ -3492,10 +3490,10 @@ search_github → install_skill → 使用
         verify_prompt = f"""请判断以下交互是否已经**完成**用户的意图。
 
 ## 用户消息
-{user_request[:500]}
+{user_request[:2000]}
 
 ## 助手响应
-{assistant_response[:800]}
+{assistant_response[:4000]}
 
 ## 已执行的工具
 {", ".join(executed_tools) if executed_tools else "无"}

@@ -937,25 +937,12 @@ class Brain:
                     if hasattr(block, "input"):
                         block_dict["input"] = block.input
                     if hasattr(block, "content"):
-                        # tool_result 的 content
-                        block_dict["content"] = (
-                            block.content[:500] + "..."
-                            if len(str(block.content)) > 500
-                            else block.content
-                        )
+                        block_dict["content"] = block.content
                     if hasattr(block, "thinking"):
-                        block_dict["thinking"] = (
-                            block.thinking[:200] + "..."
-                            if len(str(block.thinking)) > 200
-                            else block.thinking
-                        )
+                        block_dict["thinking"] = block.thinking
                     result["content"].append(block_dict)
                 elif isinstance(block, dict):
-                    # 字典格式的 block，处理大内容
-                    block_copy = dict(block)
-                    if "content" in block_copy and len(str(block_copy["content"])) > 500:
-                        block_copy["content"] = str(block_copy["content"])[:500] + "...[truncated]"
-                    result["content"].append(block_copy)
+                    result["content"].append(dict(block))
                 else:
                     result["content"].append(str(block))
         else:
@@ -963,11 +950,7 @@ class Brain:
 
         # 添加 reasoning_content（如果有）
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
-            result["reasoning_content"] = (
-                msg.reasoning_content[:200] + "..."
-                if len(str(msg.reasoning_content)) > 200
-                else msg.reasoning_content
-            )
+            result["reasoning_content"] = msg.reasoning_content
 
         return result
 

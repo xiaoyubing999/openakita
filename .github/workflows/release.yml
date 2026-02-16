@@ -154,9 +154,9 @@ jobs:
             args: ""
             build_mode: "full"
             suffix: "-full"
-          # Linux
+          # Linux (AppImage 暂时跳过 — linuxdeploy 在 GitHub runner 上有 FUSE 兼容问题)
           - platform: ubuntu-22.04
-            bundles: "deb,appimage"
+            bundles: "deb"
             args: ""
             build_mode: "core"
             suffix: ""
@@ -253,35 +253,6 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/setup-center
         run: npm ci
-
-      - name: Setup linuxdeploy (extract to bypass FUSE requirement)
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          WORK_DIR="/tmp/linuxdeploy-setup"
-          mkdir -p "$WORK_DIR"
-          cd "$WORK_DIR"
-
-          # Download linuxdeploy AppImage
-          curl -fSL -o linuxdeploy-x86_64.AppImage \
-            https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage
-
-          # Extract (works without FUSE)
-          ./linuxdeploy-x86_64.AppImage --appimage-extract || true
-
-          # Create a wrapper that runs the extracted version
-          EXTRACTED="$WORK_DIR/squashfs-root/AppRun"
-          if [ -f "$EXTRACTED" ]; then
-            WRAPPER="/usr/local/bin/linuxdeploy-x86_64.AppImage"
-            echo '#!/bin/bash' | sudo tee "$WRAPPER" > /dev/null
-            echo "export APPDIR=\"$WORK_DIR/squashfs-root\"" | sudo tee -a "$WRAPPER" > /dev/null
-            echo "exec \"$EXTRACTED\" \"\$@\"" | sudo tee -a "$WRAPPER" > /dev/null
-            sudo chmod +x "$WRAPPER"
-            echo "✓ linuxdeploy wrapper installed at $WRAPPER"
-            linuxdeploy-x86_64.AppImage --list-plugins 2>&1 || true
-          else
-            echo "⚠ AppImage extraction failed, falling back to APPIMAGE_EXTRACT_AND_RUN"
-          fi
 
       - name: Build Tauri bundles
         working-directory: apps/setup-center
