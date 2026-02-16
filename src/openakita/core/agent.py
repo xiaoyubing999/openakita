@@ -2893,7 +2893,22 @@ search_github → install_skill → 使用
         except (UnicodeEncodeError, OSError):
             logger.info(f"[Session:{session_id}] Agent: (response logged, {len(response_text)} chars)")
 
-        # 4. Cleanup（总是执行，放在 finally 中由调用方保证）
+        # 4. 自动关闭未完成的 Plan
+        # 如果 LLM 未显式调用 complete_plan，此处兜底：
+        # - 标记剩余步骤状态（in_progress→completed, pending→skipped）
+        # - 保存并注销 Plan
+        # 注意：ask_user 退出时不关闭 Plan（用户回复后需继续执行）
+        exit_reason = getattr(self.reasoning_engine, "_last_exit_reason", "normal")
+        if exit_reason != "ask_user":
+            conversation_id = getattr(self, "_current_conversation_id", "") or session_id
+            try:
+                from ..tools.handlers.plan import auto_close_plan
+                if auto_close_plan(conversation_id):
+                    logger.info(f"[Session:{session_id}] Plan auto-closed at finalize")
+            except Exception as e:
+                logger.debug(f"[Plan] auto_close_plan failed: {e}")
+
+        # 5. Cleanup（总是执行，放在 finally 中由调用方保证）
         # 注意：此方法不做 cleanup，cleanup 统一在 _cleanup_session_state() 中
 
     def _cleanup_session_state(self, im_tokens: Any) -> None:

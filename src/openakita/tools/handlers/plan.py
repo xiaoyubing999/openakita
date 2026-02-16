@@ -75,6 +75,64 @@ def clear_session_plan_state(session_id: str) -> None:
 _session_handlers: dict[str, "PlanHandler"] = {}
 
 
+def auto_close_plan(session_id: str) -> bool:
+    """
+    自动关闭指定 session 的活跃 Plan（任务结束时调用）。
+
+    当一轮 ReAct 循环结束但 LLM 未显式调用 complete_plan 时，
+    此函数确保 Plan 被正确收尾：
+    - in_progress 步骤 → completed（已开始执行，视为完成）
+    - pending 步骤 → skipped（未执行到）
+    - Plan 状态设为 completed，保存并注销
+
+    Returns:
+        True 如果有 Plan 被关闭，False 如果没有活跃 Plan
+    """
+    if not has_active_plan(session_id):
+        return False
+
+    handler = get_plan_handler_for_session(session_id)
+    if not handler or not handler.current_plan:
+        # 有注册但无 handler/plan 数据，只清理注册
+        unregister_active_plan(session_id)
+        return True
+
+    plan = handler.current_plan
+    steps = plan.get("steps", [])
+    auto_closed_count = 0
+
+    for step in steps:
+        status = step.get("status", "pending")
+        if status == "in_progress":
+            step["status"] = "completed"
+            step["result"] = step.get("result") or "(自动标记完成)"
+            step["completed_at"] = datetime.now().isoformat()
+            auto_closed_count += 1
+        elif status == "pending":
+            step["status"] = "skipped"
+            step["result"] = "(任务结束时未执行到)"
+            auto_closed_count += 1
+
+    plan["status"] = "completed"
+    plan["completed_at"] = datetime.now().isoformat()
+    if not plan.get("summary"):
+        plan["summary"] = "任务结束，计划自动关闭"
+
+    # 保存 & 记录日志
+    handler._add_log("计划自动关闭（任务结束时未显式 complete_plan）")
+    handler._save_plan_markdown()
+    handler.current_plan = None
+
+    logger.info(
+        f"[Plan] Auto-closed plan for session {session_id}, "
+        f"auto_updated {auto_closed_count} steps"
+    )
+
+    # 注销
+    unregister_active_plan(session_id)
+    return True
+
+
 def register_plan_handler(session_id: str, handler: "PlanHandler") -> None:
     """注册 PlanHandler 实例"""
     _session_handlers[session_id] = handler

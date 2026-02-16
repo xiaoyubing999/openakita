@@ -109,6 +109,10 @@ class ReasoningEngine:
         # 思维链: 暂存最近一次推理的 react_trace，供 agent_handler 读取
         self._last_react_trace: list[dict] = []
 
+        # 上一次推理的退出原因：normal / ask_user
+        # _finalize_session 据此决定是否自动关闭 Plan
+        self._last_exit_reason: str = "normal"
+
         # 浏览器"读页面状态"工具
         self._browser_page_read_tools = frozenset({
             "browser_get_content", "browser_screenshot",
@@ -393,6 +397,8 @@ class ReasoningEngine:
         Returns:
             最终响应文本
         """
+        self._last_exit_reason = "normal"
+
         state = self._state.current_task
         if not state or not state.is_active:
             # 无任务 或 上一个任务已结束（COMPLETED/FAILED/CANCELLED/IDLE），需新建
@@ -1002,6 +1008,7 @@ class ReasoningEngine:
         - {"type": "done"}
         """
         tools = tools or []
+        self._last_exit_reason = "normal"
 
         # 在 try 外初始化，避免 except/finally 块中 UnboundLocalError
         react_trace: list[dict] = []
@@ -1430,6 +1437,7 @@ class ReasoningEngine:
                         self._save_react_trace(
                             react_trace, conversation_id, session_type, "ask_user", _trace_started_at
                         )
+                        self._last_exit_reason = "ask_user"
                         yield {"type": "done"}
                         return
 
