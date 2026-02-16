@@ -61,7 +61,7 @@ def _modelscope_name(hf_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _probe_url(url: str, timeout: float = 5.0) -> float:
+def _probe_url(url: str, timeout: float = 3.0) -> float:
     """
     测试 URL 连通性，返回响应时间（秒）；失败返回 inf。
 
@@ -84,11 +84,23 @@ def detect_best_source() -> ModelSource:
     自动探测最佳下载源。
 
     策略:
+    0. 先检查系统 locale —— 中文环境直接用 hf-mirror，跳过网络探测
     1. 并行测试 huggingface.co 和 hf-mirror.com 的延迟
     2. 选择延迟最低的
-    3. 如果两者都很慢 (>5s)，优先尝试 ModelScope（如果已安装）
+    3. 如果两者都很慢 (>3s)，优先尝试 ModelScope（如果已安装）
     4. 最终兜底: hf-mirror（国内大概率可用）
     """
+    # 中文系统环境优先 hf-mirror，避免网络探测浪费时间
+    import locale
+
+    try:
+        lang, _ = locale.getdefaultlocale()
+        if lang and lang.lower().startswith("zh"):
+            logger.info("[ModelHub] 检测到中文系统环境，优先使用 hf-mirror")
+            return ModelSource.HF_MIRROR
+    except Exception:
+        pass
+
     import concurrent.futures
 
     probes = {
@@ -101,7 +113,7 @@ def detect_best_source() -> ModelSource:
     # 并行探测，减少等待时间
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
-            pool.submit(_probe_url, url, 5.0): source
+            pool.submit(_probe_url, url, 3.0): source
             for source, url in probes.items()
         }
         for future in concurrent.futures.as_completed(futures):
@@ -118,7 +130,7 @@ def detect_best_source() -> ModelSource:
     best_time = results[best_source]
 
     # 如果两个 HF 源都很慢，检查 ModelScope 是否可用
-    if best_time > 5.0:
+    if best_time > 3.0:
         try:
             import modelscope  # noqa: F401
 
@@ -201,21 +213,26 @@ def _load_from_hf(model_name: str, device: str = "cpu"):
     """通过 HuggingFace (含镜像) 加载模型，失败时自动尝试备选源"""
     from sentence_transformers import SentenceTransformer
 
+    current_endpoint = os.environ.get("HF_ENDPOINT", "")
+    logger.debug(
+        f"[ModelHub] _load_from_hf: HF_ENDPOINT={current_endpoint or '(未设置)'}"
+    )
+
     try:
         return SentenceTransformer(model_name, device=device)
     except Exception as e:
-        current_endpoint = os.environ.get("HF_ENDPOINT", "")
-
-        # 如果用的是官方源，尝试镜像
+        # 如果当前用的不是 hf-mirror，先尝试切换到镜像
         if HF_MIRROR_ENDPOINT not in current_endpoint:
             logger.warning(
-                f"[ModelHub] HuggingFace 官方下载失败 ({e})，尝试 hf-mirror..."
+                f"[ModelHub] 当前源下载失败 ({e})，尝试 hf-mirror..."
             )
             _apply_source_env(ModelSource.HF_MIRROR)
             try:
                 return SentenceTransformer(model_name, device=device)
             except Exception as e2:
                 logger.warning(f"[ModelHub] hf-mirror 也失败了 ({e2})")
+        else:
+            logger.warning(f"[ModelHub] hf-mirror 下载失败 ({e})")
 
         # 最后尝试 ModelScope
         try:
@@ -250,12 +267,26 @@ def load_embedding_model(
 
     # auto 模式：先探测最佳源
     if resolved == ModelSource.AUTO:
-        # 如果模型已经在本地缓存，直接加载不需要探测
+        # 如果模型已经在本地缓存，离线加载（避免向 huggingface.co 发 HEAD 请求）
         if _is_model_cached(model_name):
-            logger.info(f"[ModelHub] 模型已缓存，直接加载: {model_name}")
+            logger.info(f"[ModelHub] 模型已缓存，离线加载: {model_name}")
             from sentence_transformers import SentenceTransformer
 
-            return SentenceTransformer(model_name, device=device)
+            old_offline = os.environ.get("HF_HUB_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            try:
+                model = SentenceTransformer(model_name, device=device)
+                return model
+            except Exception as e:
+                logger.warning(
+                    f"[ModelHub] 离线加载缓存失败 ({e})，将重新下载"
+                )
+            finally:
+                if old_offline is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = old_offline
+            # Fall through: 缓存可能损坏，走正常源探测 + 下载流程
 
         resolved = detect_best_source()
         logger.info(f"[ModelHub] auto 模式选择了: {resolved.value}")
