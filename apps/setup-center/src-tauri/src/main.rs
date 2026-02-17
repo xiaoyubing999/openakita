@@ -7,7 +7,8 @@ use dirs_next::home_dir;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,6 +107,55 @@ fn openakita_root_dir() -> PathBuf {
 
 fn run_dir() -> PathBuf {
     openakita_root_dir().join("run")
+}
+
+/// 安装配置日志目录：~/.openakita/logs/
+fn setup_logs_dir() -> PathBuf {
+    openakita_root_dir().join("logs")
+}
+
+/// 开始写入安装配置日志，创建带日期的日志文件。返回完整路径供前端展示。
+#[tauri::command]
+fn start_onboarding_log(date_label: String) -> Result<String, String> {
+    let log_dir = setup_logs_dir();
+    fs::create_dir_all(&log_dir).map_err(|e| format!("create logs dir failed: {e}"))?;
+    let safe_label = date_label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect::<String>();
+    let name = if safe_label.is_empty() {
+        format!("onboarding-{}.log", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+    } else {
+        format!("onboarding-{}.log", safe_label)
+    };
+    let path = log_dir.join(&name);
+    let mut f = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("open onboarding log failed: {e}"))?;
+    let header = format!("OpenAkita 安装配置日志 开始于 {}\n", date_label);
+    f.write_all(header.as_bytes())
+        .map_err(|e| format!("write onboarding log header failed: {e}"))?;
+    f.flush().map_err(|e| format!("flush failed: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 追加一行到安装配置日志（每行建议带时间戳，由前端拼接）。
+#[tauri::command]
+fn append_onboarding_log(log_path: String, line: String) -> Result<(), String> {
+    let path = PathBuf::from(&log_path);
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut f = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("append onboarding log failed: {e}"))?;
+    writeln!(f, "{}", line).map_err(|e| format!("write line failed: {e}"))?;
+    f.flush().map_err(|e| format!("flush failed: {e}"))?;
+    Ok(())
 }
 
 fn modules_dir() -> PathBuf {
@@ -1923,6 +1973,8 @@ fn main() {
             is_first_run,
             check_environment,
             cleanup_old_environment,
+            start_onboarding_log,
+            append_onboarding_log,
             register_cli,
             unregister_cli,
             get_cli_status

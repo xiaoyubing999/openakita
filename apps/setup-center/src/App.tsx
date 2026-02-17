@@ -7712,6 +7712,15 @@ export function App() {
     setObDetailLog([]);
     setObHasErrors(false);
 
+    // 安装配置日志：单独写入 ~/.openakita/logs/onboarding-日期.log，便于排查
+    const dateLabel = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+    let obLogPath: string | null = null;
+    try {
+      obLogPath = await invoke<string>("start_onboarding_log", { dateLabel });
+    } catch {
+      // 日志文件创建失败不影响主流程
+    }
+
     // 初始化任务列表
     const taskDefs: SetupTask[] = [
       { id: "workspace", label: "准备工作区", status: "pending" },
@@ -7743,6 +7752,12 @@ export function App() {
     const log = (msg: string) => {
       setObInstallLog((prev) => [...prev, msg]);
       addDetailLog(msg);
+      const now = new Date();
+      const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+      const line = `[${ts}] ${msg}`;
+      if (obLogPath) {
+        invoke("append_onboarding_log", { logPath: obLogPath, line }).catch(() => {});
+      }
     };
     let hasErr = false;
 
@@ -7936,6 +7951,9 @@ export function App() {
       log(t("onboarding.progress.error", { error: String(e) }));
       hasErr = true;
     } finally {
+      if (obLogPath) {
+        log(t("onboarding.installLogSaved", { path: obLogPath }) || `安装日志已保存至: ${obLogPath}`);
+      }
       setObHasErrors(hasErr);
       setObInstalling(false);
       setObStep("ob-done");

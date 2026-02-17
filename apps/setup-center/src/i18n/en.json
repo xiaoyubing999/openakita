@@ -666,7 +666,8 @@
       "enter": "Enter OpenAkita",
       "someErrors": "Some issues occurred",
       "errorsHint": "You can reinstall failed modules in settings."
-    }
+    },
+    "installLogSaved": "Install log saved to: {{path}}"
   },
   "modules": {
     "title": "Module Management",

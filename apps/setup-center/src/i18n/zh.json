@@ -666,7 +666,8 @@
       "enter": "进入 OpenAkita",
       "someErrors": "部分操作出现问题",
       "errorsHint": "你可以在设置中重新安装失败的模块。"
-    }
+    },
+    "installLogSaved": "安装日志已保存至: {{path}}"
   },
   "modules": {
     "title": "模块管理",
