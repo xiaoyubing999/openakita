@@ -466,7 +466,7 @@ Function PageEnvCheck
  ${If} ${FileExists} "$R0\modules\*.*"
   ${NSD_CreateCheckbox} 14u 66u -14u 12u "清理已安装的可选模块（向量记忆、whisper 等）"
   Pop $EnvCleanModules
-  ${NSD_SetState} $EnvCleanModules ${BST_CHECKED}
+  ${NSD_SetState} $EnvCleanModules ${BST_UNCHECKED}
  ${EndIf}
 
  ; ── 用户数据清理选项 (默认不勾选) ──

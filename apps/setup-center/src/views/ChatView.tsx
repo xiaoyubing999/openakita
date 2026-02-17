@@ -502,10 +502,14 @@ function FloatingPlanStepItem({ step, idx }: { step: ChatPlanStep; idx: number }
     step.status === "completed" ? <IconCheck size={13} /> :
     step.status === "in_progress" ? <IconPlay size={11} /> :
     step.status === "skipped" ? <IconMinus size={13} /> :
+    step.status === "cancelled" ? <IconX size={13} /> :
+    step.status === "failed" ? <IconX size={13} /> :
     <IconCircle size={9} />;
   const color =
     step.status === "completed" ? "rgba(16,185,129,1)"
     : step.status === "in_progress" ? "var(--brand)"
+    : step.status === "failed" ? "rgba(239,68,68,1)"
+    : step.status === "cancelled" ? "var(--muted)"
     : step.status === "skipped" ? "var(--muted)" : "var(--muted)";
   const descText = typeof step.description === "string" ? step.description : JSON.stringify(step.description);
   const resultText = step.result
@@ -515,7 +519,7 @@ function FloatingPlanStepItem({ step, idx }: { step: ChatPlanStep; idx: number }
     <div className={`floatingPlanStepRow ${step.status === "in_progress" ? "floatingPlanStepActive" : ""}`}>
       <span className="floatingPlanStepIcon" style={{ color }}>{icon}</span>
       <div className="floatingPlanStepContent">
-        <span style={{ opacity: step.status === "skipped" ? 0.5 : 1 }}>{idx + 1}. {descText}</span>
+        <span style={{ opacity: step.status === "skipped" || step.status === "cancelled" ? 0.5 : 1 }}>{idx + 1}. {descText}</span>
         {resultText && <div className="floatingPlanStepResult">{resultText}</div>}
       </div>
     </div>
@@ -1771,7 +1775,7 @@ export function ChatView({
                 } else if (event.type === "plan_completed" && currentPlan) {
                   currentPlan = { ...currentPlan, status: "completed" as const } as ChatPlan;
                 } else if (event.type === "plan_cancelled" && currentPlan) {
-                  currentPlan = { ...currentPlan, status: "cancelled" as unknown as "completed" } as ChatPlan;
+                  currentPlan = { ...currentPlan, status: "cancelled" } as ChatPlan;
                 }
                 if (event.type === "done") {
                   gracefulDone = true;
@@ -1933,7 +1937,7 @@ export function ChatView({
                 // 新 Plan 创建时，将之前消息中的旧 Plan 标记为 completed，
                 // 避免浮动进度条显示已过时的旧 Plan
                 setMessages((prev) => prev.map((m) =>
-                  m.plan && m.plan.status !== "completed" && m.plan.status !== "failed"
+                  m.plan && m.plan.status !== "completed" && m.plan.status !== "failed" && m.plan.status !== "cancelled"
                     ? { ...m, plan: { ...m.plan, status: "completed" as const } }
                     : m
                 ));
@@ -1959,7 +1963,7 @@ export function ChatView({
                 break;
               case "plan_cancelled":
                 if (currentPlan) {
-                  currentPlan = { ...currentPlan, status: "cancelled" as ChatPlanStep["status"] } as ChatPlan;
+                  currentPlan = { ...currentPlan, status: "cancelled" } as ChatPlan;
                 }
                 break;
               case "ask_user": {
@@ -2028,10 +2032,10 @@ export function ChatView({
                 }
                 // 同时清理之前消息中遗留的旧 Plan（防止浮动进度条显示过时 Plan）
                 setMessages((prev) => {
-                  const hasStaleplan = prev.some((m) => m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed");
+                  const hasStaleplan = prev.some((m) => m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed" && m.plan.status !== "cancelled");
                   if (!hasStaleplan) return prev;
                   return prev.map((m) =>
-                    m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed"
+                    m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed" && m.plan.status !== "cancelled"
                       ? { ...m, plan: { ...m.plan, status: "completed" as const } }
                       : m
                   );

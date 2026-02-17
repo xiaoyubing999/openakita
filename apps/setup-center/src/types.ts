@@ -214,13 +214,13 @@ export type ChatPlan = {
   id: string;
   taskSummary: string;
   steps: ChatPlanStep[];
-  status: "in_progress" | "completed" | "failed";
+  status: "in_progress" | "completed" | "failed" | "cancelled";
 };
 
 export type ChatPlanStep = {
   id?: string;
   description: string;
-  status: "pending" | "in_progress" | "completed" | "skipped" | "failed";
+  status: "pending" | "in_progress" | "completed" | "skipped" | "failed" | "cancelled";
   result?: string | null;
 };
 
