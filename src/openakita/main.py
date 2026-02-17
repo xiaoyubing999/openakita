@@ -241,6 +241,18 @@ async def start_im_channels(agent_or_master):
     await _session_manager.start()
     logger.info("SessionManager started")
 
+    # 初始化在线 STT 客户端（可选）
+    from .llm.stt_client import STTClient
+    from .llm.config import load_endpoints_config as _load_ep_config
+
+    stt_client = None
+    try:
+        _, _, stt_eps, _ = _load_ep_config()
+        if stt_eps:
+            stt_client = STTClient(endpoints=stt_eps)
+    except Exception as e:
+        logger.warning(f"Failed to load STT endpoints: {e}")
+
     # 初始化 MessageGateway (先创建，agent_handler 会引用它)
     from .channels import MessageGateway
 
@@ -249,6 +261,7 @@ async def start_im_channels(agent_or_master):
         agent_handler=None,  # 稍后设置
         whisper_model=settings.whisper_model,  # 从配置读取 Whisper 模型
         whisper_language=settings.whisper_language,  # 语音识别语言
+        stt_client=stt_client,  # 在线 STT 客户端
     )
 
     # 注册启用的适配器

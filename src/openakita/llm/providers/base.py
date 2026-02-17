@@ -15,16 +15,20 @@ logger = logging.getLogger(__name__)
 
 # 冷静期时长（秒）- 按错误类型区分
 COOLDOWN_AUTH = 300       # 认证错误: 5 分钟（持久性问题，短时间内不会自愈）
+COOLDOWN_QUOTA = 60       # 配额耗尽: 1 分钟（用户充值后恢复很快，不宜过长）
 COOLDOWN_STRUCTURAL = 120  # 结构性错误: 2 分钟（消息格式问题，需上层修复）
 COOLDOWN_TRANSIENT = 30    # 瞬时错误: 30 秒（超时/连接失败，很可能快速恢复）
 COOLDOWN_DEFAULT = 180     # 默认: 3 分钟（向后兼容）
 COOLDOWN_GLOBAL_FAILURE = 10  # 全局故障（所有端点同时失败）: 10 秒
-COOLDOWN_EXTENDED = 3600   # 升级冷静期: 1 小时（连续多次失败后触发）
 
-# 连续冷静期升级阈值
-CONSECUTIVE_FAILURE_THRESHOLD = 3  # 连续进入 N 次冷静期后升级到 COOLDOWN_EXTENDED
+# 渐进式冷静期退避 —— 替代旧的 1 小时升级冷静期
+# 连续失败时，冷静期从 COOLDOWN_ESCALATION_STEPS 按次数递增，上限 5 分钟
+# 对齐 LiteLLM/Portkey 行业实践：避免过长冷静期锁死端点
+COOLDOWN_ESCALATION_STEPS = [30, 60, 120, 300]  # 30s -> 1min -> 2min -> 5min(上限)
 
-# 向后兼容
+# 向后兼容（旧代码引用）
+COOLDOWN_EXTENDED = COOLDOWN_ESCALATION_STEPS[-1]  # 300s，旧的 3600 已废弃
+CONSECUTIVE_FAILURE_THRESHOLD = 3  # 保留常量以向后兼容，但不再触发 1h 冷静期
 COOLDOWN_SECONDS = COOLDOWN_DEFAULT
 
 
@@ -66,9 +70,9 @@ class LLMProvider(ABC):
             self._error_category = ""
             if self._is_extended_cooldown:
                 self._is_extended_cooldown = False
-                # 升级冷静期结束后重置连续计数，给端点一次重新证明自己的机会
+                # 渐进退避冷静期结束后重置连续计数，给端点重新证明自己的机会
                 self._consecutive_cooldowns = 0
-                logger.info(f"[LLM] endpoint={self.name} extended cooldown expired, reset to healthy")
+                logger.info(f"[LLM] endpoint={self.name} progressive cooldown expired, reset to healthy")
 
         return self._healthy
 
@@ -79,7 +83,7 @@ class LLMProvider(ABC):
 
     @property
     def error_category(self) -> str:
-        """错误分类: auth / structural / transient / unknown"""
+        """错误分类: auth / quota / structural / transient / unknown"""
         return self._error_category
 
     @property
@@ -97,25 +101,28 @@ class LLMProvider(ABC):
 
     @property
     def is_extended_cooldown(self) -> bool:
-        """是否处于升级冷静期（1小时）"""
+        """是否处于渐进升级冷静期"""
         return self._is_extended_cooldown
 
-    def mark_unhealthy(self, error: str, category: str = ""):
+    def mark_unhealthy(self, error: str, category: str = "", is_local: bool = False):
         """标记为不健康，进入冷静期
 
         Args:
             error: 错误信息
             category: 错误分类，影响冷静期时长
                 - "auth": 认证错误 (300s)
+                - "quota": 配额耗尽 (1800s)
                 - "structural": 结构性/格式错误 (120s)
                 - "transient": 超时/连接错误 (30s)
                 - "": 默认 (180s)
+            is_local: 是否为本地端点（Ollama 等），本地端点 transient
+                错误不参与渐进升级（超时是资源不足，非远程故障）
 
-        连续冷静期升级：
-            连续 N 次非结构性错误进入冷静期（中间没有成功请求）→ 升级到 1 小时。
-            结构性错误（如 "does not support thinking"）不计入连续次数，
-            因为重试不会改变结果，升级毫无意义。
-            全局故障（shorten_cooldown）产生的短冷静期也不计入连续次数。
+        渐进式冷静期退避：
+            连续非结构性错误进入冷静期（中间没有成功请求），冷静期从
+            COOLDOWN_ESCALATION_STEPS 按次数递增，上限 5 分钟。
+            - 结构性错误不计入连续次数（重试不会改变结果）
+            - 本地端点 transient 错误不触发渐进升级（超时是正常行为）
         """
         was_already_unhealthy = not self._healthy
         self._healthy = False
@@ -124,28 +131,54 @@ class LLMProvider(ABC):
 
         # 累计连续冷静期次数
         # - 只在从健康 → 不健康时递增（同一轮重试中多次 mark_unhealthy 不重复计数）
-        # - 结构性错误不累计：每次重试结果相同（如 "does not support thinking"），
-        #   累计到升级阈值只会造成无意义的 1 小时锁定
-        if self._error_category != "structural" and not was_already_unhealthy:
+        # - 结构性错误不累计：每次重试结果相同
+        # - 本地端点 transient 错误不累计：超时是资源不足，惩罚无意义
+        skip_escalation = (
+            self._error_category == "structural"
+            or (is_local and self._error_category == "transient")
+        )
+        if not skip_escalation and not was_already_unhealthy:
             self._consecutive_cooldowns += 1
 
-        # 连续 N 次非结构性失败 → 升级到 1 小时冷静期
-        if self._consecutive_cooldowns >= CONSECUTIVE_FAILURE_THRESHOLD:
-            cooldown = COOLDOWN_EXTENDED
-            self._is_extended_cooldown = True
-            logger.warning(
-                f"[LLM] endpoint={self.name} escalated to extended cooldown "
-                f"({COOLDOWN_EXTENDED}s = 1h) after {self._consecutive_cooldowns} "
-                f"consecutive failures"
-            )
+        # 渐进式退避：按连续失败次数从 COOLDOWN_ESCALATION_STEPS 取冷静期
+        # 本地端点 transient 错误固定 30s，不参与渐进升级
+        if self._error_category == "quota":
+            cooldown = COOLDOWN_QUOTA
         elif self._error_category == "auth":
             cooldown = COOLDOWN_AUTH
         elif self._error_category == "structural":
             cooldown = COOLDOWN_STRUCTURAL
         elif self._error_category == "transient":
-            cooldown = COOLDOWN_TRANSIENT
+            if is_local:
+                # 本地端点超时固定短冷静期，不升级
+                cooldown = COOLDOWN_TRANSIENT
+            elif self._consecutive_cooldowns >= 2:
+                # 远程端点连续失败 → 渐进退避
+                step_idx = min(
+                    self._consecutive_cooldowns - 1,
+                    len(COOLDOWN_ESCALATION_STEPS) - 1,
+                )
+                cooldown = COOLDOWN_ESCALATION_STEPS[step_idx]
+                self._is_extended_cooldown = True
+                logger.warning(
+                    f"[LLM] endpoint={self.name} progressive cooldown "
+                    f"step {step_idx + 1}/{len(COOLDOWN_ESCALATION_STEPS)} "
+                    f"({cooldown}s) after {self._consecutive_cooldowns} "
+                    f"consecutive failures"
+                )
+            else:
+                cooldown = COOLDOWN_TRANSIENT
         else:
-            cooldown = COOLDOWN_DEFAULT
+            # unknown 类型：同样应用渐进退避
+            if self._consecutive_cooldowns >= 2:
+                step_idx = min(
+                    self._consecutive_cooldowns - 1,
+                    len(COOLDOWN_ESCALATION_STEPS) - 1,
+                )
+                cooldown = COOLDOWN_ESCALATION_STEPS[step_idx]
+                self._is_extended_cooldown = True
+            else:
+                cooldown = COOLDOWN_DEFAULT
 
         self._cooldown_until = time.time() + cooldown
 
@@ -184,13 +217,14 @@ class LLMProvider(ABC):
     def reset_cooldown(self):
         """重置冷静期（不改变健康标记，仅允许立即重新尝试）
 
-        用于全局故障恢复场景：所有端点同时失败后，
-        网络恢复时需要立即重试而非等待冷静期。
+        用于全局故障恢复 / "最后防线旁路" 场景：所有端点同时失败后，
+        绕过冷静期让所有端点都可被重新尝试（对齐 Portkey 设计）。
 
         注意：不重置连续失败计数，因为全局故障重置不代表端点真正恢复。
         """
-        if self._cooldown_until > 0:
+        if self._cooldown_until > 0 or self._is_extended_cooldown:
             self._cooldown_until = 0
+            self._is_extended_cooldown = False
             # 不清除 _healthy=False，让下次 is_healthy 检查时自然恢复
 
     def shorten_cooldown(self, seconds: int):
@@ -199,64 +233,29 @@ class LLMProvider(ABC):
         Args:
             seconds: 新的冷静期秒数（从现在开始计算）
 
-        注意：升级冷静期（1小时）不会被缩短，除非显式调用 reset_cooldown()。
+        注意：渐进退避冷静期也可以被缩短（旧版 1h 升级冷静期不可被缩短，
+        但新版上限 5min 无此限制）。
         """
-        if self._is_extended_cooldown:
-            logger.debug(
-                f"[LLM] endpoint={self.name} shorten_cooldown skipped "
-                f"(in extended cooldown, {self.cooldown_remaining}s remaining)"
-            )
-            return
         new_until = time.time() + seconds
         if self._cooldown_until > new_until:
             self._cooldown_until = new_until
 
-    def get_cooldown_state(self) -> dict | None:
-        """导出冷静期状态（用于持久化）
-
-        仅导出升级冷静期的状态，普通冷静期不需要持久化（重启后自然清零）。
-
-        Returns:
-            状态字典，或 None（无需持久化）
-        """
-        if not self._is_extended_cooldown or self._cooldown_until <= 0:
-            return None
-        return {
-            "cooldown_until": self._cooldown_until,
-            "consecutive_cooldowns": self._consecutive_cooldowns,
-            "last_error": self._last_error or "",
-            "error_category": self._error_category,
-        }
-
-    def restore_cooldown_state(self, state: dict):
-        """从持久化状态恢复升级冷静期
-
-        用于进程重启后恢复之前的升级冷静期状态，
-        防止通过重启绕过 1 小时冷静期。
-
-        Args:
-            state: get_cooldown_state() 返回的字典
-        """
-        cooldown_until = state.get("cooldown_until", 0)
-        if cooldown_until <= time.time():
-            # 冷静期已过期，无需恢复
-            return
-
-        self._healthy = False
-        self._cooldown_until = cooldown_until
-        self._consecutive_cooldowns = state.get("consecutive_cooldowns", CONSECUTIVE_FAILURE_THRESHOLD)
-        self._last_error = state.get("last_error", "restored from persistent state")
-        self._error_category = state.get("error_category", "unknown")
-        self._is_extended_cooldown = True
-        logger.info(
-            f"[LLM] endpoint={self.name} restored extended cooldown from saved state "
-            f"({self.cooldown_remaining}s remaining)"
-        )
-
     @staticmethod
     def _classify_error(error: str) -> str:
-        """根据错误信息自动分类"""
+        """根据错误信息自动分类
+
+        分类优先级：quota > auth > structural > transient > unknown
+        quota 必须在 auth 之前检测，因为 403 配额耗尽也包含 "403" 关键字。
+        """
         err_lower = error.lower()
+
+        # 配额耗尽类（必须在 auth 之前，因为也是 403 状态码）
+        if any(kw in err_lower for kw in [
+            "allocationquota", "freetieronly", "insufficient_quota",
+            "quota_exceeded", "billing", "free tier",
+            "free_tier", "quota", "exceeded your current",
+        ]):
+            return "quota"
 
         # 认证类
         if any(kw in err_lower for kw in [

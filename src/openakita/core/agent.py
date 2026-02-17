@@ -14,6 +14,7 @@ MCP 系统遵循 Model Context Protocol 规范 (modelcontextprotocol.io)
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -2787,6 +2788,77 @@ search_github → install_skill → 使用
 
         # 当前用户消息（支持多模态）
         pending_images = session.get_metadata("pending_images") if session else None
+        pending_videos = session.get_metadata("pending_videos") if session else None
+        pending_audio = session.get_metadata("pending_audio") if session else None
+        pending_files = session.get_metadata("pending_files") if session else None
+
+        # 处理 PDF/文档文件 — 如果 LLM 支持 PDF 则构建 DocumentBlock，否则降级为文本
+        document_blocks = []
+        if pending_files:
+            llm_client_for_pdf = getattr(self.brain, "_llm_client", None)
+            has_pdf_cap = llm_client_for_pdf and llm_client_for_pdf.has_any_endpoint_with_capability("pdf")
+            for fdata in pending_files:
+                if has_pdf_cap and fdata.get("type") == "document":
+                    document_blocks.append(fdata)
+                    logger.info(f"[Session:{session_id}] PDF → native DocumentBlock")
+                else:
+                    # 降级: 提取文本描述
+                    fname = fdata.get("filename", "unknown")
+                    compiled_message += f"\n[文档附件: {fname}，该端点不支持 PDF 原生输入]"
+
+        # 三级音频决策：LLM原生audio > 在线STT > 本地Whisper
+        audio_blocks = []
+        if pending_audio:
+            llm_client = getattr(self.brain, "_llm_client", None)
+            has_audio_cap = llm_client and llm_client.has_any_endpoint_with_capability("audio")
+
+            if has_audio_cap:
+                # Tier 1: LLM 原生音频输入
+                for aud in pending_audio:
+                    local_path = aud.get("local_path", "")
+                    if local_path and Path(local_path).exists():
+                        try:
+                            from ..channels.media.audio_utils import ensure_llm_compatible
+                            compat_path = ensure_llm_compatible(local_path)
+                            audio_blocks.append({
+                                "type": "audio",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": aud.get("mime_type", "audio/wav"),
+                                    "data": base64.b64encode(Path(compat_path).read_bytes()).decode("utf-8"),
+                                    "format": Path(compat_path).suffix.lstrip(".") or "wav",
+                                },
+                            })
+                            logger.info(f"[Session:{session_id}] Audio → native AudioBlock")
+                        except Exception as e:
+                            logger.error(f"[Session:{session_id}] Failed to build AudioBlock: {e}")
+            else:
+                # Tier 2: 在线 STT（如果可用）
+                stt_client = None
+                im_gateway = gateway or (session.get_metadata("_gateway") if session else None)
+                if im_gateway and hasattr(im_gateway, "stt_client"):
+                    stt_client = im_gateway.stt_client
+
+                if stt_client and stt_client.is_available:
+                    for aud in pending_audio:
+                        local_path = aud.get("local_path", "")
+                        existing_transcription = aud.get("transcription")
+                        if existing_transcription:
+                            continue  # 已有 Whisper 结果，不重复调用
+                        if local_path and Path(local_path).exists():
+                            try:
+                                stt_result = await stt_client.transcribe(local_path)
+                                if stt_result:
+                                    # 用在线 STT 结果替换输入
+                                    if not compiled_message.strip() or "[语音:" in compiled_message:
+                                        compiled_message = stt_result
+                                    else:
+                                        compiled_message = f"{compiled_message}\n\n[语音内容(在线识别): {stt_result}]"
+                                    logger.info(f"[Session:{session_id}] Audio → online STT: {stt_result[:50]}...")
+                            except Exception as e:
+                                logger.warning(f"[Session:{session_id}] Online STT failed: {e}")
+                # Tier 3: 本地 Whisper（已由 Gateway 处理，transcription 已在 input_text 中）
+                # 不需要额外操作
 
         # Desktop Chat 附件处理（与 IM 的 pending_images 对齐）
         if attachments and not pending_images:
@@ -2800,6 +2872,14 @@ search_github → install_skill → 使用
                 att_mime = getattr(att, "mime_type", None) or att_type
                 if att_type == "image" and att_url:
                     content_blocks.append({"type": "image_url", "image_url": {"url": att_url}})
+                elif att_type == "video" and att_url:
+                    content_blocks.append({"type": "video_url", "video_url": {"url": att_url}})
+                elif att_type == "document" and att_url:
+                    # PDF 等文档 — 通过 URL 下载后交给后端处理
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[文档: {att_name} ({att_mime})] URL: {att_url}",
+                    })
                 elif att_url:
                     content_blocks.append({
                         "type": "text",
@@ -2809,21 +2889,47 @@ search_github → install_skill → 使用
                 messages.append({"role": "user", "content": content_blocks})
             elif compiled_message:
                 messages.append({"role": "user", "content": compiled_message})
-        elif pending_images:
-            # IM 路径: 多模态（图片）
+        elif pending_images or pending_videos or audio_blocks or document_blocks:
+            # IM 路径: 多模态（图片 + 视频 + 音频 + 文档）
             content_parts: list[dict] = []
             _text_for_llm = compiled_message.strip()
-            if _text_for_llm and re.fullmatch(r"(\[图片: [^\]]+\]\s*)+", _text_for_llm):
+            # 图片占位符替换
+            if pending_images and _text_for_llm and re.fullmatch(r"(\[图片: [^\]]+\]\s*)+", _text_for_llm):
                 _text_for_llm = (
                     f"用户发送了 {len(pending_images)} 张图片（已附在消息中，请直接查看）。"
                     "请描述或回应你所看到的图片内容。"
                 )
+            # 视频占位符替换
+            if pending_videos and _text_for_llm and re.fullmatch(r"(\[视频: [^\]]+\]\s*)+", _text_for_llm):
+                _text_for_llm = (
+                    f"用户发送了 {len(pending_videos)} 个视频（已附在消息中，请直接查看）。"
+                    "请描述或回应你所看到的视频内容。"
+                )
             if _text_for_llm:
                 content_parts.append({"type": "text", "text": _text_for_llm})
-            for img_data in pending_images:
-                content_parts.append(img_data)
+            if pending_images:
+                for img_data in pending_images:
+                    content_parts.append(img_data)
+            if pending_videos:
+                for vid_data in pending_videos:
+                    content_parts.append(vid_data)
+            if audio_blocks:
+                for aud_data in audio_blocks:
+                    content_parts.append(aud_data)
+            if document_blocks:
+                for doc_data in document_blocks:
+                    content_parts.append(doc_data)
             messages.append({"role": "user", "content": content_parts})
-            logger.info(f"[Session:{session_id}] Multimodal message with {len(pending_images)} images")
+            media_info = []
+            if pending_images:
+                media_info.append(f"{len(pending_images)} images")
+            if pending_videos:
+                media_info.append(f"{len(pending_videos)} videos")
+            if audio_blocks:
+                media_info.append(f"{len(audio_blocks)} audio")
+            if document_blocks:
+                media_info.append(f"{len(document_blocks)} documents")
+            logger.info(f"[Session:{session_id}] Multimodal message with {', '.join(media_info)}")
         else:
             # 普通文本消息
             messages.append({"role": "user", "content": compiled_message})
@@ -3723,6 +3829,10 @@ NEXT: 建议的下一步（如有）"""
         # Track deliver_artifacts receipts as delivery evidence
         delivery_receipts: list[dict] = []
 
+        # === 模型切换熔断（与 ReasoningEngine.MAX_MODEL_SWITCHES 对齐） ===
+        MAX_TASK_MODEL_SWITCHES = 5
+        _task_switch_count = 0  # 模型切换次数计数器
+
         # === C7: 重构循环检测 ===
         # 不设硬上限，改为 LLM 自检 + 真正重复模式检测 + 极端安全阈值（提醒用户）
         consecutive_tool_rounds = 0           # 连续有工具调用的轮次计数
@@ -3838,8 +3948,29 @@ NEXT: 建议的下一步（如有）"""
                 # === 安全模型切换检查 ===
                 # 检查是否超时且重试次数已用尽
                 if task_monitor.should_switch_model:
+                    _task_switch_count += 1
+                    if _task_switch_count > MAX_TASK_MODEL_SWITCHES:
+                        logger.error(
+                            f"[ModelSwitch] Exceeded max model switches "
+                            f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
+                        )
+                        return (
+                            "❌ 任务失败：所有模型均不可用，已达到最大切换次数。\n"
+                            "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
+                            "如果是配额耗尽，充值后即可恢复。"
+                        )
+
                     new_model = task_monitor.fallback_model
-                    _switch_llm_endpoint(new_model, reason="task_monitor timeout fallback")
+                    switch_ok = _switch_llm_endpoint(new_model, reason="task_monitor timeout fallback")
+                    if not switch_ok:
+                        logger.error(
+                            f"[ModelSwitch] switch_model failed for '{new_model}', aborting task"
+                        )
+                        return (
+                            "❌ 任务失败：模型切换失败，无可用模型。\n"
+                            "💡 建议：请检查网络连接，或在设置中心确认至少有一个模型配置正确。"
+                        )
+
                     task_monitor.switch_model(
                         new_model,
                         f"任务执行超过 {task_monitor.timeout_seconds} 秒，重试 {task_monitor.retry_count} 次后切换",
@@ -3918,8 +4049,30 @@ NEXT: 建议的下一步（如有）"""
                         continue
                     else:
                         # 重试次数用尽，切换模型
+                        _task_switch_count += 1
+                        if _task_switch_count > MAX_TASK_MODEL_SWITCHES:
+                            logger.error(
+                                f"[ModelSwitch] Exceeded max model switches "
+                                f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
+                            )
+                            return (
+                                "❌ 任务失败：所有模型均不可用，已达到最大切换次数。\n"
+                                "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
+                                "如果是配额耗尽，充值后即可恢复。"
+                            )
+
                         new_model = task_monitor.fallback_model
-                        _switch_llm_endpoint(new_model, reason=f"LLM call failed fallback: {e}")
+                        switch_ok = _switch_llm_endpoint(new_model, reason=f"LLM call failed fallback: {e}")
+                        if not switch_ok:
+                            # 切换失败，不重置 retry_count，直接终止
+                            logger.error(
+                                f"[ModelSwitch] switch_model failed for '{new_model}', aborting task"
+                            )
+                            return (
+                                "❌ 任务失败：模型切换失败，无可用模型。\n"
+                                "💡 建议：请检查网络连接，或在设置中心确认至少有一个模型配置正确。"
+                            )
+
                         task_monitor.switch_model(
                             new_model,
                             f"LLM 调用失败，重试 {task_monitor.retry_count} 次后切换: {e}",
@@ -4766,6 +4919,11 @@ NEXT: 建议的下一步（如有）"""
         recent_tool_calls: list[str] = []  # 记录最近的工具调用
         max_repeated_calls = 3  # 连续相同调用超过此次数则强制结束
 
+        # 模型切换熔断：与 ReasoningEngine.MAX_MODEL_SWITCHES 对齐
+        # 防止并行任务路径因所有模型不可用而无限循环切换
+        MAX_TASK_MODEL_SWITCHES = 5
+        _task_switch_count = 0
+
         # 追问计数器：当 LLM 没有调用工具时，最多追问几次
         no_tool_call_count = 0
         max_no_tool_retries = max(0, int(getattr(settings, "force_tool_call_max_retries", 1)))
@@ -4788,6 +4946,19 @@ NEXT: 建议的下一步（如有）"""
                 # === 安全模型切换检查 ===
                 # 检查是否超时且重试次数已用尽
                 if task_monitor.should_switch_model:
+                    # 熔断检查：防止无限模型切换循环
+                    _task_switch_count += 1
+                    if _task_switch_count > MAX_TASK_MODEL_SWITCHES:
+                        logger.error(
+                            f"[Task:{task.id}] Exceeded max model switches "
+                            f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
+                        )
+                        return (
+                            f"❌ 任务失败：已尝试切换 {MAX_TASK_MODEL_SWITCHES} 次模型，所有模型均不可用。\n"
+                            "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
+                            "如果是配额耗尽，充值后即可恢复。"
+                        )
+
                     new_model = task_monitor.fallback_model
                     task_monitor.switch_model(
                         new_model,
@@ -4804,7 +4975,14 @@ NEXT: 建议的下一步（如有）"""
                             conversation_id=conversation_id,
                         )
                         if not ok:
-                            logger.warning(f"[ModelSwitch] switch_model failed: {msg}")
+                            logger.error(
+                                f"[ModelSwitch] switch_model failed: {msg}. "
+                                f"Aborting task (no healthy endpoint)."
+                            )
+                            return (
+                                f"❌ 任务失败：模型切换失败（{msg}），无法继续执行。\n"
+                                "💡 建议：请检查网络连接，或在设置中心确认至少有一个模型配置正确。"
+                            )
                     else:
                         logger.warning(f"[ModelSwitch] Cannot resolve endpoint for '{new_model}'")
 
@@ -4867,6 +5045,19 @@ NEXT: 建议的下一步（如有）"""
                         continue
                     else:
                         # 重试次数用尽，切换模型（per-conversation override）
+                        # 熔断检查：防止无限模型切换循环
+                        _task_switch_count += 1
+                        if _task_switch_count > MAX_TASK_MODEL_SWITCHES:
+                            logger.error(
+                                f"[Task:{task.id}] Exceeded max model switches "
+                                f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
+                            )
+                            return (
+                                f"❌ 任务失败：已尝试切换 {MAX_TASK_MODEL_SWITCHES} 次模型，所有模型均不可用。\n"
+                                "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
+                                f"如果是配额耗尽，充值后即可恢复。\n最后错误: {e}"
+                            )
+
                         new_model = task_monitor.fallback_model
                         task_monitor.switch_model(
                             new_model,
@@ -4882,7 +5073,16 @@ NEXT: 建议的下一步（如有）"""
                                 conversation_id=conversation_id,
                             )
                             if not ok:
-                                logger.warning(f"[ModelSwitch] switch_model failed: {msg}")
+                                logger.warning(
+                                    f"[ModelSwitch] switch_model failed: {msg}. "
+                                    f"Not resetting retry_count."
+                                )
+                                # switch_model 失败（目标在冷静期），不重置 retry_count
+                                # 直接 break，避免无限重试
+                                return (
+                                    f"❌ 任务失败：模型切换失败（{msg}），无法继续执行。\n"
+                                    "💡 建议：请检查网络连接，或在设置中心确认至少有一个模型配置正确。"
+                                )
                         else:
                             logger.warning(
                                 f"[ModelSwitch] Cannot resolve endpoint for '{new_model}'"

@@ -8,7 +8,11 @@ import base64
 import re
 
 from ..types import (
+    AudioBlock,
+    AudioContent,
     ContentBlock,
+    DocumentBlock,
+    DocumentContent,
     ImageBlock,
     ImageContent,
     TextBlock,
@@ -146,22 +150,203 @@ def convert_video_to_gemini(video: VideoContent) -> dict:
     """
     将内部视频格式转换为 Gemini 格式
 
-    注意：Gemini 的视频格式可能与 Kimi 不同，需要根据实际 API 文档调整
+    Gemini 使用 inline_data 格式（通过 OpenAI 兼容层时可能透传）:
+    {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:video/mp4;base64,..."
+        }
+    }
+
+    注意: 通过 OpenAI 兼容层调用 Gemini 时，视频作为 data URL 传递
+    大文件应使用 Gemini Files API（在 gemini_files.py 中实现）
     """
-    # TODO: 根据 Gemini API 文档实现
-    return convert_video_to_kimi(video)
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": video.to_data_url(),
+        },
+    }
 
 
-def convert_content_blocks_to_openai(
+def convert_video_to_dashscope(video: VideoContent) -> dict:
+    """
+    将内部视频格式转换为 DashScope (Qwen-VL) 格式
+
+    DashScope Qwen-VL 使用 video_url 类型（同 Kimi 格式）:
+    {
+        "type": "video_url",
+        "video_url": {
+            "url": "data:video/mp4;base64,..."
+        }
+    }
+    """
+    return {
+        "type": "video_url",
+        "video_url": {
+            "url": video.to_data_url(),
+        },
+    }
+
+
+def convert_audio_to_openai(audio: AudioContent) -> dict:
+    """
+    将内部音频格式转换为 OpenAI input_audio 格式
+
+    OpenAI 格式:
+    {
+        "type": "input_audio",
+        "input_audio": {
+            "data": "<base64>",
+            "format": "wav"
+        }
+    }
+    """
+    return {
+        "type": "input_audio",
+        "input_audio": {
+            "data": audio.data,
+            "format": audio.format or "wav",
+        },
+    }
+
+
+def convert_audio_to_gemini(audio: AudioContent) -> dict:
+    """
+    将内部音频格式转换为 Gemini 格式（通过 OpenAI 兼容层）
+
+    使用 data URL 传递，与图片/视频一致
+    """
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": audio.to_data_url(),
+        },
+    }
+
+
+def convert_audio_to_dashscope(audio: AudioContent) -> dict:
+    """
+    将内部音频格式转换为 DashScope (Qwen-Audio) 格式
+
+    DashScope 使用 audio_url:
+    {
+        "type": "audio_url",
+        "audio_url": {
+            "url": "data:audio/wav;base64,..."
+        }
+    }
+    """
+    return {
+        "type": "audio_url",
+        "audio_url": {
+            "url": audio.to_data_url(),
+        },
+    }
+
+
+def convert_document_to_anthropic(document: DocumentContent) -> dict:
+    """
+    将内部文档格式转换为 Anthropic document 格式
+
+    Anthropic 格式:
+    {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": "..."
+        }
+    }
+    """
+    return {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": document.media_type,
+            "data": document.data,
+        },
+    }
+
+
+def convert_document_to_gemini(document: DocumentContent) -> dict:
+    """
+    将内部文档格式转换为 Gemini 格式
+
+    通过 OpenAI 兼容层时使用 data URL
+    """
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:{document.media_type};base64,{document.data}",
+        },
+    }
+
+
+# ── 策略表：按服务商分发多模态转换器 ──
+# 每种媒体类型对应一个 provider -> converter 映射
+# 不在表中的 provider 将走降级链
+
+VIDEO_CONVERTERS: dict[str, object] = {
+    "moonshot": convert_video_to_kimi,
+    "google": convert_video_to_gemini,
+    "dashscope": convert_video_to_dashscope,
+}
+
+AUDIO_CONVERTERS: dict[str, object] = {
+    "openai": convert_audio_to_openai,
+    "google": convert_audio_to_gemini,
+    "dashscope": convert_audio_to_dashscope,
+}
+
+DOCUMENT_CONVERTERS: dict[str, object] = {
+    "anthropic": convert_document_to_anthropic,
+    "google": convert_document_to_gemini,
+}
+
+
+import logging as _multimodal_logging
+
+_converter_logger = _multimodal_logging.getLogger(__name__)
+
+
+def _degrade_video(block: VideoBlock) -> dict:
+    """视频降级: 不支持视频的端点 → 文本描述"""
+    _converter_logger.warning("Video content degraded to text (provider not supported)")
+    return {"type": "text", "text": "[视频内容：该端点不支持视频输入，视频已被跳过]"}
+
+
+def _degrade_audio(block: AudioBlock) -> dict:
+    """音频降级: 不支持音频的端点 → 文本描述"""
+    _converter_logger.warning("Audio content degraded to text (provider not supported)")
+    return {"type": "text", "text": "[音频内容：该端点不支持音频输入，已跳过]"}
+
+
+def _degrade_document(block: DocumentBlock) -> dict:
+    """文档降级: 不支持文档的端点 → 文本描述"""
+    fname = block.document.filename or "unknown"
+    _converter_logger.warning(f"Document '{fname}' degraded to text (provider not supported)")
+    return {"type": "text", "text": f"[文档内容：该端点不支持文档输入。文件名: {fname}]"}
+
+
+def convert_content_blocks(
     blocks: list[ContentBlock],
     provider: str = "openai",
 ) -> str | list[dict]:
     """
-    将内容块列表转换为 OpenAI 格式
+    统一内容块转换器（策略表分发 + 优雅降级）
+
+    根据 provider 从策略表中选择对应的转换器。
+    如果 provider 不在策略表中，自动走降级链。
+
+    降级链:
+    - 视频不支持 → 文本描述 "[视频内容：该端点不支持视频输入]"
+    - 音频不支持 → 文本描述 "[音频内容：该端点不支持音频输入]"
+    - 文档不支持 → 文本描述 "[文档内容：该端点不支持文档输入]"
 
     Args:
         blocks: 内容块列表
-        provider: 服务商（影响视频处理方式）
+        provider: 服务商标识
 
     Returns:
         如果只有一个文本块，返回字符串；否则返回列表
@@ -172,23 +357,37 @@ def convert_content_blocks_to_openai(
     result = []
     for block in blocks:
         if isinstance(block, TextBlock):
-            result.append(
-                {
-                    "type": "text",
-                    "text": block.text,
-                }
-            )
+            result.append({"type": "text", "text": block.text})
+
         elif isinstance(block, ImageBlock):
             result.append(convert_image_to_openai(block.image))
+
         elif isinstance(block, VideoBlock):
-            if provider == "moonshot":
-                result.append(convert_video_to_kimi(block.video))
-            elif provider == "google":
-                result.append(convert_video_to_gemini(block.video))
+            converter = VIDEO_CONVERTERS.get(provider)
+            if converter:
+                result.append(converter(block.video))
             else:
-                raise UnsupportedMediaError(f"Provider '{provider}' does not support video content")
+                result.append(_degrade_video(block))
+
+        elif isinstance(block, AudioBlock):
+            converter = AUDIO_CONVERTERS.get(provider)
+            if converter:
+                result.append(converter(block.audio))
+            else:
+                result.append(_degrade_audio(block))
+
+        elif isinstance(block, DocumentBlock):
+            converter = DOCUMENT_CONVERTERS.get(provider)
+            if converter:
+                result.append(converter(block.document))
+            else:
+                result.append(_degrade_document(block))
 
     return result
+
+
+# 向后兼容别名
+convert_content_blocks_to_openai = convert_content_blocks
 
 
 def has_images(content: str | list[ContentBlock]) -> bool:
@@ -203,6 +402,20 @@ def has_videos(content: str | list[ContentBlock]) -> bool:
     if isinstance(content, str):
         return False
     return any(isinstance(block, VideoBlock) for block in content)
+
+
+def has_audio(content: str | list[ContentBlock]) -> bool:
+    """检查内容是否包含音频"""
+    if isinstance(content, str):
+        return False
+    return any(isinstance(block, AudioBlock) for block in content)
+
+
+def has_documents(content: str | list[ContentBlock]) -> bool:
+    """检查内容是否包含文档"""
+    if isinstance(content, str):
+        return False
+    return any(isinstance(block, DocumentBlock) for block in content)
 
 
 def extract_images(content: list[ContentBlock]) -> list[ImageContent]:

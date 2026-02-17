@@ -12,7 +12,6 @@ LLM 统一客户端
 import asyncio
 import json
 import logging
-import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -24,7 +23,9 @@ from .providers.base import LLMProvider
 from .providers.openai import OpenAIProvider
 from .types import (
     AllEndpointsFailedError,
+    AudioBlock,
     AuthenticationError,
+    DocumentBlock,
     EndpointConfig,
     ImageBlock,
     LLMError,
@@ -37,6 +38,37 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _friendly_error_hint(failed_providers: list | None = None, last_error: str = "") -> str:
+    """根据失败端点的错误分类生成用户友好的提示信息。
+
+    返回一段面向用户的中文提示，帮助用户理解问题并采取行动。
+    """
+    hints: list[str] = []
+    categories: set[str] = set()
+
+    if failed_providers:
+        for p in failed_providers:
+            cat = getattr(p, "error_category", "")
+            if cat:
+                categories.add(cat)
+
+    # 根据错误类型给出具体建议
+    if "quota" in categories:
+        hints.append("💳 检测到 API 配额耗尽，请前往对应平台充值或升级套餐，充值后会自动恢复。")
+    if "auth" in categories:
+        hints.append("🔑 检测到 API 认证失败，请检查 API Key 是否正确、是否过期。")
+    if "transient" in categories:
+        hints.append("🌐 检测到网络超时/连接失败，请检查网络连接和代理设置。")
+    if "structural" in categories:
+        hints.append("⚙️ 检测到请求格式错误，这通常是模型兼容性问题，请尝试切换其他模型。")
+
+    if not hints:
+        # 无法分类时的通用提示
+        hints.append("请检查 API Key、网络连接和账户余额。")
+
+    return " ".join(hints)
 
 
 # ==================== 动态切换相关数据结构 ====================
@@ -104,8 +136,6 @@ class LLMClient:
 
     # 默认临时切换有效期（小时）
     DEFAULT_OVERRIDE_HOURS = 12
-    _COOLDOWN_STATE_FILENAME = ".llm_cooldown_state.json"
-
     def __init__(
         self,
         config_path: Path | None = None,
@@ -136,13 +166,10 @@ class LLMClient:
             self._endpoints = sorted(endpoints, key=lambda x: x.priority)
         elif config_path or get_default_config_path().exists():
             self._config_path = config_path or get_default_config_path()
-            self._endpoints, _, self._settings = load_endpoints_config(config_path)
+            self._endpoints, _, _, self._settings = load_endpoints_config(config_path)
 
         # 创建 Provider 实例
         self._init_providers()
-
-        # 恢复持久化的升级冷静期状态（防止重启绕过 1 小时冷静期）
-        self._restore_cooldown_state()
 
     def reload(self) -> bool:
         """热重载：重新读取配置文件并重建所有 Provider。
@@ -161,7 +188,7 @@ class LLMClient:
             if env_path.exists():
                 _reload_dotenv(env_path, override=True)
 
-            new_endpoints, _, new_settings = load_endpoints_config(self._config_path)
+            new_endpoints, _, _, new_settings = load_endpoints_config(self._config_path)
             self._endpoints = new_endpoints
             self._settings = new_settings
             self._providers.clear()
@@ -260,6 +287,8 @@ class LLMClient:
         require_tools = bool(tools)
         require_vision = self._has_images(messages)
         require_video = self._has_videos(messages)
+        require_audio = self._has_audio(messages)
+        require_pdf = self._has_documents(messages)
         require_thinking = bool(enable_thinking)
 
         # 检测工具上下文：对 failover 需要更保守
@@ -287,6 +316,8 @@ class LLMClient:
             require_vision=require_vision,
             require_video=require_video,
             require_thinking=require_thinking,
+            require_audio=require_audio,
+            require_pdf=require_pdf,
             conversation_id=conversation_id,
             prefer_endpoint=self._last_success_endpoint if has_tool_context else None,
         )
@@ -319,6 +350,8 @@ class LLMClient:
             require_vision=require_vision,
             require_video=require_video,
             require_thinking=require_thinking,
+            require_audio=require_audio,
+            require_pdf=require_pdf,
             conversation_id=conversation_id,
             prefer_endpoint=self._last_success_endpoint if has_tool_context else None,
         )
@@ -372,6 +405,8 @@ class LLMClient:
         require_tools = bool(tools)
         require_vision = self._has_images(messages)
         require_video = self._has_videos(messages)
+        require_audio = self._has_audio(messages)
+        require_pdf = self._has_documents(messages)
         require_thinking = bool(enable_thinking)
 
         # 使用公共降级策略解析端点列表
@@ -380,6 +415,8 @@ class LLMClient:
             require_vision=require_vision,
             require_video=require_video,
             require_thinking=require_thinking,
+            require_audio=require_audio,
+            require_pdf=require_pdf,
             conversation_id=conversation_id,
         )
 
@@ -390,6 +427,8 @@ class LLMClient:
                 require_vision=require_vision,
                 require_video=require_video,
                 require_thinking=require_thinking,
+                require_audio=require_audio,
+                require_pdf=require_pdf,
                 conversation_id=conversation_id,
             )
 
@@ -434,8 +473,9 @@ class LLMClient:
                     + (f", trying next endpoint..." if i < len(eligible) - 1 else "")
                 )
 
+        hint = _friendly_error_hint(eligible)
         raise AllEndpointsFailedError(
-            f"Stream: all {len(eligible)} endpoints failed. Last error: {last_error}"
+            f"Stream: all {len(eligible)} endpoints failed. {hint} Last error: {last_error}"
         )
 
     # ==================== 公共降级策略 ====================
@@ -447,6 +487,8 @@ class LLMClient:
         require_vision: bool = False,
         require_video: bool = False,
         require_thinking: bool = False,
+        require_audio: bool = False,
+        require_pdf: bool = False,
         conversation_id: str | None = None,
         prefer_endpoint: str | None = None,
     ) -> list[LLMProvider]:
@@ -481,6 +523,8 @@ class LLMClient:
                 require_vision=require_vision,
                 require_video=require_video,
                 require_thinking=False,
+                require_audio=require_audio,
+                require_pdf=require_pdf,
                 conversation_id=conversation_id,
                 prefer_endpoint=prefer_endpoint,
             )
@@ -501,12 +545,33 @@ class LLMClient:
             if (not require_tools or p.config.has_capability("tools"))
             and (not require_vision or p.config.has_capability("vision"))
             and (not require_video or p.config.has_capability("video"))
+            and (not require_audio or p.config.has_capability("audio"))
+            and (not require_pdf or p.config.has_capability("pdf"))
         ]
 
-        if require_video and not base_capability_matched:
-            raise UnsupportedMediaError(
-                "No endpoint supports video. Configure a video-capable endpoint (e.g., kimi-k2.5)."
-            )
+        # 多模态软降级: 视频/音频/PDF 端点不匹配时不硬失败
+        if not base_capability_matched:
+            degraded = []
+            if require_video:
+                degraded.append("video")
+                require_video = False
+            if require_audio:
+                degraded.append("audio")
+                require_audio = False
+            if require_pdf:
+                degraded.append("pdf")
+                require_pdf = False
+            if degraded:
+                logger.warning(
+                    f"[LLM] No endpoint supports {'/'.join(degraded)}. "
+                    "Content will be degraded (keyframes/text/STT)."
+                )
+                base_capability_matched = [
+                    p
+                    for p in providers_sorted
+                    if (not require_tools or p.config.has_capability("tools"))
+                    and (not require_vision or p.config.has_capability("vision"))
+                ]
 
         # 如果降级了 thinking，更新 request
         if require_thinking:
@@ -520,11 +585,19 @@ class LLMClient:
             if unhealthy_count > 0:
                 # 按错误类型分组
                 structural = [p for p in unhealthy if p.error_category == "structural"]
+                quota_or_auth = [
+                    p for p in unhealthy
+                    if p.error_category in ("quota", "auth")
+                ]
                 non_structural = [p for p in unhealthy if p.error_category != "structural"]
 
                 # ── 降级 2: 等待瞬时冷静期恢复 ──
-                if non_structural:
-                    min_transient_cd = min(p.cooldown_remaining for p in non_structural)
+                transient_like = [
+                    p for p in non_structural
+                    if p.error_category not in ("quota", "auth")
+                ]
+                if transient_like:
+                    min_transient_cd = min(p.cooldown_remaining for p in transient_like)
                     if 0 < min_transient_cd <= 35:
                         logger.info(
                             f"[LLM] All endpoints in cooldown. "
@@ -537,6 +610,8 @@ class LLMClient:
                             require_vision=require_vision,
                             require_video=require_video,
                             require_thinking=False,
+                            require_audio=require_audio,
+                            require_pdf=require_pdf,
                             conversation_id=conversation_id,
                             prefer_endpoint=prefer_endpoint,
                         )
@@ -551,16 +626,44 @@ class LLMClient:
                 if structural and len(structural) == unhealthy_count:
                     last_err = structural[0]._last_error or "unknown structural error"
                     min_cd = min(p.cooldown_remaining for p in structural)
+                    hint = _friendly_error_hint(structural)
                     raise AllEndpointsFailedError(
                         f"All endpoints failed with structural errors "
-                        f"(cooldown {min_cd}s). Last error: {last_err}"
+                        f"(cooldown {min_cd}s). {hint} Last error: {last_err}"
                     )
 
-            # ── 降级 3: 强制重试（忽略冷静期） ──
+                # ── 全部是配额/认证错误，重试无意义 → 快速报错 ──
+                if quota_or_auth and len(quota_or_auth) == unhealthy_count:
+                    last_err = quota_or_auth[0]._last_error or "unknown auth/quota error"
+                    categories = sorted({p.error_category for p in quota_or_auth})
+                    hint = _friendly_error_hint(quota_or_auth)
+                    raise AllEndpointsFailedError(
+                        f"All endpoints failed with {'/'.join(categories)} errors. "
+                        f"{hint} Last error: {last_err}"
+                    )
+
+            # ── 降级 3: "最后防线旁路" — 绕过冷静期（对齐 Portkey） ──
+            # Portkey 核心规则：当没有健康目标时，绕过 circuit breaker 尝试所有目标
+            # 排除 quota/auth 错误的端点（这类错误重试无意义）
+            retryable = [
+                p for p in base_capability_matched
+                if p.is_healthy or p.error_category not in ("quota", "auth")
+            ]
+            if retryable:
+                logger.warning(
+                    f"[LLM] No healthy endpoint available. "
+                    f"Bypassing cooldowns for {len(retryable)} endpoints "
+                    f"(last resort, Portkey-style)."
+                )
+                for p in retryable:
+                    if not p.is_healthy:
+                        p.reset_cooldown()
+                return retryable
+
+            # 如果所有端点都是 quota/auth，仍然返回它们（让 _try_endpoints 决定最终错误）
             logger.warning(
-                f"[LLM] No healthy endpoint available. "
-                f"Force-retrying {len(base_capability_matched)} endpoints "
-                f"(ignoring cooldown)."
+                f"[LLM] All {len(base_capability_matched)} endpoints have "
+                f"non-retryable errors. Returning for final error handling."
             )
             return base_capability_matched
 
@@ -580,6 +683,8 @@ class LLMClient:
         require_vision: bool = False,
         require_video: bool = False,
         require_thinking: bool = False,
+        require_audio: bool = False,
+        require_pdf: bool = False,
         conversation_id: str | None = None,
         prefer_endpoint: str | None = None,
     ) -> list[LLMProvider]:
@@ -635,8 +740,10 @@ class LLMClient:
                     vision_ok = not require_vision or config.has_capability("vision")
                     video_ok = not require_video or config.has_capability("video")
                     thinking_ok = (not require_thinking) or config.has_capability("thinking")
+                    audio_ok = not require_audio or config.has_capability("audio")
+                    pdf_ok = not require_pdf or config.has_capability("pdf")
 
-                    if tools_ok and vision_ok and video_ok and thinking_ok:
+                    if tools_ok and vision_ok and video_ok and thinking_ok and audio_ok and pdf_ok:
                         override_provider = provider
                         logger.debug(f"[LLM] Using override endpoint: {override_name}")
                     else:
@@ -662,6 +769,10 @@ class LLMClient:
             if require_video and not config.has_capability("video"):
                 continue
             if require_thinking and not config.has_capability("thinking"):
+                continue
+            if require_audio and not config.has_capability("audio"):
+                continue
+            if require_pdf and not config.has_capability("pdf"):
                 continue
 
             eligible.append(provider)
@@ -746,7 +857,6 @@ class LLMClient:
                     response = await provider.chat(request)
 
                     # 成功：重置连续失败计数
-                    had_consecutive = provider.consecutive_cooldowns > 0
                     provider.record_success()
 
                     logger.info(
@@ -761,20 +871,25 @@ class LLMClient:
                     # 端点亲和性：记录本次成功的端点，供后续有工具上下文的调用优先使用
                     self._last_success_endpoint = provider.name
 
-                    # 成功：如果该端点之前有连续失败记录，刷新持久化状态
-                    if had_consecutive:
-                        self.save_cooldown_state()
-
                     return response
 
                 except AuthenticationError as e:
-                    # 认证错误：长冷静期，直接切换
-                    logger.error(f"[LLM] endpoint={provider.name} auth_error={e}")
-                    provider.mark_unhealthy(str(e), category="auth")
+                    # 认证/配额错误：长冷静期，直接切换（不重试当前端点）
+                    error_str = str(e)
+                    # 区分配额耗尽和真正的认证错误
+                    from .providers.base import LLMProvider as _BaseProvider
+                    error_cat = _BaseProvider._classify_error(error_str)
+                    if error_cat == "quota":
+                        logger.error(f"[LLM] endpoint={provider.name} quota_exhausted={e}")
+                        provider.mark_unhealthy(error_str, category="quota")
+                    else:
+                        logger.error(f"[LLM] endpoint={provider.name} auth_error={e}")
+                        provider.mark_unhealthy(error_str, category="auth")
                     errors.append(f"{provider.name}: {e}")
                     failed_providers.append(provider)
                     logger.warning(
-                        f"[LLM] endpoint={provider.name} cooldown={provider.cooldown_remaining}s (auth error)"
+                        f"[LLM] endpoint={provider.name} cooldown={provider.cooldown_remaining}s "
+                        f"(category={provider.error_category})"
                     )
                     break
 
@@ -782,6 +897,20 @@ class LLMClient:
                     error_str = str(e)
                     logger.warning(f"[LLM] endpoint={provider.name} action=error error={e}")
                     errors.append(f"{provider.name}: {e}")
+
+                    # 自动分类错误
+                    from .providers.base import LLMProvider as _BaseProvider
+                    auto_category = _BaseProvider._classify_error(error_str)
+
+                    # 配额耗尽：不可恢复，立即跳过此端点（与 auth 同等处理）
+                    if auto_category == "quota":
+                        logger.error(
+                            f"[LLM] endpoint={provider.name} quota exhausted detected in LLMError, "
+                            f"skipping remaining retries. Error: {error_str[:200]}"
+                        )
+                        provider.mark_unhealthy(error_str, category="quota")
+                        failed_providers.append(provider)
+                        break
 
                     # 检测不可重试的结构性错误（重试不会修复，浪费配额）
                     non_retryable_patterns = [
@@ -871,11 +1000,10 @@ class LLMClient:
                 "Upper layer (Agent/TaskMonitor) may restart with a different strategy."
             )
 
-        # 持久化升级冷静期状态（如果有端点刚升级到 1 小时冷静期）
-        if any(fp.is_extended_cooldown for fp in failed_providers):
-            self.save_cooldown_state()
-
-        raise AllEndpointsFailedError(f"All endpoints failed: {'; '.join(errors)}")
+        hint = _friendly_error_hint(failed_providers)
+        raise AllEndpointsFailedError(
+            f"All endpoints failed: {'; '.join(errors)}\n{hint}"
+        )
 
     def _has_images(self, messages: list[Message]) -> bool:
         """检查消息中是否包含图片"""
@@ -894,6 +1022,28 @@ class LLMClient:
                     if isinstance(block, VideoBlock):
                         return True
         return False
+
+    def _has_audio(self, messages: list[Message]) -> bool:
+        """检查消息中是否包含音频"""
+        for msg in messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, AudioBlock):
+                        return True
+        return False
+
+    def _has_documents(self, messages: list[Message]) -> bool:
+        """检查消息中是否包含文档（PDF 等）"""
+        for msg in messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, DocumentBlock):
+                        return True
+        return False
+
+    def has_any_endpoint_with_capability(self, capability: str) -> bool:
+        """检查是否有任何端点支持指定能力（供 Agent 查询）"""
+        return any(p.config.has_capability(capability) for p in self._providers)
 
     def _has_tool_context(self, messages: list[Message]) -> bool:
         """检查消息中是否包含工具调用上下文（tool_use 或 tool_result）
@@ -934,87 +1084,6 @@ class LLMClient:
         if reset_count:
             logger.info(f"[LLM] Reset cooldowns for {reset_count} transient-error endpoints")
         return reset_count
-
-    # ── 升级冷静期持久化 ──
-    # 防止通过重启进程绕过 1 小时冷静期
-
-    def _get_cooldown_state_path(self) -> Path | None:
-        """获取冷静期状态文件路径"""
-        if self._config_path:
-            return self._config_path.parent / self._COOLDOWN_STATE_FILENAME
-        default = get_default_config_path()
-        if default.parent.exists():
-            return default.parent / self._COOLDOWN_STATE_FILENAME
-        return None
-
-    def save_cooldown_state(self):
-        """持久化升级冷静期状态
-
-        仅保存处于升级冷静期（1小时）的端点。
-        普通短冷静期不持久化（重启后自然清零是合理的）。
-        """
-        state_path = self._get_cooldown_state_path()
-        if not state_path:
-            return
-
-        states = {}
-        for name, provider in self._providers.items():
-            s = provider.get_cooldown_state()
-            if s:
-                states[name] = s
-
-        try:
-            if states:
-                state_path.write_text(
-                    json.dumps(states, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                logger.info(
-                    f"[LLM] Saved extended cooldown state for {len(states)} endpoints "
-                    f"to {state_path.name}"
-                )
-            elif state_path.exists():
-                # 没有需要持久化的状态，清理旧文件
-                state_path.unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning(f"[LLM] Failed to save cooldown state: {e}")
-
-    def _restore_cooldown_state(self):
-        """启动时恢复持久化的升级冷静期状态"""
-        state_path = self._get_cooldown_state_path()
-        if not state_path or not state_path.exists():
-            return
-
-        try:
-            states = json.loads(state_path.read_text(encoding="utf-8"))
-
-            restored = 0
-            expired = 0
-            for name, state in states.items():
-                if name in self._providers:
-                    cooldown_until = state.get("cooldown_until", 0)
-                    if cooldown_until > time.time():
-                        self._providers[name].restore_cooldown_state(state)
-                        restored += 1
-                    else:
-                        expired += 1
-
-            if restored:
-                logger.info(
-                    f"[LLM] Restored extended cooldown for {restored} endpoints "
-                    f"({expired} already expired)"
-                )
-            else:
-                # 全部过期，清理状态文件
-                state_path.unlink(missing_ok=True)
-
-        except Exception as e:
-            logger.warning(f"[LLM] Failed to restore cooldown state: {e}")
-            # 状态文件损坏，删除
-            try:
-                state_path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
     async def health_check(self) -> dict[str, bool]:
         """

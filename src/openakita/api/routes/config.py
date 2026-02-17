@@ -220,6 +220,18 @@ async def reload_config(request: Request):
         if brain_obj and hasattr(brain_obj, "reload_compiler_client"):
             compiler_reloaded = brain_obj.reload_compiler_client()
 
+        # 同时刷新 STT 端点（Gateway 上的 stt_client）
+        stt_reloaded = False
+        gateway = getattr(request.app.state, "gateway", None)
+        if gateway and hasattr(gateway, "stt_client") and gateway.stt_client:
+            try:
+                from openakita.llm.config import load_endpoints_config
+                _, _, stt_eps, _ = load_endpoints_config()
+                gateway.stt_client.reload(stt_eps)
+                stt_reloaded = True
+            except Exception as stt_err:
+                logger.warning(f"[Config API] STT reload failed: {stt_err}")
+
         if success:
             logger.info("[Config API] LLM endpoints reloaded successfully")
             return {
@@ -227,6 +239,7 @@ async def reload_config(request: Request):
                 "reloaded": True,
                 "endpoints": len(llm_client.endpoints),
                 "compiler_reloaded": compiler_reloaded,
+                "stt_reloaded": stt_reloaded,
             }
         else:
             return {"status": "ok", "reloaded": False, "reason": "reload returned false"}

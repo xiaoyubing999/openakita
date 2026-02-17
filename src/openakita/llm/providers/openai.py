@@ -93,8 +93,24 @@ class OpenAIProvider(LLMProvider):
             proxy = get_proxy_config()
             transport = get_httpx_transport()  # IPv4-only 支持
 
+            # 本地端点（Ollama 等）自动放大 read timeout
+            # 本地推理受 CPU/GPU 资源限制，推理时间远大于云端 API
+            # 默认 read timeout 可能导致频繁超时被误判为故障
+            timeout_value = self.config.timeout
+            if self._is_local_endpoint():
+                base_timeout = build_httpx_timeout(timeout_value, default=60.0)
+                current_read = (
+                    base_timeout.read if isinstance(base_timeout, httpx.Timeout) else 60.0
+                )
+                if current_read < 300.0:
+                    timeout_value = {"read": 300.0, "connect": 30.0, "write": 30.0, "pool": 30.0}
+                    logger.info(
+                        f"[OpenAI] Local endpoint '{self.name}': auto-increased read timeout "
+                        f"from {current_read}s to 300s (local inference is slower)"
+                    )
+
             client_kwargs = {
-                "timeout": build_httpx_timeout(self.config.timeout, default=60.0),
+                "timeout": build_httpx_timeout(timeout_value, default=60.0),
                 "follow_redirects": True,
             }
 
@@ -151,11 +167,11 @@ class OpenAIProvider(LLMProvider):
 
         except httpx.TimeoutException as e:
             detail = f"{type(e).__name__}: {e}"
-            self.mark_unhealthy(f"Timeout: {detail}")
+            self.mark_unhealthy(f"Timeout: {detail}", is_local=self._is_local_endpoint())
             raise LLMError(f"Request timeout: {detail}")
         except httpx.RequestError as e:
             detail = f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}({repr(e)})"
-            self.mark_unhealthy(f"Request error: {detail}")
+            self.mark_unhealthy(f"Request error: {detail}", is_local=self._is_local_endpoint())
             raise LLMError(f"Request failed: {detail}")
 
     async def chat_stream(self, request: LLMRequest) -> AsyncIterator[dict]:
@@ -190,11 +206,11 @@ class OpenAIProvider(LLMProvider):
 
         except httpx.TimeoutException as e:
             detail = f"{type(e).__name__}: {e}"
-            self.mark_unhealthy(f"Timeout: {detail}")
+            self.mark_unhealthy(f"Timeout: {detail}", is_local=self._is_local_endpoint())
             raise LLMError(f"Stream timeout: {detail}")
         except httpx.RequestError as e:
             detail = f"{type(e).__name__}: {e}" if str(e) else f"{type(e).__name__}({repr(e)})"
-            self.mark_unhealthy(f"Stream request error: {detail}")
+            self.mark_unhealthy(f"Stream request error: {detail}", is_local=self._is_local_endpoint())
             raise LLMError(f"Stream request failed: {detail}")
 
     def _is_local_endpoint(self) -> bool:

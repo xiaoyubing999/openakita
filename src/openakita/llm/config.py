@@ -54,7 +54,7 @@ def get_default_config_path() -> Path:
 
 def load_endpoints_config(
     config_path: Path | None = None,
-) -> tuple[list[EndpointConfig], list[EndpointConfig], dict]:
+) -> tuple[list[EndpointConfig], list[EndpointConfig], list[EndpointConfig], dict]:
     """
     加载端点配置
 
@@ -62,8 +62,8 @@ def load_endpoints_config(
         config_path: 配置文件路径，默认使用 get_default_config_path()
 
     Returns:
-        (endpoints, compiler_endpoints, settings):
-        主端点列表、Prompt Compiler 专用端点列表、全局设置
+        (endpoints, compiler_endpoints, stt_endpoints, settings):
+        主端点列表、Prompt Compiler 专用端点列表、语音识别端点列表、全局设置
 
     Raises:
         ConfigurationError: 配置错误
@@ -75,7 +75,7 @@ def load_endpoints_config(
 
     if not config_path.exists():
         logger.warning(f"Config file not found: {config_path}, using empty config")
-        return [], [], {}
+        return [], [], [], {}
 
     try:
         with open(config_path, encoding="utf-8") as f:
@@ -115,12 +115,17 @@ def load_endpoints_config(
     if compiler_endpoints:
         logger.info(f"Loaded {len(compiler_endpoints)} compiler endpoints")
 
+    # 解析语音识别（STT）端点
+    stt_endpoints = _parse_endpoint_list("stt_endpoints")
+    if stt_endpoints:
+        logger.info(f"Loaded {len(stt_endpoints)} STT endpoints")
+
     # 解析全局设置
     settings = data.get("settings", {})
 
     logger.info(f"Loaded {len(endpoints)} endpoints from {config_path}")
 
-    return endpoints, compiler_endpoints, settings
+    return endpoints, compiler_endpoints, stt_endpoints, settings
 
 
 def save_endpoints_config(
@@ -128,6 +133,7 @@ def save_endpoints_config(
     settings: dict | None = None,
     config_path: Path | None = None,
     compiler_endpoints: list[EndpointConfig] | None = None,
+    stt_endpoints: list[EndpointConfig] | None = None,
 ):
     """
     保存端点配置
@@ -137,6 +143,7 @@ def save_endpoints_config(
         settings: 全局设置
         config_path: 配置文件路径
         compiler_endpoints: Prompt Compiler 专用端点列表（可选）
+        stt_endpoints: 语音识别端点列表（可选）
     """
     if config_path is None:
         config_path = get_default_config_path()
@@ -150,6 +157,9 @@ def save_endpoints_config(
 
     if compiler_endpoints:
         data["compiler_endpoints"] = [ep.to_dict() for ep in compiler_endpoints]
+
+    if stt_endpoints:
+        data["stt_endpoints"] = [ep.to_dict() for ep in stt_endpoints]
 
     data["settings"] = settings or {
         "retry_count": 2,
@@ -212,7 +222,7 @@ def validate_config(config_path: Path | None = None) -> list[str]:
     errors = []
 
     try:
-        endpoints, compiler_endpoints, settings = load_endpoints_config(config_path)
+        endpoints, compiler_endpoints, stt_endpoints, settings = load_endpoints_config(config_path)
     except ConfigurationError as e:
         return [str(e)]
 
@@ -240,5 +250,6 @@ def validate_config(config_path: Path | None = None) -> list[str]:
 
     _validate_endpoints(endpoints)
     _validate_endpoints(compiler_endpoints, label="compiler")
+    _validate_endpoints(stt_endpoints, label="stt")
 
     return errors

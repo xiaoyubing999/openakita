@@ -27,6 +27,8 @@ class ContentType(StrEnum):
     TOOL_RESULT = "tool_result"
     IMAGE = "image"
     VIDEO = "video"
+    AUDIO = "audio"
+    DOCUMENT = "document"
 
 
 class MessageRole(StrEnum):
@@ -90,6 +92,65 @@ class VideoContent:
     def to_data_url(self) -> str:
         """转换为 data URL 格式"""
         return f"data:{self.media_type};base64,{self.data}"
+
+
+@dataclass
+class AudioContent:
+    """音频内容"""
+
+    media_type: str  # "audio/wav", "audio/mp3", "audio/ogg", etc.
+    data: str  # base64 编码
+    format: str = "wav"  # 音频格式: "wav", "mp3", "pcm16", etc.
+
+    @classmethod
+    def from_base64(cls, data: str, media_type: str = "audio/wav", fmt: str = "wav") -> "AudioContent":
+        return cls(media_type=media_type, data=data, format=fmt)
+
+    @classmethod
+    def from_file(cls, path: str) -> "AudioContent":
+        """从文件创建"""
+        import base64
+        from pathlib import Path
+
+        file_path = Path(path)
+        suffix = file_path.suffix.lower().lstrip(".")
+        mime_map = {
+            "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+            "flac": "audio/flac", "m4a": "audio/mp4", "webm": "audio/webm",
+        }
+        media_type = mime_map.get(suffix, f"audio/{suffix}")
+        data = base64.b64encode(file_path.read_bytes()).decode("utf-8")
+        return cls(media_type=media_type, data=data, format=suffix)
+
+    def to_data_url(self) -> str:
+        """转换为 data URL 格式"""
+        return f"data:{self.media_type};base64,{self.data}"
+
+
+@dataclass
+class DocumentContent:
+    """文档内容（PDF 等）"""
+
+    media_type: str  # "application/pdf"
+    data: str  # base64 编码
+    filename: str = ""  # 原始文件名
+
+    @classmethod
+    def from_base64(cls, data: str, media_type: str = "application/pdf", filename: str = "") -> "DocumentContent":
+        return cls(media_type=media_type, data=data, filename=filename)
+
+    @classmethod
+    def from_file(cls, path: str) -> "DocumentContent":
+        """从文件创建"""
+        import base64
+        from pathlib import Path
+
+        file_path = Path(path)
+        suffix = file_path.suffix.lower().lstrip(".")
+        mime_map = {"pdf": "application/pdf"}
+        media_type = mime_map.get(suffix, f"application/{suffix}")
+        data = base64.b64encode(file_path.read_bytes()).decode("utf-8")
+        return cls(media_type=media_type, data=data, filename=file_path.name)
 
 
 @dataclass
@@ -199,8 +260,51 @@ class VideoBlock(ContentBlock):
         }
 
 
+@dataclass
+class AudioBlock(ContentBlock):
+    """音频内容块"""
+
+    audio: AudioContent
+    type: str = field(default="audio", init=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "audio",
+            "source": {
+                "type": "base64",
+                "media_type": self.audio.media_type,
+                "data": self.audio.data,
+                "format": self.audio.format,
+            },
+        }
+
+
+@dataclass
+class DocumentBlock(ContentBlock):
+    """文档内容块（PDF 等）"""
+
+    document: DocumentContent
+    type: str = field(default="document", init=False)
+
+    def to_dict(self) -> dict:
+        result = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": self.document.media_type,
+                "data": self.document.data,
+            },
+        }
+        if self.document.filename:
+            result["filename"] = self.document.filename
+        return result
+
+
 # 内容块联合类型
-ContentBlockType = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | ImageBlock | VideoBlock
+ContentBlockType = (
+    TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+    | ImageBlock | VideoBlock | AudioBlock | DocumentBlock
+)
 
 
 @dataclass

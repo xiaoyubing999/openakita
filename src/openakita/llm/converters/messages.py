@@ -5,12 +5,18 @@
 """
 
 from ..types import (
+    AudioBlock,
+    AudioContent,
     ContentBlock,
+    DocumentBlock,
+    DocumentContent,
     ImageBlock,
     Message,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    VideoBlock,
+    VideoContent,
 )
 from .multimodal import convert_content_blocks_to_openai
 
@@ -232,7 +238,15 @@ def convert_messages_from_openai(messages: list[dict]) -> tuple[list[Message], s
 
 
 def _convert_openai_content_to_blocks(content: list[dict]) -> list[ContentBlock]:
-    """将 OpenAI 内容列表转换为内容块"""
+    """将 OpenAI 内容列表转换为内容块
+
+    支持的类型:
+    - text: 文本
+    - image_url: 图片（OpenAI 标准）
+    - video_url: 视频（Kimi/DashScope 扩展）
+    - input_audio: 音频（OpenAI gpt-4o-audio 格式）
+    - document: 文档/PDF（Anthropic 格式）
+    """
     from .multimodal import convert_openai_image_to_internal
 
     blocks = []
@@ -245,6 +259,36 @@ def _convert_openai_content_to_blocks(content: list[dict]) -> list[ContentBlock]
             image = convert_openai_image_to_internal(item)
             if image:
                 blocks.append(ImageBlock(image=image))
+        elif item_type == "video_url":
+            video_url = item.get("video_url", {})
+            url = video_url.get("url", "")
+            if url:
+                import re
+                match = re.match(r"data:([^;]+);base64,(.+)", url)
+                if match:
+                    media_type = match.group(1)
+                    data = match.group(2)
+                    blocks.append(VideoBlock(video=VideoContent(media_type=media_type, data=data)))
+        elif item_type == "input_audio":
+            audio_data = item.get("input_audio", {})
+            data = audio_data.get("data", "")
+            fmt = audio_data.get("format", "wav")
+            if data:
+                mime_map = {"wav": "audio/wav", "mp3": "audio/mpeg", "pcm16": "audio/pcm"}
+                media_type = mime_map.get(fmt, f"audio/{fmt}")
+                blocks.append(AudioBlock(audio=AudioContent(media_type=media_type, data=data, format=fmt)))
+        elif item_type == "document":
+            source = item.get("source", {})
+            if source.get("type") == "base64":
+                blocks.append(
+                    DocumentBlock(
+                        document=DocumentContent(
+                            media_type=source.get("media_type", "application/pdf"),
+                            data=source.get("data", ""),
+                            filename=item.get("filename", ""),
+                        )
+                    )
+                )
 
     return blocks
 

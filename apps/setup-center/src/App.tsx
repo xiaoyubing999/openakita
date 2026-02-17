@@ -63,6 +63,8 @@ type ProviderInfo = {
   supports_capability_api: boolean;
   requires_api_key?: boolean;  // default true; false for local providers like Ollama
   is_local?: boolean;          // true for local providers (Ollama, LM Studio, etc.)
+  coding_plan_base_url?: string;   // Coding Plan 专用 API 地址
+  coding_plan_api_type?: string;   // Coding Plan 模式下的协议类型
 };
 
 // 内置 Provider 列表（打包模式下 venv 不可用时作为回退）
@@ -1095,6 +1097,7 @@ export function App() {
   const [endpointPriority, setEndpointPriority] = useState<number>(1);
   const [savedEndpoints, setSavedEndpoints] = useState<EndpointDraft[]>([]);
   const [savedCompilerEndpoints, setSavedCompilerEndpoints] = useState<EndpointDraft[]>([]);
+  const [savedSttEndpoints, setSavedSttEndpoints] = useState<EndpointDraft[]>([]);
   const [apiKeyEnvTouched, setApiKeyEnvTouched] = useState(false);
   const [endpointNameTouched, setEndpointNameTouched] = useState(false);
   const [llmAdvancedOpen, setLlmAdvancedOpen] = useState(false);
@@ -2176,9 +2179,30 @@ export function App() {
         }))
         .sort((a: EndpointDraft, b: EndpointDraft) => a.priority - b.priority);
       setSavedCompilerEndpoints(compilerEps);
+
+      // Load STT endpoints
+      const sttEps: EndpointDraft[] = (Array.isArray(parsed?.stt_endpoints) ? parsed.stt_endpoints : [])
+        .filter((e: any) => e?.name)
+        .map((e: any) => ({
+          name: String(e.name || ""),
+          provider: String(e.provider || ""),
+          api_type: String(e.api_type || "openai"),
+          base_url: String(e.base_url || ""),
+          api_key_env: String(e.api_key_env || ""),
+          model: String(e.model || ""),
+          priority: Number.isFinite(Number(e.priority)) ? Number(e.priority) : 1,
+          max_tokens: 0,
+          context_window: 0,
+          timeout: Number.isFinite(Number(e.timeout)) ? Number(e.timeout) : 60,
+          capabilities: ["text"],
+          note: e.note ? String(e.note) : null,
+        }))
+        .sort((a: EndpointDraft, b: EndpointDraft) => a.priority - b.priority);
+      setSavedSttEndpoints(sttEps);
     } catch {
       setSavedEndpoints([]);
       setSavedCompilerEndpoints([]);
+      setSavedSttEndpoints([]);
     }
   }
 
@@ -2567,6 +2591,94 @@ export function App() {
       setNotice(`编译端点 ${epName} 已删除`);
 
       // Also re-read to sync fully (background)
+      loadSavedEndpoints().catch(() => {});
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doSaveSttEndpoint(): Promise<boolean> {
+    if (!currentWorkspaceId && dataMode !== "remote") {
+      setError("请先创建/选择一个当前工作区");
+      return false;
+    }
+    setBusy("保存 STT 端点...");
+    setError(null);
+    try {
+      let currentJson = "";
+      try {
+        currentJson = await readWorkspaceFile("data/llm_endpoints.json");
+      } catch { currentJson = ""; }
+      const base = currentJson ? JSON.parse(currentJson) : { endpoints: [], settings: {} };
+      base.stt_endpoints = Array.isArray(base.stt_endpoints) ? base.stt_endpoints : [];
+
+      const effectiveSttApiKeyEnv = compilerApiKeyEnv.trim();
+      const baseName = (compilerEndpointName.trim() || `stt-${compilerProviderSlug || "provider"}-${compilerModel.trim()}`).slice(0, 64);
+      const usedNames = new Set(base.stt_endpoints.map((e: any) => String(e?.name || "")).filter(Boolean));
+      let name = baseName;
+      if (usedNames.has(name)) {
+        for (let i = 2; i < 10; i++) {
+          const candidate = `${baseName}-${i}`;
+          if (!usedNames.has(candidate)) { name = candidate; break; }
+        }
+      }
+
+      if (effectiveSttApiKeyEnv && compilerApiKeyValue.trim()) {
+        await doSaveEnv({ [effectiveSttApiKeyEnv]: compilerApiKeyValue.trim() });
+      }
+
+      const endpoint = {
+        name,
+        provider: compilerProviderSlug,
+        api_type: compilerApiType,
+        base_url: compilerBaseUrl,
+        api_key_env: effectiveSttApiKeyEnv,
+        model: compilerModel.trim(),
+        priority: base.stt_endpoints.length + 1,
+        timeout: 60,
+      };
+      base.stt_endpoints.push(endpoint);
+      base.stt_endpoints.sort((a: any, b: any) => (Number(a?.priority) || 999) - (Number(b?.priority) || 999));
+
+      await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(base, null, 2) + "\n");
+
+      setCompilerModel("");
+      setCompilerApiKeyValue("");
+      setCompilerEndpointName("");
+      setCompilerBaseUrl("");
+      setNotice(`STT 端点 ${name} 已保存`);
+      await loadSavedEndpoints();
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doDeleteSttEndpoint(epName: string) {
+    if (!currentWorkspaceId && dataMode !== "remote") return;
+    setBusy("删除 STT 端点...");
+    setError(null);
+    try {
+      let currentJson = "";
+      try {
+        currentJson = await readWorkspaceFile("data/llm_endpoints.json");
+      } catch { currentJson = ""; }
+      const base = currentJson ? JSON.parse(currentJson) : { endpoints: [], settings: {} };
+      base.stt_endpoints = Array.isArray(base.stt_endpoints) ? base.stt_endpoints : [];
+      base.stt_endpoints = base.stt_endpoints
+        .filter((e: any) => String(e?.name || "") !== epName)
+        .map((e: any, i: number) => ({ ...e, priority: i + 1 }));
+
+      await writeWorkspaceFile("data/llm_endpoints.json", JSON.stringify(base, null, 2) + "\n");
+
+      setSavedSttEndpoints((prev) => prev.filter((e) => e.name !== epName));
+      setNotice(`STT 端点 ${epName} 已删除`);
+
       loadSavedEndpoints().catch(() => {});
     } catch (e) {
       setError(String(e));
@@ -3117,6 +3229,7 @@ export function App() {
         const keysLLM = [
           ...savedEndpoints.map((e) => e.api_key_env),
           ...savedCompilerEndpoints.map((e) => e.api_key_env),
+          ...savedSttEndpoints.map((e) => e.api_key_env),
         ].filter(Boolean);
         return { keys: keysLLM, savedMsg: t("config.llmSaved") };
       }
@@ -5071,6 +5184,7 @@ export function App() {
   // ── Add endpoint dialog state ──
   const [addEpDialogOpen, setAddEpDialogOpen] = useState(false);
   const [addCompDialogOpen, setAddCompDialogOpen] = useState(false);
+  const [addSttDialogOpen, setAddSttDialogOpen] = useState(false);
 
   function openAddEpDialog() {
     resetEndpointEditor();
@@ -5147,6 +5261,34 @@ export function App() {
                     <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 8 }}>{e.model} · {e.provider}</span>
                   </div>
                   <button className="btnIcon btnIconDanger" onClick={() => askConfirm(`${t("common.confirmDeleteMsg")} "${e.name}"?`, () => doDeleteCompilerEndpoint(e.name))} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── STT endpoints ── */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div>
+              <div className="statusCardLabel">{t("llm.stt")}</div>
+              <div className="cardHint" style={{ fontSize: 11 }}>{t("llm.sttHint")}</div>
+            </div>
+            <button className="btnSmall btnSmallPrimary" onClick={() => { doLoadProviders(); setAddSttDialogOpen(true); }} disabled={!!busy}>
+              + {t("llm.addStt")}
+            </button>
+          </div>
+          {savedSttEndpoints.length === 0 ? (
+            <div className="cardHint">{t("llm.noStt")}</div>
+          ) : (
+            <div style={{ display: "grid", gap: 6 }}>
+              {savedSttEndpoints.map((e) => (
+                <div key={e.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>{e.name}</span>
+                    <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 8 }}>{e.model} · {e.provider}</span>
+                  </div>
+                  <button className="btnIcon btnIconDanger" onClick={() => askConfirm(`${t("common.confirmDeleteMsg")} "${e.name}"?`, () => doDeleteSttEndpoint(e.name))} disabled={!!busy} title={t("common.delete")}><IconTrash size={14} /></button>
                 </div>
               ))}
             </div>
@@ -5616,6 +5758,47 @@ export function App() {
                     {t("llm.addEndpoint")}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Add STT dialog (reuses compiler form fields) ── */}
+        {addSttDialogOpen && (
+          <div className="modalOverlay" onClick={() => setAddSttDialogOpen(false)}>
+            <div className="modalContent" onClick={(e) => e.stopPropagation()}>
+              <div className="dialogHeader">
+                <div className="cardTitle">{t("llm.addStt")}</div>
+                <button className="dialogCloseBtn" onClick={() => { setAddSttDialogOpen(false); setConnTestResult(null); }}><IconX size={14} /></button>
+              </div>
+              <div className="dialogBody">
+              <div className="dialogSection">
+                <div className="dialogLabel">{t("llm.provider")}</div>
+                <ProviderSearchSelect
+                  value={compilerProviderSlug}
+                  onChange={(v) => setCompilerProviderSlug(v)}
+                  options={providers.map((p) => ({ value: p.slug, label: p.name }))}
+                  placeholder={t("llm.selectProvider")}
+                />
+              </div>
+              <div className="dialogSection">
+                <div className="dialogLabel">{t("llm.model")}</div>
+                <input className="textInput" value={compilerModel} onChange={(e) => setCompilerModel(e.target.value)} placeholder="gpt-4o-transcribe / paraformer-v2" />
+              </div>
+              <div className="dialogSection">
+                <div className="dialogLabel">{t("llm.apiKeyEnv")}</div>
+                <input className="textInput" value={compilerApiKeyEnv} onChange={(e) => setCompilerApiKeyEnv(e.target.value)} placeholder="OPENAI_API_KEY" />
+              </div>
+              <div className="dialogSection">
+                <div className="dialogLabel">API Key</div>
+                <input className="textInput" type="password" value={compilerApiKeyValue} onChange={(e) => setCompilerApiKeyValue(e.target.value)} placeholder="sk-..." />
+              </div>
+              <div className="dialogFooter">
+                <button className="btnSmall" onClick={() => { setAddSttDialogOpen(false); setConnTestResult(null); }}>{t("common.cancel")}</button>
+                <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { const ok = await doSaveSttEndpoint(); if (ok) { setAddSttDialogOpen(false); setConnTestResult(null); } }} disabled={!compilerModel.trim() || !compilerApiKeyEnv.trim() || !compilerApiKeyValue.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
+                  {t("llm.addStt")}
+                </button>
+              </div>
               </div>
             </div>
           </div>

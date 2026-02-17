@@ -1,12 +1,14 @@
 """
 预置模型能力表
 
-五种能力:
+七种能力:
 - text: 是否支持文本输入/输出（所有模型都支持）
 - vision: 是否支持图片输入（image_url 类型，OpenAI 标准格式）
-- video: 是否支持视频输入（video_url 类型，Kimi 私有扩展）
+- video: 是否支持视频输入（video_url 类型，Kimi 私有扩展 / DashScope 兼容）
 - tools: 是否支持工具调用 (function calling)
 - thinking: 是否支持思考模式 (深度推理)
+- audio: 是否支持音频原生输入（input_audio / inline_data 等）
+- pdf: 是否支持 PDF 文档原生输入（document content block）
 
 注意：不同服务商提供的相同模型可能能力不同
 结构: MODEL_CAPABILITIES[provider_slug][model_name] = {...}
@@ -22,6 +24,7 @@ MODEL_CAPABILITIES = {
         "gpt-5": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False},
         "gpt-5.2": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False},
         "gpt-4o": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False},
+        "gpt-4o-audio": {"text": True, "vision": True, "video": False, "tools": True, "thinking": False, "audio": True},
         "gpt-4o-mini": {
             "text": True,
             "vision": True,
@@ -62,13 +65,14 @@ MODEL_CAPABILITIES = {
         },
     },
     "anthropic": {
-        # Anthropic 官方
+        # Anthropic 官方 — 所有 Claude 3+ 模型支持 PDF 原生输入
         "claude-opus-4.5": {
             "text": True,
             "vision": True,
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-sonnet-4.5": {
             "text": True,
@@ -76,6 +80,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-haiku-4.5": {
             "text": True,
@@ -83,6 +88,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-3-opus": {
             "text": True,
@@ -90,6 +96,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-3-sonnet": {
             "text": True,
@@ -97,6 +104,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-3-haiku": {
             "text": True,
@@ -104,6 +112,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-3-5-sonnet": {
             "text": True,
@@ -111,6 +120,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
         "claude-3-5-haiku": {
             "text": True,
@@ -118,6 +128,7 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": True,
             "thinking": False,
+            "pdf": True,
         },
     },
     "deepseek": {
@@ -216,11 +227,11 @@ MODEL_CAPABILITIES = {
     },
     "dashscope": {
         # 阿里云 DashScope (通义千问官方)
-        "qwen3-vl": {"text": True, "vision": True, "video": False, "tools": True, "thinking": True},
+        "qwen3-vl": {"text": True, "vision": True, "video": True, "tools": True, "thinking": True},
         "qwen2.5-vl": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": False,
         },
@@ -307,48 +318,65 @@ MODEL_CAPABILITIES = {
             "tools": True,
             "thinking": False,
         },
-        # 视觉模型
+        # 视觉模型（Qwen-VL 系列支持视频输入）
         "qwen-vl-max": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": False,
         },
         "qwen-vl-max-latest": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": False,
         },
         "qwen-vl-plus": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": False,
         },
         "qwen-vl-plus-latest": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": False,
         },
         "qwen3-vl-plus": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": True,
         },
         "qwen3-vl-flash": {
             "text": True,
             "vision": True,
-            "video": False,
+            "video": True,
             "tools": True,
             "thinking": True,
+        },
+        # 音频模型
+        "qwen-audio-turbo": {
+            "text": True,
+            "vision": False,
+            "video": False,
+            "tools": False,
+            "thinking": False,
+            "audio": True,
+        },
+        "qwen2-audio": {
+            "text": True,
+            "vision": False,
+            "video": False,
+            "tools": False,
+            "thinking": False,
+            "audio": True,
         },
         # QwQ 推理模型
         "qwq-plus": {
@@ -524,14 +552,15 @@ MODEL_CAPABILITIES = {
         },
     },
     "google": {
-        # Google Gemini 官方
-        # 注意：Gemini 也支持视频，但 API 格式与 Kimi 不同，需要特殊处理
+        # Google Gemini 官方 — 支持视频、音频原生输入和 PDF
         "gemini-3-pro": {
             "text": True,
             "vision": True,
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-3-flash": {
             "text": True,
@@ -539,6 +568,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-2.5-pro": {
             "text": True,
@@ -546,6 +577,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-2.5-flash": {
             "text": True,
@@ -553,6 +586,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-2.0-flash": {
             "text": True,
@@ -560,6 +595,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-2.0-flash-lite": {
             "text": True,
@@ -567,6 +604,8 @@ MODEL_CAPABILITIES = {
             "video": False,
             "tools": False,
             "thinking": False,
+            "audio": False,
+            "pdf": False,
         },
         "gemini-1.5-pro": {
             "text": True,
@@ -574,6 +613,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
         "gemini-1.5-flash": {
             "text": True,
@@ -581,6 +622,8 @@ MODEL_CAPABILITIES = {
             "video": True,
             "tools": True,
             "thinking": False,
+            "audio": True,
+            "pdf": True,
         },
     },
     # ============================================================
@@ -650,16 +693,24 @@ def infer_capabilities(
         user_config: 用户在配置中声明的能力（可选）
 
     Returns:
-        {"text": bool, "vision": bool, "video": bool, "tools": bool, "thinking": bool}
+        {"text": bool, "vision": bool, "video": bool, "tools": bool, "thinking": bool, "audio": bool, "pdf": bool}
 
     ⚠ 维护提示：前端有此函数的简化版 (apps/setup-center/src/App.tsx → inferCapabilities)，
     用于打包模式下前端直连服务商 API 拉取模型列表时的 capability 推断。
     如果修改了下方的关键词规则（第 4 步"基于模型名关键词智能推断"），
     需要同步更新前端的 inferCapabilities 函数。
     """
+    # 确保结果始终包含所有能力字段的辅助函数
+    _ALL_CAPS = {"text": False, "vision": False, "video": False, "tools": False, "thinking": False, "audio": False, "pdf": False}
+
+    def _normalize(caps: dict) -> dict:
+        result = _ALL_CAPS.copy()
+        result.update(caps)
+        return result
+
     # 1. 优先使用用户配置
     if user_config:
-        return user_config
+        return _normalize(user_config)
 
     model_lower = model_name.lower()
 
@@ -669,29 +720,40 @@ def infer_capabilities(
 
         # 精确匹配
         if model_name in provider_models:
-            return provider_models[model_name].copy()
+            return _normalize(provider_models[model_name])
 
         # 前缀匹配（处理版本号等）
         for model_key, caps in provider_models.items():
             if model_lower.startswith(model_key.lower()):
-                return caps.copy()
+                return _normalize(caps)
 
     # 3. 跨服务商模糊匹配（用于中转服务商等场景）
     for _provider, models in MODEL_CAPABILITIES.items():
         for model_key, caps in models.items():
             if model_lower.startswith(model_key.lower()):
-                return caps.copy()
+                return _normalize(caps)
 
     # 4. 基于模型名关键词智能推断
-    caps = {"text": True, "vision": False, "video": False, "tools": False, "thinking": False}
+    caps = {"text": True, "vision": False, "video": False, "tools": False, "thinking": False, "audio": False, "pdf": False}
 
     # Vision 推断（图片）
     if any(kw in model_lower for kw in ["vl", "vision", "visual", "image", "-v-", "4v"]):
         caps["vision"] = True
 
-    # Video 推断（视频）- 非常保守，仅 kimi 和 gemini 明确支持
+    # Video 推断（视频）- 保守策略，仅 kimi/gemini/qwen-vl 明确支持
     if any(kw in model_lower for kw in ["kimi", "gemini"]):
         caps["video"] = True
+    # Qwen-VL 系列明确支持视频
+    if "vl" in model_lower and any(kw in model_lower for kw in ["qwen", "dashscope"]):
+        caps["video"] = True
+
+    # Audio 推断（音频原生输入）- 非常保守
+    if any(kw in model_lower for kw in ["audio", "gemini"]):
+        caps["audio"] = True
+
+    # PDF 推断（文档原生输入）- 保守策略
+    if any(kw in model_lower for kw in ["claude", "gemini"]):
+        caps["pdf"] = True
 
     # Thinking 推断
     if any(kw in model_lower for kw in ["thinking", "r1", "qwq", "qvq", "o1"]):

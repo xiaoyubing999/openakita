@@ -2087,7 +2087,7 @@ export function ChatView({
     if (!files) return;
     for (const file of Array.from(files)) {
       const att: ChatAttachment = {
-        type: file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "voice" : "file",
+        type: file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "voice" : file.type === "application/pdf" ? "document" : "file",
         name: file.name,
         size: file.size,
         mimeType: file.type,

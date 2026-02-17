@@ -10,7 +10,7 @@
     "priority":     "优先级（数字越小优先级越高，1=最高）",
     "max_tokens":   "最大输出 token 数",
     "timeout":      "请求超时时间（秒）",
-    "capabilities": "模型能力：text(文本) / vision(图像) / video(视频) / tools(工具调用) / thinking(深度推理)",
+    "capabilities": "模型能力：text(文本) / vision(图像) / video(视频) / tools(工具调用) / thinking(深度推理) / audio(音频) / pdf(PDF文档)",
     "extra_params": "额外参数（传递给 API 的特殊参数）",
     "note":         "备注说明"
   },
@@ -73,6 +73,31 @@
   "endpoints": [],
 
   "compiler_endpoints": [],
+
+  "_doc_stt_endpoints": "语音识别(STT)端点配置。使用 OpenAI 兼容的 /audio/transcriptions API。",
+  "_doc_stt_examples": [
+    {
+      "_doc": "示例: OpenAI Whisper API",
+      "name": "openai-stt",
+      "provider": "openai",
+      "api_type": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o-transcribe",
+      "priority": 1
+    },
+    {
+      "_doc": "示例: DashScope Paraformer",
+      "name": "dashscope-stt",
+      "provider": "dashscope",
+      "api_type": "openai",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "paraformer-v2",
+      "priority": 2
+    }
+  ],
+  "stt_endpoints": [],
 
   "settings": {
     "retry_count": 2,

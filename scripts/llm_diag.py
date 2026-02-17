@@ -27,7 +27,7 @@ def _reset_env(keys: list[str]) -> None:
 
 
 def _clone_endpoints_with_timeout(seconds: int) -> list:
-    endpoints, _compiler_eps, _settings = load_endpoints_config()
+    endpoints, _compiler_eps, _stt_eps, _settings = load_endpoints_config()
     cloned = []
     for ep in endpoints:
         # EndpointConfig 是 dataclass，这里用 asdict/构造器克隆，避免修改全局对象

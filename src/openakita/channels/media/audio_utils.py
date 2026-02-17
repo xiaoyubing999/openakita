@@ -124,3 +124,70 @@ def ensure_whisper_compatible(audio_path: str) -> str:
         "Falling back to original file (may fail with ffmpeg)."
     )
     return audio_path
+
+
+def ensure_llm_compatible(audio_path: str, target_format: str = "wav") -> str:
+    """
+    确保音频文件可被 LLM 原生音频输入处理。
+
+    LLM 音频输入通常要求:
+    - OpenAI: wav, pcm16, mp3
+    - Gemini: wav, mp3, flac, ogg
+    - DashScope: wav, mp3
+
+    处理:
+    - SILK → WAV（与 Whisper 兼容逻辑相同）
+    - OGG/Opus → WAV（通过 ffmpeg）
+    - AMR → WAV（通过 ffmpeg）
+    - 其他标准格式原样返回
+
+    Args:
+        audio_path: 原始音频文件路径
+        target_format: 目标格式 (默认 "wav")
+
+    Returns:
+        LLM 兼容格式的音频文件路径
+    """
+    import shutil
+    import subprocess
+
+    src = Path(audio_path)
+    suffix = src.suffix.lower()
+
+    # SILK 格式特殊处理
+    if is_silk_file(audio_path):
+        return ensure_whisper_compatible(audio_path)
+
+    # 已经是目标格式，直接返回
+    llm_native_formats = {".wav", ".mp3", ".flac", ".m4a"}
+    if suffix in llm_native_formats:
+        return audio_path
+
+    # 需要通过 ffmpeg 转换的格式
+    need_convert = {".ogg", ".opus", ".amr", ".webm", ".wma", ".aac"}
+    if suffix not in need_convert:
+        return audio_path
+
+    out_path = str(src.with_suffix(f".{target_format}"))
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        logger.info(f"Using cached LLM-compatible audio: {out_path}")
+        return out_path
+
+    if not shutil.which("ffmpeg"):
+        logger.warning("ffmpeg not available for audio conversion")
+        return audio_path
+
+    cmd = [
+        "ffmpeg", "-i", str(src),
+        "-ar", "16000",
+        "-ac", "1",
+        "-sample_fmt", "s16",
+        "-y", out_path,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+        logger.info(f"Audio converted for LLM: {src.name} → {Path(out_path).name}")
+        return out_path
+    except Exception as e:
+        logger.error(f"Audio conversion failed: {e}")
+        return audio_path

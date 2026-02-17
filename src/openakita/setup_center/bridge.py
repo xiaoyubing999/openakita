@@ -206,8 +206,6 @@ async def health_check_endpoint(workspace_dir: str, endpoint_name: str | None) -
                 "last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
 
-    # 持久化 cooldown 状态
-    client.save_cooldown_state()
     _json_print(results)
 
 

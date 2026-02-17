@@ -4,7 +4,7 @@
 统一消息入口/出口:
 - 消息路由
 - 会话管理集成
-- 媒体预处理（图片、语音）
+- 媒体预处理（图片、语音、视频）
 - Agent 调用
 - 消息中断机制（支持在工具调用间隙插入新消息）
 - 系统级命令拦截（模型切换等）
@@ -592,6 +592,7 @@ class MessageGateway:
         agent_handler: AgentHandler | None = None,
         whisper_model: str = "base",
         whisper_language: str = "zh",
+        stt_client: "STTClient | None" = None,
     ):
         """
         Args:
@@ -599,9 +600,11 @@ class MessageGateway:
             agent_handler: Agent 处理函数 (session, message) -> response
             whisper_model: Whisper 模型大小 (tiny, base, small, medium, large)，默认 base
             whisper_language: 语音识别语言 (zh/en/auto/其他语言代码)
+            stt_client: 在线 STT 客户端（可选，用于替代本地 Whisper）
         """
         self.session_manager = session_manager
         self.agent_handler = agent_handler
+        self.stt_client = stt_client
 
         # 注册的适配器 {channel_name: adapter}
         self._adapters: dict[str, ChannelAdapter] = {}
@@ -702,6 +705,61 @@ class MessageGateway:
             hint = import_or_hint("static_ffmpeg")
             logger.warning(f"ffmpeg 不可用: {hint}")
             logger.warning(f"static_ffmpeg ImportError 详情: {e}", exc_info=True)
+
+    async def _extract_video_keyframes(
+        self, video_path: str, max_frames: int = 6, interval_seconds: int = 10
+    ) -> list[tuple[str, str]]:
+        """从视频中截取关键帧（使用 ffmpeg）
+
+        Args:
+            video_path: 视频文件路径
+            max_frames: 最多截取的帧数
+            interval_seconds: 每隔多少秒截取一帧
+
+        Returns:
+            [(base64_data, media_type), ...] 列表
+        """
+        import asyncio
+        import tempfile
+        import shutil
+
+        self._ensure_ffmpeg()
+        if not shutil.which("ffmpeg"):
+            logger.warning("ffmpeg not available, cannot extract keyframes")
+            return []
+
+        def _do_extract():
+            results = []
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_pattern = str(Path(tmpdir) / "frame_%03d.jpg")
+                cmd = [
+                    "ffmpeg", "-i", video_path,
+                    "-vf", f"fps=1/{interval_seconds}",
+                    "-frames:v", str(max_frames),
+                    "-q:v", "2",
+                    "-y", output_pattern,
+                ]
+                import subprocess
+                try:
+                    subprocess.run(
+                        cmd, capture_output=True, timeout=60,
+                        check=False,
+                    )
+                except Exception as e:
+                    logger.error(f"ffmpeg keyframe extraction failed: {e}")
+                    return results
+
+                frame_files = sorted(Path(tmpdir).glob("frame_*.jpg"))
+                for fp in frame_files[:max_frames]:
+                    try:
+                        data = base64.b64encode(fp.read_bytes()).decode("utf-8")
+                        results.append((data, "image/jpeg"))
+                    except Exception as e:
+                        logger.error(f"Failed to read keyframe {fp}: {e}")
+            return results
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _do_extract)
 
     def _load_whisper_model(self) -> None:
         """加载 Whisper 模型（在线程池中执行）"""
@@ -1201,11 +1259,37 @@ class MessageGateway:
             except Exception as e:
                 logger.error(f"Failed to download image: {e}")
 
+        async def _process_video(vid) -> None:
+            try:
+                if vid.local_path:
+                    return
+                async with sem:
+                    local_path = await adapter.download_media(vid)
+                    vid.local_path = str(local_path)
+                    logger.info(f"Video downloaded: {vid.local_path}")
+            except Exception as e:
+                logger.error(f"Failed to download video: {e}")
+
+        async def _process_file(fil) -> None:
+            try:
+                if fil.local_path:
+                    return
+                async with sem:
+                    local_path = await adapter.download_media(fil)
+                    fil.local_path = str(local_path)
+                    logger.info(f"File downloaded: {fil.local_path}")
+            except Exception as e:
+                logger.error(f"Failed to download file: {e}")
+
         tasks = []
         for voice in getattr(message.content, "voices", []) or []:
             tasks.append(_process_voice(voice))
         for img in getattr(message.content, "images", []) or []:
             tasks.append(_process_image(img))
+        for vid in getattr(message.content, "videos", []) or []:
+            tasks.append(_process_video(vid))
+        for fil in getattr(message.content, "files", []) or []:
+            tasks.append(_process_file(fil))
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=False)
@@ -1311,15 +1395,24 @@ class MessageGateway:
             # 构建输入（文本 + 图片 + 语音）
             input_text = message.plain_text
 
-            # 处理语音文件 - 如果已有转写结果，直接使用
+            # 处理语音文件 - 双路策略：保留原始音频 + Whisper 转写
+            audio_data_list = []
             for voice in message.content.voices:
+                # 双路保留：始终存储原始音频路径到 pending_audio
+                if voice.local_path and Path(voice.local_path).exists():
+                    audio_data_list.append({
+                        "local_path": voice.local_path,
+                        "mime_type": voice.mime_type or "audio/wav",
+                        "duration": voice.duration,
+                        "transcription": voice.transcription if voice.transcription not in (None, "", "[语音识别失败]") else None,
+                    })
+
                 if voice.transcription and voice.transcription not in ("[语音识别失败]", ""):
-                    # 语音已转写，用转写文字替换输入
+                    # 语音已转写，用转写文字作为输入（保底）
                     if not input_text.strip() or "[语音:" in input_text:
                         input_text = voice.transcription
                         logger.info(f"Using voice transcription as input: {input_text}")
                     else:
-                        # 追加到输入
                         input_text = f"{input_text}\n\n[语音内容: {voice.transcription}]"
                 elif voice.local_path:
                     # 语音未转写成功，保存路径供 Agent 手动处理
@@ -1337,6 +1430,11 @@ class MessageGateway:
                             f"[用户发送了语音消息，但自动识别失败。文件路径: {voice.local_path}]"
                         )
                     logger.info(f"Voice transcription failed, file: {voice.local_path}")
+
+            # 存储原始音频数据到 session（供 Agent 做三级决策）
+            if audio_data_list:
+                session.set_metadata("pending_audio", audio_data_list)
+                logger.info(f"Stored {len(audio_data_list)} raw audio files for Agent decision")
 
             # 处理图片文件 - 多模态输入
             images_data = []
@@ -1367,6 +1465,96 @@ class MessageGateway:
                     input_text = "[用户发送了图片]"
                 logger.info(f"Processing multimodal message with {len(images_data)} images")
 
+            # 处理视频文件 - 多模态输入
+            videos_data = []
+            VIDEO_SIZE_LIMIT = 20 * 1024 * 1024  # 20MB
+            for vid in message.content.videos:
+                if vid.local_path and Path(vid.local_path).exists():
+                    try:
+                        file_size = Path(vid.local_path).stat().st_size
+                        if file_size <= VIDEO_SIZE_LIMIT:
+                            with open(vid.local_path, "rb") as f:
+                                video_data = base64.b64encode(f.read()).decode("utf-8")
+                                videos_data.append(
+                                    {
+                                        "type": "video",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": vid.mime_type or "video/mp4",
+                                            "data": video_data,
+                                        },
+                                        "local_path": vid.local_path,
+                                    }
+                                )
+                            logger.info(f"Video encoded as base64: {vid.local_path} ({file_size / 1024 / 1024:.1f}MB)")
+                        else:
+                            # 视频超过大小限制，用 ffmpeg 截取关键帧降级为图片
+                            logger.info(
+                                f"Video too large ({file_size / 1024 / 1024:.1f}MB > 20MB), "
+                                f"extracting keyframes: {vid.local_path}"
+                            )
+                            keyframes = await self._extract_video_keyframes(vid.local_path)
+                            if keyframes:
+                                for kf_data, kf_mime in keyframes:
+                                    images_data.append(
+                                        {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": kf_mime,
+                                                "data": kf_data,
+                                            },
+                                            "local_path": vid.local_path,
+                                        }
+                                    )
+                                # 更新 pending_images
+                                session.set_metadata("pending_images", images_data)
+                                logger.info(f"Extracted {len(keyframes)} keyframes from video")
+                            else:
+                                logger.warning(f"Failed to extract keyframes from: {vid.local_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to process video: {e}")
+
+            if videos_data:
+                session.set_metadata("pending_videos", videos_data)
+                if not input_text.strip():
+                    input_text = "[用户发送了视频]"
+                logger.info(f"Processing multimodal message with {len(videos_data)} videos")
+
+            # 处理文件 - PDF 等文档的多模态输入
+            files_data = []
+            for fil in message.content.files:
+                if fil.local_path and Path(fil.local_path).exists():
+                    try:
+                        mime = fil.mime_type or ""
+                        suffix = Path(fil.local_path).suffix.lower()
+                        if suffix == ".pdf" or "pdf" in mime:
+                            file_data = base64.b64encode(
+                                Path(fil.local_path).read_bytes()
+                            ).decode("utf-8")
+                            files_data.append({
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": file_data,
+                                },
+                                "filename": fil.file_name or Path(fil.local_path).name,
+                                "local_path": fil.local_path,
+                            })
+                            logger.info(f"PDF file encoded: {fil.local_path}")
+                        else:
+                            # 非 PDF 文件，作为文本描述
+                            input_text += f"\n[附件: {fil.file_name or Path(fil.local_path).name} ({mime or suffix})]"
+                    except Exception as e:
+                        logger.error(f"Failed to process file: {e}")
+
+            if files_data:
+                session.set_metadata("pending_files", files_data)
+                if not input_text.strip():
+                    input_text = "[用户发送了文件]"
+                logger.info(f"Processing multimodal message with {len(files_data)} files")
+
             # === 中断机制：传递 gateway 引用和会话标识 ===
             session_key = self._get_session_key(message)
             session.set_metadata("_gateway", self)
@@ -1378,6 +1566,9 @@ class MessageGateway:
 
             # 清除临时数据
             session.set_metadata("pending_images", None)
+            session.set_metadata("pending_videos", None)
+            session.set_metadata("pending_audio", None)
+            session.set_metadata("pending_files", None)
             session.set_metadata("pending_voices", None)
             session.set_metadata("_gateway", None)
             session.set_metadata("_session_key", None)

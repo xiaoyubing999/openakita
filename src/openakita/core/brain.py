@@ -24,6 +24,10 @@ from ..config import settings
 from ..llm.client import LLMClient
 from ..llm.config import get_default_config_path, load_endpoints_config
 from ..llm.types import (
+    AudioBlock,
+    AudioContent,
+    DocumentBlock,
+    DocumentContent,
     ImageBlock,
     ImageContent,
     LLMResponse,
@@ -132,7 +136,7 @@ class Brain:
     def _init_compiler_client(self) -> None:
         """从配置加载 Prompt Compiler 专属 LLMClient"""
         try:
-            _, compiler_eps, _ = load_endpoints_config()
+            _, compiler_eps, _, _ = load_endpoints_config()
             if compiler_eps:
                 self._compiler_client = LLMClient(endpoints=compiler_eps)
                 names = [ep.name for ep in compiler_eps]
@@ -149,7 +153,7 @@ class Brain:
             True 表示成功重载，False 表示无变化或失败。
         """
         try:
-            _, compiler_eps, _ = load_endpoints_config()
+            _, compiler_eps, _, _ = load_endpoints_config()
             if compiler_eps:
                 self._compiler_client = LLMClient(endpoints=compiler_eps)
                 names = [ep.name for ep in compiler_eps]
@@ -475,6 +479,87 @@ class Brain:
                                         video=VideoContent(
                                             media_type=source.get("media_type", "video/mp4"),
                                             data=source.get("data", ""),
+                                        )
+                                    )
+                                )
+
+                        elif part_type == "audio":
+                            source = part.get("source", {})
+                            if source.get("type") == "base64":
+                                blocks.append(
+                                    AudioBlock(
+                                        audio=AudioContent(
+                                            media_type=source.get("media_type", "audio/wav"),
+                                            data=source.get("data", ""),
+                                            format=source.get("format", "wav"),
+                                        )
+                                    )
+                                )
+
+                        elif part_type == "document":
+                            source = part.get("source", {})
+                            if source.get("type") == "base64":
+                                blocks.append(
+                                    DocumentBlock(
+                                        document=DocumentContent(
+                                            media_type=source.get("media_type", "application/pdf"),
+                                            data=source.get("data", ""),
+                                            filename=part.get("filename", ""),
+                                        )
+                                    )
+                                )
+
+                        # ── OpenAI 格式兼容（Desktop Chat 附件等场景） ──
+                        elif part_type == "image_url":
+                            image_url = part.get("image_url", {})
+                            url = image_url.get("url", "")
+                            if url:
+                                import re as _re
+                                m = _re.match(r"data:([^;]+);base64,(.+)", url)
+                                if m:
+                                    blocks.append(
+                                        ImageBlock(
+                                            image=ImageContent(
+                                                media_type=m.group(1),
+                                                data=m.group(2),
+                                            )
+                                        )
+                                    )
+                                else:
+                                    # 远程 URL — 尝试通过 ImageContent.from_url 解析
+                                    img = ImageContent.from_url(url)
+                                    if img:
+                                        blocks.append(ImageBlock(image=img))
+
+                        elif part_type == "video_url":
+                            video_url = part.get("video_url", {})
+                            url = video_url.get("url", "")
+                            if url:
+                                import re as _re
+                                m = _re.match(r"data:([^;]+);base64,(.+)", url)
+                                if m:
+                                    blocks.append(
+                                        VideoBlock(
+                                            video=VideoContent(
+                                                media_type=m.group(1),
+                                                data=m.group(2),
+                                            )
+                                        )
+                                    )
+
+                        elif part_type == "input_audio":
+                            audio_data = part.get("input_audio", {})
+                            data = audio_data.get("data", "")
+                            fmt = audio_data.get("format", "wav")
+                            if data:
+                                mime_map = {"wav": "audio/wav", "mp3": "audio/mpeg", "pcm16": "audio/pcm"}
+                                media_type = mime_map.get(fmt, f"audio/{fmt}")
+                                blocks.append(
+                                    AudioBlock(
+                                        audio=AudioContent(
+                                            media_type=media_type,
+                                            data=data,
+                                            format=fmt,
                                         )
                                     )
                                 )
