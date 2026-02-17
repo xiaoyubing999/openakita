@@ -83,6 +83,23 @@
     FileClose $R5
   ${EndIf}
 
+  ; 以当前用户身份再清理一次 venv/runtime（解决“以管理员运行安装程序”时清错用户目录）
+  ${If} $EnvCleanVenvChecked == ${BST_CHECKED}
+  ${OrIf} $EnvCleanRuntimeChecked == ${BST_CHECKED}
+    StrCpy $R9 ""
+    ${If} $EnvCleanVenvChecked == ${BST_CHECKED}
+      StrCpy $R9 "venv"
+    ${EndIf}
+    ${If} $EnvCleanRuntimeChecked == ${BST_CHECKED}
+      ${If} $R9 != ""
+        StrCpy $R9 "$R9 runtime"
+      ${Else}
+        StrCpy $R9 "runtime"
+      ${EndIf}
+    ${EndIf}
+    nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "--clean-env $R9"
+  ${EndIf}
+
   ; Finish 页面会提供"运行应用程序"选项 (带 --first-run 参数)
   ; 这里无需额外操作，RunMainBinary 已带 --first-run
 !macroend

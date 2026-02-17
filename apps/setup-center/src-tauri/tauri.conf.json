@@ -19,6 +19,7 @@
       "resources/openakita-server/"
     ],
     "windows": {
+      "installMode": "currentUser",
       "nsis": {
         "installerIcon": "icons/logo.ico",
         "installerHooks": "./windows/hooks.nsh",

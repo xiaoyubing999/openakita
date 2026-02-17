@@ -384,6 +384,8 @@ Var EnvCleanRuntime
 Var EnvCleanModules
 Var EnvCleanUserData
 Var EnvCleanUserDataConfirmed
+Var EnvCleanVenvChecked
+Var EnvCleanRuntimeChecked
 Page custom PageEnvCheck PageLeaveEnvCheck
 
 ; 6.6 CLI 命令行工具配置页面
@@ -515,6 +517,16 @@ Function PageLeaveEnvCheck
   ${EndIf}
  ${EndIf}
 
+ ; 保存勾选状态，供安装完成后以当前用户身份再清理一次（解决“以管理员运行”时清错目录）
+ StrCpy $EnvCleanVenvChecked 0
+ StrCpy $EnvCleanRuntimeChecked 0
+ ${If} $EnvCleanVenv != ""
+  ${NSD_GetState} $EnvCleanVenv $EnvCleanVenvChecked
+ ${EndIf}
+ ${If} $EnvCleanRuntime != ""
+  ${NSD_GetState} $EnvCleanRuntime $EnvCleanRuntimeChecked
+ ${EndIf}
+
  ; ── 清理前先杀掉旧进程（避免文件锁定导致删除失败） ──
  ; 优先 PowerShell 不弹窗；若被杀毒拦截则兜底用 cmd/taskkill（会闪黑框）
  ; 杀掉旧版 Setup Center（托盘常驻）
@@ -549,6 +561,7 @@ Function PageLeaveEnvCheck
   ${NSD_GetState} $EnvCleanVenv $0
   ${If} $0 = ${BST_CHECKED}
    ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\venv"
+   ExecWait 'cmd /c attrib -R /S /D "$R0"' $0
    System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R0)'
    ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"' $0
    ${If} $0 != 0
@@ -561,6 +574,8 @@ Function PageLeaveEnvCheck
   ${NSD_GetState} $EnvCleanRuntime $0
   ${If} $0 = ${BST_CHECKED}
    ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\runtime"
+   ; 先去掉只读属性再删，避免“清不掉”
+   ExecWait 'cmd /c attrib -R /S /D "$R0"' $0
    System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R0)'
    ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"' $0
    ${If} $0 != 0

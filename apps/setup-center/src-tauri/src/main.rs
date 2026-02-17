@@ -769,9 +769,13 @@ fn force_remove_dir(path: &std::path::Path) -> Result<(), String> {
     if fs::remove_dir_all(path).is_ok() {
         return Ok(());
     }
-    // 第二次尝试 (Windows)：使用 cmd /c rd /s /q 处理长路径和只读文件
+    // 第二次尝试 (Windows)：先去掉只读属性再 rd /s /q，避免“清不掉”
     #[cfg(target_os = "windows")]
     {
+        let mut attrib = std::process::Command::new("cmd");
+        attrib.args(["/c", "attrib", "-R", "/S", "/D"]).arg(path);
+        apply_no_window(&mut attrib);
+        let _ = attrib.status();
         let mut rd_cmd = std::process::Command::new("cmd");
         rd_cmd.args(["/c", "rd", "/s", "/q"]).arg(path);
         apply_no_window(&mut rd_cmd);
@@ -1839,6 +1843,31 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // ── NSIS 安装后以当前用户执行清理（解决“以管理员运行安装程序”时清错目录的问题） ──
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(pos) = args.iter().position(|a| a == "--clean-env") {
+                let mut clean_venv = false;
+                let mut clean_runtime = false;
+                for a in args.iter().skip(pos + 1) {
+                    if a == "venv" {
+                        clean_venv = true;
+                    }
+                    if a == "runtime" {
+                        clean_runtime = true;
+                    }
+                    if a.starts_with("--") {
+                        break;
+                    }
+                }
+                if clean_venv || clean_runtime {
+                    match cleanup_old_environment(clean_venv, clean_runtime) {
+                        Ok(msg) => eprintln!("Clean env: {}", msg),
+                        Err(e) => eprintln!("Clean env failed: {}", e),
+                    }
+                    std::process::exit(0);
+                }
+            }
+
             // ── 启动对账：清理残留 .lock 和 stale PID 文件 ──
             startup_reconcile();
 
