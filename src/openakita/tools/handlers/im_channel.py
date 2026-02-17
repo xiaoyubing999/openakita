@@ -657,13 +657,25 @@ class IMChannelHandler:
 
         session = get_im_session()
 
-        # 从 session metadata 获取语音信息
+        # 优先从 pending_voices 获取（转写失败时设置）
         pending_voices = session.get_metadata("pending_voices")
         if pending_voices and len(pending_voices) > 0:
             voice = pending_voices[0]
             local_path = voice.get("local_path")
             if local_path and Path(local_path).exists():
                 return f"语音文件路径: {local_path}"
+
+        # 兜底从 pending_audio 获取（转写成功时也会存储原始音频路径）
+        pending_audio = session.get_metadata("pending_audio")
+        if pending_audio and len(pending_audio) > 0:
+            audio = pending_audio[0]
+            local_path = audio.get("local_path")
+            if local_path and Path(local_path).exists():
+                transcription = audio.get("transcription")
+                info = f"语音文件路径: {local_path}"
+                if transcription:
+                    info += f"\n已转写文字: {transcription}"
+                return info
 
         return "❌ 当前消息没有语音文件"
 
