@@ -67,6 +67,11 @@ class VectorStore:
 
     使用本地 embedding 模型，无需 API 调用。
     支持多下载源 (HuggingFace / hf-mirror / ModelScope)。
+
+    初始化策略：
+    - 模型下载在后台线程中进行，绝不阻塞后端启动
+    - 下载完成前，所有操作优雅降级（返回空结果）
+    - 下载失败后有冷却重试机制
     """
 
     # 默认使用中文优化的 embedding 模型
@@ -98,24 +103,154 @@ class VectorStore:
         self._collection = None
         self._enabled = False
 
-        # 延迟初始化（支持失败后冷却重试）
-        self._initialized = False
+        # 初始化状态机
+        self._init_state = "idle"  # idle → loading → ready / failed
         self._init_failed = False
         self._init_fail_time: float = 0.0
         self._init_retry_cooldown: float = 300.0  # 失败后 5 分钟冷却再重试
         self._lock = threading.RLock()
 
-    def _ensure_initialized(self) -> bool:
-        """确保已初始化。
+        # 立即启动后台初始化（不阻塞调用方）
+        self._start_background_init()
 
-        如果之前初始化失败，会在冷却期（默认 5 分钟）后自动重试，
-        避免网络恢复后仍然无法使用向量搜索。
+    def _start_background_init(self) -> None:
+        """在后台线程中启动初始化，不阻塞调用方。"""
+        t = threading.Thread(
+            target=self._do_initialize,
+            name="VectorStore-init",
+            daemon=True,
+        )
+        t.start()
+        logger.info("[VectorStore] 后台初始化已启动（不阻塞后端启动）")
+
+    def _do_initialize(self) -> None:
+        """实际执行初始化（在后台线程中运行）。"""
+        with self._lock:
+            if self._init_state == "loading":
+                return  # 已有线程在初始化
+            self._init_state = "loading"
+
+        try:
+            self._do_initialize_inner()
+        except Exception:
+            pass  # 错误已在 inner 中处理
+
+    def _do_initialize_inner(self) -> None:
+        """初始化核心逻辑，包含模型下载和 ChromaDB 初始化。"""
+        import time as _time
+
+        # ── 关键：在导入 sentence_transformers 之前就配置好 HF_ENDPOINT ──
+        # sentence_transformers 导入时会触发 huggingface_hub 导入，
+        # 而 huggingface_hub 在模块级缓存 HF_ENDPOINT。
+        # 如果不提前设置，缓存值会是 https://huggingface.co，
+        # 即使后续改了 os.environ 也不会生效。
+        try:
+            from .model_hub import _apply_source_env, _resolve_source
+
+            resolved = _resolve_source(self.download_source)
+            if resolved.value == "auto":
+                from .model_hub import detect_best_source
+
+                resolved = detect_best_source()
+            _apply_source_env(resolved)
+            logger.info(
+                f"[VectorStore] 预配置 HF_ENDPOINT (源={resolved.value})"
+            )
+        except Exception as e:
+            logger.debug(f"[VectorStore] 预配置 HF_ENDPOINT 失败 (非致命): {e}")
+
+        if not _lazy_import():
+            with self._lock:
+                self._enabled = False
+                self._init_state = "failed"
+                self._init_failed = True
+                self._init_fail_time = _time.monotonic()
+            return
+
+        try:
+            # 初始化 embedding 模型（支持多源下载）
+            from .model_hub import load_embedding_model
+
+            logger.info(
+                f"[VectorStore] 正在加载 embedding 模型: {self.model_name} "
+                f"(source={self.download_source})"
+            )
+            model = load_embedding_model(
+                model_name=self.model_name,
+                source=self.download_source,
+                device=self.device,
+            )
+
+            # 初始化 ChromaDB
+            chromadb_dir = self.data_dir / "chromadb"
+            chromadb_dir.mkdir(parents=True, exist_ok=True)
+
+            from chromadb.config import Settings
+
+            client = _chromadb.PersistentClient(
+                path=str(chromadb_dir),
+                settings=Settings(anonymized_telemetry=False),
+            )
+
+            # 获取或创建 collection
+            collection = client.get_or_create_collection(
+                name="memories",
+                metadata={"hnsw:space": "cosine"},
+            )
+
+            # 全部成功，原子性地设置状态
+            with self._lock:
+                self._model = model
+                self._client = client
+                self._collection = collection
+                self._enabled = True
+                self._init_state = "ready"
+                self._init_failed = False
+
+            logger.info(
+                f"[VectorStore] ✓ 初始化完成，已加载 {collection.count()} 条记忆"
+            )
+
+        except Exception as e:
+            err_msg = str(e)
+            if "posthog" in err_msg:
+                logger.warning(
+                    f"VectorStore 初始化失败（chromadb 遥测依赖缺失，不影响核心功能）: {e}"
+                )
+            elif "chromadb" in err_msg.lower():
+                logger.warning(
+                    f"VectorStore 初始化失败（chromadb 内部模块缺失，"
+                    f"请尝试重新安装 vector-memory 模块）: {e}"
+                )
+            else:
+                logger.error(f"[VectorStore] 初始化失败: {e}")
+
+            with self._lock:
+                self._enabled = False
+                self._init_state = "failed"
+                self._init_failed = True
+                self._init_fail_time = _time.monotonic()
+
+            logger.info(
+                f"[VectorStore] 将在 {self._init_retry_cooldown:.0f}s 后自动重试初始化"
+            )
+
+    def _ensure_initialized(self) -> bool:
+        """检查是否已初始化就绪。
+
+        设计原则：**绝不阻塞调用方**。
+        - 已就绪 → 返回 True
+        - 正在加载 → 返回 False（调用方优雅降级）
+        - 加载失败且冷却期已过 → 触发后台重试，返回 False
         """
         with self._lock:
-            if self._initialized and self._enabled:
+            if self._init_state == "ready" and self._enabled:
                 return True
 
-            # 如果之前失败过，检查是否到了冷却重试时间
+            if self._init_state == "loading":
+                return False  # 正在后台加载，不阻塞
+
+            # 失败后冷却重试
             if self._init_failed:
                 import time as _time
 
@@ -123,94 +258,13 @@ class VectorStore:
                 if elapsed < self._init_retry_cooldown:
                     return False  # 冷却期内不重试
                 logger.info(
-                    f"[VectorStore] 上次初始化失败已过 {elapsed:.0f}s，重新尝试..."
+                    f"[VectorStore] 上次初始化失败已过 {elapsed:.0f}s，后台重新尝试..."
                 )
                 self._init_failed = False
 
-            self._initialized = True
-
-            # ── 关键：在导入 sentence_transformers 之前就配置好 HF_ENDPOINT ──
-            # sentence_transformers 导入时会触发 huggingface_hub 导入，
-            # 而 huggingface_hub 在模块级缓存 HF_ENDPOINT。
-            # 如果不提前设置，缓存值会是 https://huggingface.co，
-            # 即使后续改了 os.environ 也不会生效。
-            try:
-                from .model_hub import _resolve_source, _apply_source_env
-
-                resolved = _resolve_source(self.download_source)
-                if resolved.value == "auto":
-                    from .model_hub import detect_best_source
-                    resolved = detect_best_source()
-                _apply_source_env(resolved)
-                logger.info(
-                    f"[VectorStore] 预配置 HF_ENDPOINT (源={resolved.value})"
-                )
-            except Exception as e:
-                logger.debug(f"[VectorStore] 预配置 HF_ENDPOINT 失败 (非致命): {e}")
-
-            if not _lazy_import():
-                self._enabled = False
-                return False
-
-            try:
-                # 初始化 embedding 模型（支持多源下载）
-                from .model_hub import load_embedding_model
-
-                logger.info(
-                    f"Loading embedding model: {self.model_name} "
-                    f"(source={self.download_source})"
-                )
-                self._model = load_embedding_model(
-                    model_name=self.model_name,
-                    source=self.download_source,
-                    device=self.device,
-                )
-
-                # 初始化 ChromaDB
-                chromadb_dir = self.data_dir / "chromadb"
-                chromadb_dir.mkdir(parents=True, exist_ok=True)
-
-                from chromadb.config import Settings
-
-                self._client = _chromadb.PersistentClient(
-                    path=str(chromadb_dir),
-                    settings=Settings(anonymized_telemetry=False),
-                )
-
-                # 获取或创建 collection
-                self._collection = self._client.get_or_create_collection(
-                    name="memories",
-                    metadata={"hnsw:space": "cosine"},
-                )
-
-                self._enabled = True
-                logger.info(f"VectorStore initialized with {self._collection.count()} memories")
-                return True
-
-            except Exception as e:
-                import time as _time
-
-                err_msg = str(e)
-                if "posthog" in err_msg:
-                    logger.warning(
-                        f"VectorStore 初始化失败（chromadb 遥测依赖缺失，不影响核心功能）: {e}"
-                    )
-                elif "chromadb" in err_msg.lower():
-                    logger.warning(
-                        f"VectorStore 初始化失败（chromadb 内部模块缺失，"
-                        f"请尝试重新安装 vector-memory 模块）: {e}"
-                    )
-                else:
-                    logger.error(f"Failed to initialize VectorStore: {e}")
-
-                self._enabled = False
-                self._initialized = False  # 允许后续重试
-                self._init_failed = True
-                self._init_fail_time = _time.monotonic()
-                logger.info(
-                    f"[VectorStore] 将在 {self._init_retry_cooldown:.0f}s 后自动重试初始化"
-                )
-                return False
+        # 触发后台重试
+        self._start_background_init()
+        return False
 
     @property
     def enabled(self) -> bool:

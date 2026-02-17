@@ -83,53 +83,48 @@ def detect_best_source() -> ModelSource:
     """
     自动探测最佳下载源。
 
-    策略:
+    策略（国内镜像优先）:
     0. 先检查系统 locale —— 中文环境直接用 hf-mirror，跳过网络探测
-    1. 并行测试 huggingface.co 和 hf-mirror.com 的延迟
-    2. 选择延迟最低的
+    1. 先探测 hf-mirror（国内镜像），如果 <2s 直接使用（大多数国内用户）
+    2. 如果 hf-mirror 不通，再探测 huggingface.co
     3. 如果两者都很慢 (>3s)，优先尝试 ModelScope（如果已安装）
-    4. 最终兜底: hf-mirror（国内大概率可用）
+    4. 最终兜底: hf-mirror（国内大概率可用，即使探测超时也可能下载正常）
     """
     # 中文系统环境优先 hf-mirror，避免网络探测浪费时间
     import locale
 
     try:
-        lang, _ = locale.getdefaultlocale()
+        lang = locale.getlocale()[0] or os.environ.get("LANG", "")
         if lang and lang.lower().startswith("zh"):
             logger.info("[ModelHub] 检测到中文系统环境，优先使用 hf-mirror")
             return ModelSource.HF_MIRROR
     except Exception:
         pass
 
-    import concurrent.futures
+    # 快速探测：先测 hf-mirror，如果够快就直接用，省掉 huggingface.co 的探测时间
+    mirror_time = _probe_url(HF_MIRROR_ENDPOINT, timeout=2.0)
+    logger.info(
+        f"[ModelHub] 探测 hf-mirror 延迟: "
+        f"{'超时' if mirror_time == float('inf') else f'{mirror_time:.2f}s'}"
+    )
+    if mirror_time < 2.0:
+        logger.info(f"[ModelHub] hf-mirror 响应良好 ({mirror_time:.2f}s)，直接使用")
+        return ModelSource.HF_MIRROR
 
-    probes = {
-        ModelSource.HUGGINGFACE: "https://huggingface.co",
-        ModelSource.HF_MIRROR: HF_MIRROR_ENDPOINT,
-    }
-
-    results: dict[ModelSource, float] = {}
-
-    # 并行探测，减少等待时间
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            pool.submit(_probe_url, url, 3.0): source
-            for source, url in probes.items()
-        }
-        for future in concurrent.futures.as_completed(futures):
-            source = futures[future]
-            elapsed = future.result()
-            results[source] = elapsed
-            logger.info(
-                f"[ModelHub] 探测 {source.value} 延迟: "
-                f"{'超时' if elapsed == float('inf') else f'{elapsed:.2f}s'}"
-            )
+    # hf-mirror 不理想，再探测 huggingface.co
+    hf_time = _probe_url("https://huggingface.co", timeout=2.0)
+    logger.info(
+        f"[ModelHub] 探测 huggingface 延迟: "
+        f"{'超时' if hf_time == float('inf') else f'{hf_time:.2f}s'}"
+    )
 
     # 选最快的
-    best_source = min(results, key=results.get)  # type: ignore[arg-type]
-    best_time = results[best_source]
+    if hf_time < mirror_time and hf_time < 2.0:
+        logger.info(f"[ModelHub] 自动选择下载源: huggingface ({hf_time:.2f}s)")
+        return ModelSource.HUGGINGFACE
 
-    # 如果两个 HF 源都很慢，检查 ModelScope 是否可用
+    # 如果两个都比较慢，检查 ModelScope
+    best_time = min(mirror_time, hf_time)
     if best_time > 3.0:
         try:
             import modelscope  # noqa: F401
@@ -139,13 +134,18 @@ def detect_best_source() -> ModelSource:
         except ImportError:
             pass
 
-    # 如果都超时，兜底 hf-mirror（国内概率最高）
+    # 兜底 hf-mirror（即使探测超时，实际下载可能正常，比 huggingface.co 可靠性高）
     if best_time == float("inf"):
         logger.warning("[ModelHub] 所有源均超时，兜底使用 hf-mirror")
         return ModelSource.HF_MIRROR
 
-    logger.info(f"[ModelHub] 自动选择下载源: {best_source.value} ({best_time:.2f}s)")
-    return best_source
+    # mirror 虽然不是最快但可用
+    if mirror_time < float("inf"):
+        logger.info(f"[ModelHub] 自动选择下载源: hf-mirror ({mirror_time:.2f}s)")
+        return ModelSource.HF_MIRROR
+
+    logger.info(f"[ModelHub] 自动选择下载源: huggingface ({hf_time:.2f}s)")
+    return ModelSource.HUGGINGFACE
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,13 @@ def _load_from_modelscope(model_name: str, device: str = "cpu"):
 
 
 def _load_from_hf(model_name: str, device: str = "cpu"):
-    """通过 HuggingFace (含镜像) 加载模型，失败时自动尝试备选源"""
+    """通过 HuggingFace (含镜像) 加载模型，失败时自动尝试备选源
+
+    回退顺序:
+    1. 当前配置的源（可能是 huggingface 或 hf-mirror）
+    2. hf-mirror（如果当前不是 hf-mirror）
+    3. ModelScope（最后手段）
+    """
     from sentence_transformers import SentenceTransformer
 
     current_endpoint = os.environ.get("HF_ENDPOINT", "")
@@ -257,18 +263,16 @@ def _load_from_hf(model_name: str, device: str = "cpu"):
     try:
         return SentenceTransformer(model_name, device=device)
     except Exception as e:
-        # 如果当前用的不是 hf-mirror，先尝试切换到镜像
+        logger.warning(f"[ModelHub] 当前源下载失败: {e}")
+
+        # 如果当前用的不是 hf-mirror，先尝试切换到国内镜像
         if HF_MIRROR_ENDPOINT not in current_endpoint:
-            logger.warning(
-                f"[ModelHub] 当前源下载失败 ({e})，尝试 hf-mirror..."
-            )
+            logger.info("[ModelHub] 切换到 hf-mirror (国内镜像) 重试...")
             _apply_source_env(ModelSource.HF_MIRROR)
             try:
                 return SentenceTransformer(model_name, device=device)
             except Exception as e2:
-                logger.warning(f"[ModelHub] hf-mirror 也失败了 ({e2})")
-        else:
-            logger.warning(f"[ModelHub] hf-mirror 下载失败 ({e})")
+                logger.warning(f"[ModelHub] hf-mirror 也失败了: {e2}")
 
         # 最后尝试 ModelScope
         try:
@@ -283,8 +287,8 @@ def load_embedding_model(
     model_name: str,
     source: str | ModelSource = "auto",
     device: str = "cpu",
-    max_retries: int = 3,
-    initial_backoff: float = 5.0,
+    max_retries: int = 2,
+    initial_backoff: float = 3.0,
 ):
     """
     加载 embedding 模型，支持多源自动切换 + 整体重试 + 指数退避。
@@ -292,14 +296,17 @@ def load_embedding_model(
     重试策略（三层防御）:
       Layer 1: huggingface_hub 内部重试（5 次，1-2-4s 退避）
       Layer 2: 源级别回退（当前源 → hf-mirror → modelscope）
-      Layer 3: 本函数的整体重试（默认 3 轮，5-10-20s 指数退避）
+      Layer 3: 本函数的整体重试（默认 2 轮，3-6s 退避）
+
+    注意：本函数在后台线程中运行（由 VectorStore 调用），
+    不会阻塞后端启动。失败后由 VectorStore 的冷却重试机制接管。
 
     Args:
         model_name: 模型名称 (如 "shibing624/text2vec-base-chinese")
         source: 下载源 ("auto" | "huggingface" | "hf-mirror" | "modelscope")
         device: 运行设备 ("cpu" | "cuda")
-        max_retries: 整体重试次数 (默认 3)
-        initial_backoff: 首次重试等待秒数 (默认 5s，后续指数增长)
+        max_retries: 整体重试次数 (默认 2)
+        initial_backoff: 首次重试等待秒数 (默认 3s，后续指数增长)
 
     Returns:
         SentenceTransformer 模型实例
