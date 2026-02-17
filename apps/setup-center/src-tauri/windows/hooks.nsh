@@ -5,9 +5,12 @@
 
 !macro _OpenAkita_KillPid pid
   StrCpy $0 "${pid}"
-  ; 仅在 pid 非空时执行 kill；用 PowerShell -WindowStyle Hidden 避免弹黑窗
+  ; 仅在 pid 非空时执行 kill；优先 PowerShell 不弹窗，失败则兜底 taskkill（会闪黑框）
   ${If} $0 != ""
     ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Stop-Process -Id $0 -Force -ErrorAction SilentlyContinue"' $1
+    ${If} $1 != 0
+      ExecWait 'taskkill /PID $0 /T /F' $1
+    ${EndIf}
   ${EndIf}
 !macroend
 
@@ -34,9 +37,12 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; 卸载前：强制杀掉残留进程，避免“卸载后仍在后台跑”；用 PowerShell 避免弹黑窗
+  ; 卸载前：强制杀掉残留进程；优先 PowerShell 不弹窗，失败则兜底 taskkill（会闪黑框）
   ; 1) 杀掉 Setup Center（可能在托盘常驻）
   ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Get-Process -Name openakita-setup-center -ErrorAction SilentlyContinue | Stop-Process -Force"' $0
+  ${If} $0 != 0
+    ExecWait 'taskkill /IM openakita-setup-center.exe /T /F' $0
+  ${EndIf}
 
   ; 2) 杀掉 OpenAkita serve（按 pid 文件枚举）
   !insertmacro _OpenAkita_KillAllServicePids
@@ -82,13 +88,16 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; 勾选“清理用户数据”时：删除 ~/.openakita（真实用户数据目录）；用 PowerShell 避免弹黑窗
+  ; 勾选“清理用户数据”时：删除 ~/.openakita；优先 PowerShell 不弹窗，失败则兜底 cmd（会闪黑框）
   ; 仅在非更新模式下清理（与默认行为保持一致）
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     ExpandEnvStrings $R0 "%USERPROFILE%\\.openakita"
     System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R0)'
-    ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"'
+    ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"' $0
+    ${If} $0 != 0
+      ExecWait 'cmd /c rd /s /q "$R0"'
+    ${EndIf}
   ${EndIf}
 !macroend
 
