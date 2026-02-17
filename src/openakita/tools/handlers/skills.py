@@ -17,10 +17,16 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...core.tool_executor import MAX_TOOL_RESULT_CHARS, OVERFLOW_MARKER, save_overflow
+
 if TYPE_CHECKING:
     from ...core.agent import Agent
 
 logger = logging.getLogger(__name__)
+
+# Skill 内容专用阈值（~16000 tokens），高于通用的 MAX_TOOL_RESULT_CHARS (16000 chars)。
+# Skill body 是高质量结构化指令，截断会严重影响 LLM 执行效果。
+SKILL_MAX_CHARS = 32000
 
 
 class SkillsHandler:
@@ -86,6 +92,35 @@ class SkillsHandler:
 
         return output
 
+    @staticmethod
+    def _truncate_skill_content(tool_name: str, content: str) -> str:
+        """Skill 专用截断：阈值高于通用守卫，超长时自行截断并带标记跳过守卫。
+
+        - <= MAX_TOOL_RESULT_CHARS (16000)：原样返回，通用守卫也不会截断
+        - 16000 < len <= SKILL_MAX_CHARS (32000)：全量返回 + OVERFLOW_MARKER 跳过守卫
+        - > SKILL_MAX_CHARS：截断到 32000 + 溢出文件 + 分段读取指引
+        """
+        if not content or len(content) <= MAX_TOOL_RESULT_CHARS:
+            return content
+
+        if len(content) <= SKILL_MAX_CHARS:
+            return content + f"\n\n{OVERFLOW_MARKER}"
+
+        total_chars = len(content)
+        overflow_path = save_overflow(tool_name, content)
+        truncated = content[:SKILL_MAX_CHARS]
+        hint = (
+            f"\n\n{OVERFLOW_MARKER} 技能内容共 {total_chars} 字符，"
+            f"已截断到前 {SKILL_MAX_CHARS} 字符。\n"
+            f"完整内容已保存到: {overflow_path}\n"
+            f'使用 read_file(path="{overflow_path}", offset=1, limit=500) 查看后续内容。'
+        )
+        logger.info(
+            f"[SkillTruncate] {tool_name} output: {total_chars} → {SKILL_MAX_CHARS} chars, "
+            f"overflow saved to {overflow_path}"
+        )
+        return truncated + hint
+
     def _get_skill_info(self, params: dict) -> str:
         """获取技能详细信息"""
         skill_name = params["skill_name"]
@@ -109,7 +144,7 @@ class SkillsHandler:
         output += "\n---\n\n"
         output += body or "(无详细指令)"
 
-        return output
+        return self._truncate_skill_content("get_skill_info", output)
 
     def _run_skill_script(self, params: dict) -> str:
         """运行技能脚本"""
@@ -155,7 +190,8 @@ class SkillsHandler:
         content = self.agent.skill_loader.get_reference(skill_name, ref_name)
 
         if content:
-            return f"# 参考文档: {ref_name}\n\n{content}"
+            output = f"# 参考文档: {ref_name}\n\n{content}"
+            return self._truncate_skill_content("get_skill_reference", output)
         else:
             return f"❌ 未找到参考文档: {skill_name}/{ref_name}"
 

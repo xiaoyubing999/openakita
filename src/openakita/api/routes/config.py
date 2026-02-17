@@ -321,6 +321,8 @@ async def list_providers_api():
                     "supports_capability_api": getattr(p, "supports_capability_api", False),
                     "requires_api_key": getattr(p, "requires_api_key", True),
                     "is_local": getattr(p, "is_local", False),
+                    "coding_plan_base_url": getattr(p, "coding_plan_base_url", None),
+                    "coding_plan_api_type": getattr(p, "coding_plan_api_type", None),
                 }
                 for p in providers
             ]

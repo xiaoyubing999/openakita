@@ -87,6 +87,8 @@ def _build_registries() -> list[ProviderRegistry]:
             supports_capability_api=entry.get("supports_capability_api", False),
             requires_api_key=entry.get("requires_api_key", True),
             is_local=entry.get("is_local", False),
+            coding_plan_base_url=entry.get("coding_plan_base_url"),
+            coding_plan_api_type=entry.get("coding_plan_api_type"),
         )
         registries.append(instance)
     return registries

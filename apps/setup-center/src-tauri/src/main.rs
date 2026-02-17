@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Emitter;
@@ -28,6 +29,10 @@ struct ManagedProcess {
 }
 
 static MANAGED_CHILD: Lazy<Mutex<Option<ManagedProcess>>> = Lazy::new(|| Mutex::new(None));
+
+/// Rust 自动启动后端时置 true，启动完成（成功/失败）后置 false。
+/// 前端可查询该标记以显示"正在自动启动服务"并禁用启动/重启按钮。
+static AUTO_START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1749,38 +1754,62 @@ fn main() {
 
             setup_tray(app)?;
 
+            // ── 自启自修复：防止注册表条目意外丢失（上游 Issue #771） ──
+            // 如果用户之前开启了自启（记录在 state file），但注册表条目被意外移除，
+            // 则自动重新注册，确保下次开机仍能自启。
+            #[cfg(desktop)]
+            {
+                let repair_state = read_state_file();
+                if repair_state.auto_start_backend.unwrap_or(false) {
+                    let mgr = app.autolaunch();
+                    match mgr.is_enabled() {
+                        Ok(false) => {
+                            eprintln!("Auto-start self-repair: registry entry missing, re-enabling...");
+                            if let Err(e) = mgr.enable() {
+                                eprintln!("Auto-start self-repair failed: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("Auto-start check failed: {e}"),
+                        _ => {} // 已启用，无需修复
+                    }
+                }
+            }
+
             // ── 首次运行检测 (NSIS 安装后自动启动时传入 --first-run) ──
             let is_first_run_arg = std::env::args().any(|a| a == "--first-run");
             let launch_mode = if is_first_run_arg { "first-run" } else { "normal" };
             app.emit("app-launch-mode", launch_mode).ok();
 
-            // 自启动/后台启动时：不弹出主窗口，只保留托盘/菜单栏常驻，并自动拉起后端
+            // 后台启动时：不弹出主窗口，只保留托盘/菜单栏常驻
             let is_background = std::env::args().any(|a| a == "--background");
             if is_background {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
+            }
 
-                // ── 开机自启 = 桌面自启 + 后端自动拉起 ──
-                let state = read_state_file();
-                if let Some(ref ws_id) = state.current_workspace_id {
-                    // 检查后端是否已在运行（避免重复启动或与 CLI 后端冲突）
-                    let port = read_workspace_api_port(ws_id).unwrap_or(18900);
-                    let already_running = reqwest::blocking::Client::builder()
-                        .timeout(std::time::Duration::from_secs(2))
-                        .build()
-                        .ok()
-                        .and_then(|c| c.get(format!("http://127.0.0.1:{}/api/health", port)).send().ok())
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-                    if !already_running {
-                        let venv_dir = openakita_root_dir().join("venv").to_string_lossy().to_string();
-                        let ws_clone = ws_id.clone();
-                        // 在后台线程启动，不阻塞 setup()
-                        std::thread::spawn(move || {
-                            let _ = openakita_service_start(venv_dir, ws_clone);
-                        });
-                    }
+            // ── 自动拉起后端（所有启动模式都生效） ──
+            // 如果有已配置的工作区且后端未在运行，则自动启动后端。
+            // 前端通过 is_backend_auto_starting 查询此状态，
+            // 在启动期间显示提示并禁用启动/重启按钮。
+            let state = read_state_file();
+            if let Some(ref ws_id) = state.current_workspace_id {
+                let port = read_workspace_api_port(ws_id).unwrap_or(18900);
+                let already_running = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(2))
+                    .build()
+                    .ok()
+                    .and_then(|c| c.get(format!("http://127.0.0.1:{}/api/health", port)).send().ok())
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+                if !already_running {
+                    AUTO_START_IN_PROGRESS.store(true, Ordering::SeqCst);
+                    let venv_dir = openakita_root_dir().join("venv").to_string_lossy().to_string();
+                    let ws_clone = ws_id.clone();
+                    std::thread::spawn(move || {
+                        let _ = openakita_service_start(venv_dir, ws_clone);
+                        AUTO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
+                    });
                 }
             }
             Ok(())
@@ -1817,6 +1846,7 @@ fn main() {
             openakita_service_log,
             openakita_check_pid_alive,
             set_tray_backend_status,
+            is_backend_auto_starting,
             get_auto_start_backend,
             set_auto_start_backend,
             get_auto_update,
@@ -2299,6 +2329,10 @@ fn autostart_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
         } else {
             mgr.disable().map_err(|e| format!("autostart disable failed: {e}"))?;
         }
+        // 同步持久化到 state file，用于下次启动时的自修复检查
+        let mut state = read_state_file();
+        state.auto_start_backend = Some(enabled);
+        let _ = write_state_file(&state);
         return Ok(());
     }
     #[cfg(not(desktop))]
@@ -2306,6 +2340,13 @@ fn autostart_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
         let _ = (app, enabled);
         Ok(())
     }
+}
+
+/// 前端调用：查询后端是否正在自动启动中。
+/// 返回 true 时前端应禁用启动/重启按钮并显示"正在自动启动服务"提示。
+#[tauri::command]
+fn is_backend_auto_starting() -> bool {
+    AUTO_START_IN_PROGRESS.load(Ordering::SeqCst)
 }
 
 #[tauri::command]

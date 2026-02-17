@@ -24,6 +24,9 @@
     "connectFail": "未检测到运行中的服务，请确认 openakita serve 已启动",
     "start": "启动服务",
     "starting": "正在启动服务...",
+    "autoStarting": "正在自动启动服务...",
+    "autoStartSuccess": "服务已自动启动",
+    "autoStartFail": "自动启动服务失败，请手动启动",
     "startFail": "服务启动失败，请检查配置",
     "disconnect": "断开",
     "disconnected": "已断开服务连接"
@@ -451,6 +454,8 @@
     "capTools": "工具",
     "baseUrl": "API 地址",
     "baseUrlHint": "使用中转站或代理服务时可修改为自定义地址",
+    "codingPlan": "Coding Plan（编程套餐）",
+    "codingPlanHint": "启用后将使用服务商的 Coding Plan 专用端点和协议",
     "advanced": "高级选项",
     "advancedParams": "高级参数",
     "compiler": "提示词编译模型",
@@ -611,6 +616,18 @@
       "loading": "正在检测模块...",
       "installAndContinue": "安装并继续",
       "skipAndContinue": "跳过，直接开始"
+    },
+    "system": {
+      "title": "终端命令与系统设置",
+      "desc": "注册命令行工具，配置开机自启等系统选项。"
+    },
+    "autostart": {
+      "label": "开机自启",
+      "desc": "开机时自动启动桌面终端并拉起后端服务，无需手动打开",
+      "recommended": "推荐",
+      "taskLabel": "开启开机自启",
+      "success": "✓ 已开启开机自启",
+      "fail": "⚠ 开启开机自启失败"
     },
     "progress": {
       "title": "正在配置...",

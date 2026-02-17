@@ -544,6 +544,177 @@ function SearchSelect({
   );
 }
 
+/** 服务商搜索选择器：支持 value/label 选项对，大小写模糊匹配 */
+function ProviderSearchSelect({
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+  extraOptions,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  placeholder?: string;
+  disabled?: boolean;
+  extraOptions?: { value: string; label: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [hoverIdx, setHoverIdx] = useState(0);
+  const [search, setSearch] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const justSelected = useRef(false);
+
+  const allOptions = useMemo(() => {
+    const base = options.slice();
+    if (extraOptions) base.push(...extraOptions);
+    return base;
+  }, [options, extraOptions]);
+
+  const selectedLabel = useMemo(
+    () => allOptions.find((o) => o.value === value)?.label ?? "",
+    [allOptions, value],
+  );
+
+  const displayValue = search || selectedLabel;
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const list = q
+      ? allOptions.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
+      : allOptions;
+    return list.slice(0, 200);
+  }, [allOptions, search]);
+
+  useEffect(() => {
+    if (hoverIdx >= filtered.length) setHoverIdx(0);
+  }, [filtered.length, hoverIdx]);
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <div style={{ position: "relative" }}>
+        <input
+          ref={inputRef}
+          value={displayValue}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setOpen(true);
+          }}
+          placeholder={placeholder || "搜索服务商..."}
+          onFocus={() => { setSearch(""); setOpen(true); }}
+          onBlur={() => {
+            setTimeout(() => {
+              setOpen(false);
+              if (justSelected.current) {
+                justSelected.current = false;
+                return;
+              }
+              setSearch("");
+            }, 150);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setOpen(true);
+              setHoverIdx((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHoverIdx((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              if (open && filtered[hoverIdx]) {
+                e.preventDefault();
+                justSelected.current = true;
+                onChange(filtered[hoverIdx].value);
+                setSearch("");
+                setOpen(false);
+              }
+            } else if (e.key === "Escape") {
+              setSearch("");
+              setOpen(false);
+            }
+          }}
+          disabled={disabled}
+          style={{ paddingRight: 44, width: "100%", padding: "8px 44px 8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }}
+        />
+        <button
+          type="button"
+          className="btnSmall"
+          onClick={() => {
+            if (!open) { setSearch(""); }
+            setOpen((v) => !v);
+            inputRef.current?.focus();
+          }}
+          disabled={disabled}
+          style={{
+            position: "absolute",
+            right: 8,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 34,
+            height: 30,
+            padding: 0,
+            borderRadius: 10,
+            display: "grid",
+            placeItems: "center",
+          }}
+        >
+          ▾
+        </button>
+      </div>
+      {open && !disabled ? (
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 50,
+            left: 0,
+            right: 0,
+            marginTop: 6,
+            maxHeight: 280,
+            overflow: "auto",
+            border: "1px solid var(--line)",
+            borderRadius: 14,
+            background: "rgba(255,255,255,0.98)",
+            boxShadow: "0 18px 60px rgba(17, 24, 39, 0.14)",
+          }}
+          onMouseDown={(e) => { e.preventDefault(); }}
+        >
+          {filtered.length === 0 ? (
+            <div style={{ padding: 12, color: "var(--muted)", fontWeight: 650 }}>没有匹配项</div>
+          ) : (
+            filtered.map((opt, idx) => (
+              <div
+                key={opt.value}
+                onMouseEnter={() => setHoverIdx(idx)}
+                onClick={() => {
+                  justSelected.current = true;
+                  onChange(opt.value);
+                  setSearch("");
+                  setOpen(false);
+                }}
+                style={{
+                  padding: "10px 12px",
+                  cursor: "pointer",
+                  fontWeight: 650,
+                  background: opt.value === value
+                    ? "rgba(14, 165, 233, 0.16)"
+                    : idx === hoverIdx
+                      ? "rgba(14, 165, 233, 0.06)"
+                      : "transparent",
+                  borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.06)",
+                }}
+              >
+                {opt.value === value ? `✓ ${opt.label}` : opt.label}
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const PIP_INDEX_PRESETS: { id: "official" | "tuna" | "aliyun" | "custom"; label: string; url: string }[] = [
   { id: "official", label: "官方 PyPI（默认）", url: "" },
   { id: "tuna", label: "清华 TUNA", url: "https://pypi.tuna.tsinghua.edu.cn/simple" },
@@ -673,6 +844,13 @@ export function App() {
     getVersion().then((v) => setDesktopVersion(v)).catch(() => setDesktopVersion("1.10.5")); // fallback
   }, []);
 
+  // ── 独立初始化 autostart 状态（不依赖 refreshStatus 的复杂前置条件） ──
+  useEffect(() => {
+    invoke<boolean>("autostart_is_enabled")
+      .then((en) => setAutostartEnabled(en))
+      .catch(() => setAutostartEnabled(null));
+  }, []);
+
   // Ensure boot overlay is removed once React actually mounts.
   useEffect(() => {
     try {
@@ -779,6 +957,7 @@ export function App() {
   const [obCliOpenakita, setObCliOpenakita] = useState(true);
   const [obCliOa, setObCliOa] = useState(true);
   const [obCliAddToPath, setObCliAddToPath] = useState(true);
+  const [obAutostart, setObAutostart] = useState(true); // 开机自启，默认勾选
 
   /** 探测本地是否有后端服务在运行（用于 onboarding 前提示用户） */
   async function obProbeRunningService() {
@@ -922,6 +1101,7 @@ export function App() {
   const [addEpMaxTokens, setAddEpMaxTokens] = useState(0);
   const [addEpContextWindow, setAddEpContextWindow] = useState(150000);
   const [addEpTimeout, setAddEpTimeout] = useState(180);
+  const [codingPlanMode, setCodingPlanMode] = useState(false);
 
   // Compiler endpoint form state
   const [compilerProviderSlug, setCompilerProviderSlug] = useState("");
@@ -931,6 +1111,7 @@ export function App() {
   const [compilerApiKeyValue, setCompilerApiKeyValue] = useState("");
   const [compilerModel, setCompilerModel] = useState("");
   const [compilerEndpointName, setCompilerEndpointName] = useState("");
+  const [compilerCodingPlan, setCompilerCodingPlan] = useState(false);
   const [compilerModels, setCompilerModels] = useState<ListedModel[]>([]); // models fetched for compiler section
 
   // Edit endpoint modal (do not reuse the "add" form)
@@ -1077,27 +1258,81 @@ export function App() {
           // 如果本地有 OpenAkita 服务在运行，自动连接并同步状态。
           // 版本不一致时仍然连接，由 checkVersionMismatch 负责提示用户。
           if (!cancelled) {
+            const localUrl = "http://127.0.0.1:18900";
+
+            /** 连接已运行的服务并同步状态 */
+            const connectToRunningService = async (url: string) => {
+              const healthRes = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) });
+              if (!healthRes.ok) return false;
+              if (cancelled) return true;
+              const healthData = await healthRes.json();
+              const svcVersion = healthData.version || "";
+              setApiBaseUrl(url);
+              setServiceStatus({ running: true, pid: healthData.pid || null, pidFile: "" });
+              if (svcVersion) setBackendVersion(svcVersion);
+              try { await refreshStatus("local", url, true); } catch { /* ignore */ }
+              autoCheckEndpoints(url);
+              if (svcVersion) setTimeout(() => checkVersionMismatch(svcVersion), 500);
+              return true;
+            };
+
+            let alreadyConnected = false;
             try {
-              const localUrl = "http://127.0.0.1:18900";
-              const healthRes = await fetch(`${localUrl}/api/health`, { signal: AbortSignal.timeout(2000) });
-              if (healthRes.ok && !cancelled) {
-                const healthData = await healthRes.json();
-                const svcVersion = healthData.version || "";
-                setApiBaseUrl(localUrl);
-                setServiceStatus({ running: true, pid: healthData.pid || null, pidFile: "" });
-                if (svcVersion) setBackendVersion(svcVersion);
-                // 加载完整状态（env + 端点列表 + 模型列表）
-                try {
-                  await refreshStatus("local", localUrl, true);
-                } catch { /* ignore */ }
-                // 自动执行一次 LLM 端点健康检测（后台、不阻塞）
-                autoCheckEndpoints(localUrl);
-                // 版本不一致时触发已有的 mismatch 警告（延迟执行，等 desktopVersion 加载完）
-                if (svcVersion) {
-                  setTimeout(() => checkVersionMismatch(svcVersion), 500);
+              alreadyConnected = await connectToRunningService(localUrl);
+            } catch { /* 服务未运行 */ }
+
+            // ── 自动启动等待 ──
+            // Rust 端在 setup() 中检测到服务未运行时会自动拉起后端，
+            // 此处轮询等待直到服务就绪或确认启动失败。
+            if (!alreadyConnected && !cancelled) {
+              let handled = false;
+              try {
+                const autoStarting = await invoke<boolean>("is_backend_auto_starting");
+                if (autoStarting) {
+                  handled = true;
+                  setBusy(t("topbar.autoStarting"));
+                  let serviceReady = false;
+                  let spawnDone = false;       // Rust 线程已完成（进程已 spawn 或失败）
+                  let postSpawnWait = 0;       // spawn 完成后的额外等待次数
+
+                  for (let attempt = 0; attempt < 90 && !cancelled; attempt++) {
+                    await new Promise((r) => setTimeout(r, 2000));
+                    // 尝试连接服务
+                    try {
+                      serviceReady = await connectToRunningService(localUrl);
+                      if (serviceReady) break;
+                    } catch { /* still starting */ }
+                    // 检查 Rust 端 spawn 是否完成
+                    if (!spawnDone) {
+                      try {
+                        const still = await invoke<boolean>("is_backend_auto_starting");
+                        if (!still) spawnDone = true;
+                      } catch { spawnDone = true; }
+                    }
+                    // spawn 完成后：进程已启动但 HTTP 可能尚未就绪，
+                    // 额外等待最多 60 秒（30 次 × 2s）让 FastAPI+uvicorn 初始化
+                    if (spawnDone) {
+                      postSpawnWait++;
+                      if (postSpawnWait > 30) break;
+                    }
+                  }
+                  if (!cancelled) {
+                    setBusy(null);
+                    if (serviceReady) {
+                      setNotice(t("topbar.autoStartSuccess"));
+                    } else {
+                      // 自动启动失败 → 显式标记服务未运行，让按钮变为可用
+                      setServiceStatus({ running: false, pid: null, pidFile: "" });
+                      setError(t("topbar.autoStartFail"));
+                    }
+                  }
                 }
+              } catch { /* is_backend_auto_starting 不可用，忽略 */ }
+              // 没有自动启动 → 显式标记服务未运行（解除 serviceStatus===null 的锁定）
+              if (!handled && !cancelled) {
+                setServiceStatus({ running: false, pid: null, pidFile: "" });
               }
-            } catch { /* 服务未运行，正常情况 */ }
+            }
           }
         }
       } catch (e) {
@@ -1678,9 +1913,15 @@ export function App() {
 
   useEffect(() => {
     if (!selectedProvider) return;
-    const t = (selectedProvider.api_type as "openai" | "anthropic") || "openai";
-    setApiType(t);
-    setBaseUrl(selectedProvider.default_base_url || "");
+    // Coding Plan 模式下使用专用 URL 和协议类型
+    if (codingPlanMode && selectedProvider.coding_plan_base_url) {
+      setApiType((selectedProvider.coding_plan_api_type as "openai" | "anthropic") || (selectedProvider.api_type as "openai" | "anthropic") || "openai");
+      setBaseUrl(selectedProvider.coding_plan_base_url);
+    } else {
+      const t = (selectedProvider.api_type as "openai" | "anthropic") || "openai";
+      setApiType(t);
+      setBaseUrl(selectedProvider.default_base_url || "");
+    }
     const suggested = selectedProvider.api_key_env_suggestion || envKeyFromSlug(selectedProvider.slug);
     const used = new Set(Object.keys(envDraft || {}));
     for (const ep of savedEndpoints) {
@@ -1699,7 +1940,7 @@ export function App() {
     if (isLocalProvider(selectedProvider) && !apiKeyValue.trim()) {
       setApiKeyValue(localProviderPlaceholderKey(selectedProvider));
     }
-  }, [selectedProvider, selectedModelId, envDraft, savedEndpoints, apiKeyEnvTouched, endpointNameTouched]);
+  }, [selectedProvider, selectedModelId, envDraft, savedEndpoints, apiKeyEnvTouched, endpointNameTouched, codingPlanMode]);
 
   // When user switches provider via dropdown, reset auto-naming to follow the new provider.
   useEffect(() => {
@@ -1707,6 +1948,7 @@ export function App() {
     if (editModalOpen) return;
     setApiKeyEnvTouched(false);
     setEndpointNameTouched(false);
+    setCodingPlanMode(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerSlug]);
 
@@ -2417,6 +2659,7 @@ export function App() {
     setEditModalOpen(false);
     setEditModels([]);
     setSecretShown((m) => ({ ...m, __EDIT_EP_KEY: false }));
+    setCodingPlanMode(false);
   }
 
   async function doFetchEditModels() {
@@ -2966,6 +3209,20 @@ export function App() {
     setStatusLoading(true);
     setStatusError(null);
     try {
+      // ── Autostart / auto-update 状态查询（不依赖后端，放在公共路径） ──
+      try {
+        const en = await invoke<boolean>("autostart_is_enabled");
+        setAutostartEnabled(en);
+      } catch {
+        setAutostartEnabled(null);
+      }
+      try {
+        const au = await invoke<boolean>("get_auto_update");
+        setAutoUpdateEnabled(au);
+      } catch {
+        setAutoUpdateEnabled(null);
+      }
+
       // Verify the service is actually alive before trying HTTP API
       let serviceAlive = false;
       if (forceAliveCheck || serviceStatus?.running || effectiveDataMode === "remote") {
@@ -3195,20 +3452,6 @@ export function App() {
         setSkillSummary(null);
         setSkillsDetail(null);
       }
-
-      try {
-        const en = await invoke<boolean>("autostart_is_enabled");
-        setAutostartEnabled(en);
-      } catch {
-        setAutostartEnabled(null);
-      }
-      try {
-        const au = await invoke<boolean>("get_auto_update");
-        setAutoUpdateEnabled(au);
-      } catch {
-        setAutoUpdateEnabled(null);
-      }
-      // autoStartBackend 已合并到开机自启，不再单独获取
 
       // Local mode (HTTP not reachable): check PID-based service status
       // This is the fallback when the HTTP API is not alive.
@@ -3785,8 +4028,8 @@ export function App() {
 
     return (
       <>
-        {/* Banner: backend not running */}
-        {!serviceStatus?.running && effectiveWsId && (
+        {/* Banner: backend not running (hide during initial probe when serviceStatus is null) */}
+        {!serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
           <div style={{
             marginBottom: 16, padding: "16px 20px", borderRadius: 10,
             background: "linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%)",
@@ -3812,6 +4055,25 @@ export function App() {
             </button>
           </div>
         )}
+        {/* Banner: auto-starting backend (shown while serviceStatus is null and busy with auto-start) */}
+        {serviceStatus === null && !!busy && effectiveWsId && (
+          <div style={{
+            marginBottom: 16, padding: "16px 20px", borderRadius: 10,
+            background: "linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)",
+            border: "1px solid #90caf9",
+            display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+          }}>
+            <div className="spinner" style={{ width: 22, height: 22, flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#1565c0", marginBottom: 4 }}>
+                {busy}
+              </div>
+              <div style={{ fontSize: 13, color: "#1976d2", opacity: 0.85 }}>
+                {t("status.backendNotRunningHint")}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Top row: service + system info */}
         <div className="statusGrid3">
@@ -3819,17 +4081,17 @@ export function App() {
           <div className="statusCard">
             <div className="statusCardHead">
               <span className="statusCardLabel">{t("status.service")}</span>
-              {heartbeatState === "alive" ? <DotGreen /> : heartbeatState === "degraded" ? <DotYellow /> : heartbeatState === "suspect" ? <DotYellow /> : serviceStatus?.running ? <DotGreen /> : <DotGray />}
+              {serviceStatus === null ? <DotYellow /> : heartbeatState === "alive" ? <DotGreen /> : heartbeatState === "degraded" ? <DotYellow /> : heartbeatState === "suspect" ? <DotYellow /> : serviceStatus?.running ? <DotGreen /> : <DotGray />}
             </div>
             <div className="statusCardValue">
-              {heartbeatState === "degraded" ? t("status.unresponsive") : serviceStatus?.running ? t("topbar.running") : t("topbar.stopped")}
+              {serviceStatus === null ? (busy || t("topbar.starting")) : heartbeatState === "degraded" ? t("status.unresponsive") : serviceStatus?.running ? t("topbar.running") : t("topbar.stopped")}
               {serviceStatus?.pid ? <span className="statusCardSub"> PID {serviceStatus.pid}</span> : null}
             </div>
             <div className="statusCardActions">
-              {!serviceStatus?.running && effectiveWsId && (
+              {!serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
                 <button className="btnSmall btnSmallPrimary" onClick={async () => {
                   await startLocalServiceWithConflictCheck(effectiveWsId);
-                }} disabled={!!busy}>{t("topbar.start")}</button>
+                }} disabled={!!busy}>{busy || t("topbar.start")}</button>
               )}
               {serviceStatus?.running && effectiveWsId && (<>
                 <button className="btnSmall btnSmallDanger" onClick={async () => {
@@ -4904,12 +5166,31 @@ export function App() {
               {/* Provider */}
               <div className="dialogSection">
                 <div className="dialogLabel">{t("llm.provider")}</div>
-                <select value={providerSlug} onChange={(e) => setProviderSlug(e.target.value)}>
-                  {providers.length === 0 && <option value="">({t("common.loading")})</option>}
-                  {providers.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
-                </select>
+                <ProviderSearchSelect
+                  value={providerSlug}
+                  onChange={(v) => setProviderSlug(v)}
+                  options={providers.map((p) => ({ value: p.slug, label: p.name }))}
+                  placeholder={providers.length === 0 ? t("common.loading") : undefined}
+                  disabled={providers.length === 0}
+                />
                 {providerApplyUrl && <div className="help" style={{ marginTop: 6, paddingLeft: 2 }}>Key: <a href={providerApplyUrl} target="_blank" rel="noreferrer">{providerApplyUrl}</a></div>}
               </div>
+
+              {/* Coding Plan toggle — only shown when provider supports it */}
+              {selectedProvider?.coding_plan_base_url && (
+                <div className="dialogSection">
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={codingPlanMode}
+                      onChange={(e) => setCodingPlanMode(e.target.checked)}
+                      style={{ width: 16, height: 16, accentColor: "var(--brand)" }}
+                    />
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{t("llm.codingPlan")}</span>
+                  </label>
+                  <div className="help" style={{ marginTop: 4, paddingLeft: 24 }}>{t("llm.codingPlanHint")}</div>
+                </div>
+              )}
 
               {/* Base URL */}
               <div className="dialogSection">
@@ -5203,37 +5484,64 @@ export function App() {
               <div className="dialogBody">
               <div className="dialogSection">
                 <div className="dialogLabel">{t("llm.provider")}</div>
-                <select value={compilerProviderSlug} onChange={(e) => {
-                  const slug = e.target.value;
-                  setCompilerProviderSlug(slug);
-                  if (slug === "__custom__") {
-                    setCompilerApiType("openai");
-                    setCompilerBaseUrl("");
-                    setCompilerApiKeyEnv("CUSTOM_COMPILER_API_KEY");
-                    setCompilerApiKeyValue("");
-                  } else {
-                    const p = providers.find((x) => x.slug === slug);
-                    if (p) {
-                      setCompilerApiType((p.api_type as any) || "openai");
-                      setCompilerBaseUrl(p.default_base_url || "");
-                      const suggested = p.api_key_env_suggestion || envKeyFromSlug(p.slug);
-                      const used = new Set(Object.keys(envDraft || {}));
-                      for (const ep of [...savedEndpoints, ...savedCompilerEndpoints]) { if (ep.api_key_env) used.add(ep.api_key_env); }
-                      setCompilerApiKeyEnv(nextEnvKeyName(suggested, used));
-                      // 本地服务商自动填入 placeholder API Key
-                      if (isLocalProvider(p)) {
-                        setCompilerApiKeyValue(localProviderPlaceholderKey(p));
-                      } else {
-                        setCompilerApiKeyValue("");
+                <ProviderSearchSelect
+                  value={compilerProviderSlug}
+                  onChange={(slug) => {
+                    setCompilerProviderSlug(slug);
+                    setCompilerCodingPlan(false);
+                    if (slug === "__custom__") {
+                      setCompilerApiType("openai");
+                      setCompilerBaseUrl("");
+                      setCompilerApiKeyEnv("CUSTOM_COMPILER_API_KEY");
+                      setCompilerApiKeyValue("");
+                    } else {
+                      const p = providers.find((x) => x.slug === slug);
+                      if (p) {
+                        setCompilerApiType((p.api_type as any) || "openai");
+                        setCompilerBaseUrl(p.default_base_url || "");
+                        const suggested = p.api_key_env_suggestion || envKeyFromSlug(p.slug);
+                        const used = new Set(Object.keys(envDraft || {}));
+                        for (const ep of [...savedEndpoints, ...savedCompilerEndpoints]) { if (ep.api_key_env) used.add(ep.api_key_env); }
+                        setCompilerApiKeyEnv(nextEnvKeyName(suggested, used));
+                        if (isLocalProvider(p)) {
+                          setCompilerApiKeyValue(localProviderPlaceholderKey(p));
+                        } else {
+                          setCompilerApiKeyValue("");
+                        }
                       }
                     }
-                  }
-                }}>
-                  <option value="">--</option>
-                  {providers.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
-                  <option value="__custom__">{t("llm.customProvider")}</option>
-                </select>
+                  }}
+                  options={providers.map((p) => ({ value: p.slug, label: p.name }))}
+                  extraOptions={[{ value: "__custom__", label: t("llm.customProvider") }]}
+                />
               </div>
+              {/* Coding Plan toggle for compiler endpoint */}
+              {(() => { const cp = providers.find((x) => x.slug === compilerProviderSlug); return cp?.coding_plan_base_url ? (
+                <div className="dialogSection">
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={compilerCodingPlan}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setCompilerCodingPlan(on);
+                        if (cp) {
+                          if (on && cp.coding_plan_base_url) {
+                            setCompilerBaseUrl(cp.coding_plan_base_url);
+                            setCompilerApiType((cp.coding_plan_api_type as "openai" | "anthropic") || (cp.api_type as "openai" | "anthropic") || "openai");
+                          } else {
+                            setCompilerBaseUrl(cp.default_base_url || "");
+                            setCompilerApiType((cp.api_type as "openai" | "anthropic") || "openai");
+                          }
+                        }
+                      }}
+                      style={{ width: 16, height: 16, accentColor: "var(--brand)" }}
+                    />
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{t("llm.codingPlan")}</span>
+                  </label>
+                  <div className="help" style={{ marginTop: 4, paddingLeft: 24 }}>{t("llm.codingPlanHint")}</div>
+                </div>
+              ) : null; })()}
               <div className="dialogSection">
                 <div className="dialogLabel">{t("llm.baseUrl")}</div>
                 <input value={compilerBaseUrl} onChange={(e) => setCompilerBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" />
@@ -7020,6 +7328,10 @@ export function App() {
     if (cliCommands.length > 0) {
       taskDefs.push({ id: "cli", label: `注册 CLI 命令 (${cliCommands.join(", ")})`, status: "pending" });
     }
+    // 开机自启
+    if (obAutostart) {
+      taskDefs.push({ id: "autostart", label: t("onboarding.autostart.taskLabel"), status: "pending" });
+    }
     taskDefs.push({ id: "service-start", label: "启动后端服务", status: "pending" });
     taskDefs.push({ id: "http-wait", label: "等待 HTTP 服务就绪", status: "pending" });
     setObTasks(taskDefs);
@@ -7154,6 +7466,20 @@ export function App() {
         } catch (e) {
           log(`⚠ CLI 命令注册失败: ${String(e)}`);
           updateTask("cli", { status: "error", detail: String(e) });
+        }
+      }
+
+      // ── STEP: autostart ──
+      if (obAutostart) {
+        updateTask("autostart", { status: "running" });
+        try {
+          await invoke("autostart_set_enabled", { enabled: true });
+          setAutostartEnabled(true);
+          log(t("onboarding.autostart.success"));
+          updateTask("autostart", { status: "done" });
+        } catch (e) {
+          log(t("onboarding.autostart.fail") + ": " + String(e));
+          updateTask("autostart", { status: "error", detail: String(e).slice(0, 120) });
         }
       }
 
@@ -7432,9 +7758,9 @@ export function App() {
         return (
           <div className="obPage">
             <div className="obContent">
-              <h2 className="obStepTitle">终端命令注册</h2>
+              <h2 className="obStepTitle">{t("onboarding.system.title")}</h2>
               <p className="obStepDesc">
-                注册命令行工具后，可在终端中直接使用命令管理服务，无需打开桌面客户端。
+                {t("onboarding.system.desc")}
               </p>
 
               <div className="obModuleList">
@@ -7476,6 +7802,21 @@ export function App() {
                     <strong>添加到系统 PATH</strong>
                     <span className="obModuleDesc">新打开的终端中可直接输入命令名运行，无需完整路径</span>
                   </div>
+                </label>
+
+                {/* 开机自启 */}
+                <div style={{ borderTop: "1px solid #e2e8f0", margin: "8px 0" }} />
+                <label className={`obModuleItem`} style={obAutostart ? { borderColor: "#5B8DEF", background: "#f0f5ff" } : {}}>
+                  <input
+                    type="checkbox"
+                    checked={obAutostart}
+                    onChange={() => setObAutostart(!obAutostart)}
+                  />
+                  <div className="obModuleInfo">
+                    <strong>{t("onboarding.autostart.label")}</strong>
+                    <span className="obModuleDesc">{t("onboarding.autostart.desc")}</span>
+                  </div>
+                  <span className="obModuleBadge" style={{ background: "#e0e7ff", color: "#4f46e5" }}>{t("onboarding.autostart.recommended")}</span>
                 </label>
               </div>
 

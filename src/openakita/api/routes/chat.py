@@ -162,7 +162,13 @@ async def _stream_chat(
 
             if event_type == "tool_call_end" and event.get("tool") == "deliver_artifacts":
                 try:
-                    result_data = json.loads(event.get("result", "{}"))
+                    result_str = event.get("result", "{}")
+                    # tool_executor may append "\n\n[执行日志]:\n..." to the result,
+                    # which breaks JSON parsing — strip it before decoding.
+                    _log_marker = "\n\n[执行日志]"
+                    if _log_marker in result_str:
+                        result_str = result_str[: result_str.index(_log_marker)]
+                    result_data = json.loads(result_str)
                     for receipt in result_data.get("receipts", []):
                         if receipt.get("status") == "delivered" and receipt.get("file_url"):
                             yield _sse("artifact", {
@@ -173,8 +179,11 @@ async def _stream_chat(
                                 "caption": receipt.get("caption", ""),
                                 "size": receipt.get("size"),
                             })
-                except (json.JSONDecodeError, TypeError, KeyError):
-                    pass
+                except (json.JSONDecodeError, TypeError, KeyError) as _exc:
+                    logger.warning(
+                        f"[Chat API] Failed to parse deliver_artifacts result: {_exc} "
+                        f"| result_preview={event.get('result', '')[:200]}"
+                    )
 
         # --- Save assistant response to session ---
         assistant_text_to_save = _full_reply

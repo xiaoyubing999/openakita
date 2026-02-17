@@ -24,6 +24,9 @@
     "connectFail": "No running service detected. Ensure openakita serve is started.",
     "start": "Start",
     "starting": "Starting service...",
+    "autoStarting": "Auto-starting service...",
+    "autoStartSuccess": "Service auto-started successfully",
+    "autoStartFail": "Auto-start failed. Please start manually.",
     "startFail": "Service failed to start. Check config.",
     "disconnect": "Disconnect",
     "disconnected": "Disconnected from service"
@@ -451,6 +454,8 @@
     "capTools": "Tools",
     "baseUrl": "API URL",
     "baseUrlHint": "Modify when using a proxy or relay service",
+    "codingPlan": "Coding Plan",
+    "codingPlanHint": "Use the provider's Coding Plan dedicated endpoint and protocol",
     "advanced": "Advanced Options",
     "advancedParams": "Advanced Parameters",
     "compiler": "Prompt Compiler Model",
@@ -611,6 +616,18 @@
       "loading": "Detecting modules...",
       "installAndContinue": "Install & Continue",
       "skipAndContinue": "Skip, start now"
+    },
+    "system": {
+      "title": "CLI & System Settings",
+      "desc": "Register command-line tools and configure system options like auto-start."
+    },
+    "autostart": {
+      "label": "Launch at Startup",
+      "desc": "Automatically start the desktop app and backend service when you log in",
+      "recommended": "Recommended",
+      "taskLabel": "Enable auto-start",
+      "success": "✓ Auto-start enabled",
+      "fail": "⚠ Failed to enable auto-start"
     },
     "progress": {
       "title": "Setting up...",

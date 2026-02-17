@@ -2,7 +2,7 @@
 IM Channel 工具定义
 
 包含 IM 通道相关的工具：
-- deliver_artifacts: 通过网关交付附件并返回回执
+- deliver_artifacts: 通过网关交付附件并返回回执（支持跨通道发送）
 - get_voice_file: 获取语音文件
 - get_image_file: 获取图片文件
 - get_chat_history: 获取聊天历史
@@ -12,12 +12,12 @@ IM_CHANNEL_TOOLS = [
     {
         "name": "deliver_artifacts",
         "category": "IM Channel",
-        "description": "Deliver artifacts (files/images/voice) to current IM chat via gateway, returning a receipt. Use this as the only delivery proof for attachments.",
-        "detail": """通过网关向当前 IM 聊天交付附件（文件/图片/语音），并返回结构化回执（receipt）。
+        "description": "Deliver artifacts (files/images/voice) to an IM chat via gateway, returning a receipt. Supports cross-channel delivery via target_channel (e.g. send files from Desktop to Telegram). Use this as the only delivery proof for attachments.",
+        "detail": """通过网关交付附件（文件/图片/语音），并返回结构化回执（receipt）。
 
 ⚠️ **重要**：
 - 文本回复会由网关直接转发（不需要用工具发送）。
-- 附件交付必须使用本工具，并以回执作为“已交付”的唯一证据。
+- 附件交付必须使用本工具，并以回执作为"已交付"的唯一证据。
 
 输入说明：
 - artifacts: 要交付的附件清单（显式 manifest）
@@ -25,6 +25,8 @@ IM_CHANNEL_TOOLS = [
   - path: 本地文件路径
   - caption: 说明文字（可选）
   - mime/name/dedupe_key: 预留字段（可选）
+- target_channel（可选）: 目标 IM 通道名。指定后会将附件发送到该通道（如从桌面端发送文件到 telegram）。
+  不填则默认发送到当前通道（IM 模式）或返回文件 URL（桌面模式）。
 
 输出说明：
 - 返回 JSON 字符串，包含每个 artifact 的回执（receipt）：
@@ -36,7 +38,9 @@ IM_CHANNEL_TOOLS = [
 
 示例：
 - 发送截图：deliver_artifacts(artifacts=[{"type":"image","path":"data/temp/s.png","caption":"这是截图"}])
-- 发送文件：deliver_artifacts(artifacts=[{"type":"file","path":"data/out/report.md"}])""",
+- 发送文件：deliver_artifacts(artifacts=[{"type":"file","path":"data/out/report.md"}])
+- 跨通道发送：deliver_artifacts(artifacts=[{"type":"file","path":"data/out/report.docx"}], target_channel="telegram")
+- 从桌面发图到飞书：deliver_artifacts(artifacts=[{"type":"image","path":"data/temp/chart.png","caption":"图表"}], target_channel="feishu")""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -56,6 +60,10 @@ IM_CHANNEL_TOOLS = [
                         "required": ["type", "path"],
                     },
                     "minItems": 1,
+                },
+                "target_channel": {
+                    "type": "string",
+                    "description": "目标 IM 通道名（如 telegram/wework/feishu/dingtalk）。留空或不填则发送到当前通道（IM 模式）或桌面端（Desktop 模式）。",
                 },
                 "mode": {
                     "type": "string",

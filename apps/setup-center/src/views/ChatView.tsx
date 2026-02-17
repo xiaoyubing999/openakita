@@ -1325,11 +1325,14 @@ export function ChatView({
           setMessages(raw ? JSON.parse(raw) : []);
         } catch { setMessages([]); }
       }
+      // Switching conversations should also scroll instantly (not smooth)
+      isInitialScrollRef.current = true;
     }
     prevConvIdRef.current = activeConvId;
   }, [activeConvId]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const isInitialScrollRef = useRef(true); // first scroll should be instant, not smooth
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
@@ -1367,7 +1370,14 @@ export function ChatView({
 
   // ── 自动滚到底部 ──
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!messagesEndRef.current) return;
+    if (isInitialScrollRef.current) {
+      // Initial load: instant scroll so user immediately sees the latest messages
+      messagesEndRef.current.scrollIntoView({ behavior: "auto" });
+      isInitialScrollRef.current = false;
+    } else {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   // ── 思维链: 流式结束后自动折叠 ──
