@@ -374,12 +374,13 @@ function SearchSelect({
           ref={inputRef}
           value={displayValue}
           onChange={(e) => {
+            const v = e.target.value;
             if (hasOptions) {
-              setSearch(e.target.value);
+              setSearch(v);
               setOpen(true);
-            } else {
-              onChange(e.target.value);
             }
+            // 始终通知父组件，确保外部 value 与输入框内容同步
+            onChange(v);
           }}
           placeholder={placeholder}
           onFocus={() => { if (hasOptions) setOpen(true); }}
@@ -390,12 +391,11 @@ function SearchSelect({
               // 如果用户刚从下拉中选了一项，不要覆盖选择
               if (justSelected.current) {
                 justSelected.current = false;
+                setSearch("");
                 return;
               }
-              // 如果有未提交的搜索文本（用户手动输入了不在列表中的模型名），
-              // 将其提交为值。否则用户打字后点击其他地方，值不会更新。
-              if (hasOptions && search.trim() && search !== value) {
-                onChange(search.trim());
+              // onChange 已在每次键入时实时调用，这里只需清理搜索状态
+              if (hasOptions && search) {
                 setSearch("");
               }
             }, 150);
@@ -2479,12 +2479,11 @@ export function App() {
     }
     const compilerSelectedProvider = providers.find((p) => p.slug === compilerProviderSlug) || null;
     const isCompilerLocal = isLocalProvider(compilerSelectedProvider);
-    const effectiveCompApiKeyEnv = compilerApiKeyEnv.trim() || (isCompilerLocal ? (compilerSelectedProvider?.api_key_env_suggestion || envKeyFromSlug(compilerProviderSlug || "local")) : "");
+    // apiKeyEnv 兜底：即使用户没有手动编辑也能生成合理的环境变量名
+    const effectiveCompApiKeyEnv = compilerApiKeyEnv.trim()
+      || compilerSelectedProvider?.api_key_env_suggestion
+      || envKeyFromSlug(compilerProviderSlug || "custom");
     const effectiveCompApiKeyValue = compilerApiKeyValue.trim() || (isCompilerLocal ? localProviderPlaceholderKey(compilerSelectedProvider) : "");
-    if (!isCompilerLocal && !effectiveCompApiKeyEnv) {
-      setError("请填写编译端点的 API Key 环境变量名");
-      return false;
-    }
     if (!isCompilerLocal && !effectiveCompApiKeyValue) {
       setError("请填写编译端点的 API Key 值");
       return false;
@@ -2626,7 +2625,8 @@ export function App() {
       }
 
       if (effectiveSttApiKeyEnv && compilerApiKeyValue.trim()) {
-        await doSaveEnv({ [effectiveSttApiKeyEnv]: compilerApiKeyValue.trim() });
+        setEnvDraft((prev) => ({ ...prev, [effectiveSttApiKeyEnv]: compilerApiKeyValue.trim() }));
+        await saveEnvKeys([effectiveSttApiKeyEnv]);
       }
 
       const endpoint = {
@@ -2916,9 +2916,12 @@ export function App() {
     const isLocal = isLocalProvider(selectedProvider);
     // 本地服务商允许空 API Key（自动填入 placeholder）
     const effectiveApiKeyValue = apiKeyValue.trim() || (isLocal ? localProviderPlaceholderKey(selectedProvider) : "");
-    const effectiveApiKeyEnv = apiKeyEnv.trim() || (isLocal ? (selectedProvider?.api_key_env_suggestion || envKeyFromSlug(selectedProvider?.slug || "local")) : "");
-    if (!isLocal && (!effectiveApiKeyEnv || !effectiveApiKeyValue)) {
-      setError("请填写 API Key 环境变量名和值（会写入工作区 .env）");
+    // apiKeyEnv 兜底：即使 useEffect 未触发也能生成合理的环境变量名
+    const effectiveApiKeyEnv = apiKeyEnv.trim()
+      || selectedProvider?.api_key_env_suggestion
+      || envKeyFromSlug(selectedProvider?.slug || providerSlug || "custom");
+    if (!isLocal && !effectiveApiKeyValue) {
+      setError("请填写 API Key 值（会写入工作区 .env）");
       return false;
     }
     setBusy(isEditingEndpoint ? "更新端点配置..." : "写入端点配置...");
@@ -5486,9 +5489,27 @@ export function App() {
                   >
                     {connTesting ? t("llm.testTesting") : t("llm.testConnection")}
                   </button>
-                  <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { const ok = await doSaveEndpoint(); if (ok) { setAddEpDialogOpen(false); setConnTestResult(null); } }} disabled={!selectedModelId.trim() || (!apiKeyEnv.trim() && !isLocalProvider(selectedProvider)) || (!apiKeyValue.trim() && !isLocalProvider(selectedProvider)) || !baseUrl.trim() || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
-                    {isEditingEndpoint ? t("common.save") : t("llm.addEndpoint")}
-                  </button>
+                  {(() => {
+                    const _isLocal = isLocalProvider(selectedProvider);
+                    const missing: string[] = [];
+                    if (!baseUrl.trim()) missing.push("Base URL");
+                    if (!_isLocal && !apiKeyValue.trim()) missing.push("API Key");
+                    if (!selectedModelId.trim()) missing.push(t("status.model"));
+                    if (!currentWorkspaceId && dataMode !== "remote") missing.push(t("workspace.title") || "工作区");
+                    const btnDisabled = missing.length > 0 || !!busy;
+                    return (
+                      <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { const ok = await doSaveEndpoint(); if (ok) { setAddEpDialogOpen(false); setConnTestResult(null); } }} disabled={btnDisabled}>
+                          {isEditingEndpoint ? t("common.save") : t("llm.addEndpoint")}
+                        </button>
+                        {btnDisabled && !busy && missing.length > 0 && (
+                          <span style={{ fontSize: 11, color: "var(--muted)", maxWidth: 220, textAlign: "right" }}>
+                            {t("common.missingFields") || "缺少"}: {missing.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -5754,9 +5775,27 @@ export function App() {
                   >
                     {connTesting ? t("llm.testTesting") : t("llm.testConnection")}
                   </button>
-                  <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { const ok = await doSaveCompilerEndpoint(); if (ok) { setAddCompDialogOpen(false); setConnTestResult(null); } }} disabled={!compilerModel.trim() || (!compilerApiKeyEnv.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || (!compilerApiKeyValue.trim() && !isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug))) || (!currentWorkspaceId && dataMode !== "remote") || !!busy}>
-                    {t("llm.addEndpoint")}
-                  </button>
+                  {(() => {
+                    const _isCompLocal = isLocalProvider(providers.find((p) => p.slug === compilerProviderSlug));
+                    const cMissing: string[] = [];
+                    if (!compilerModel.trim()) cMissing.push(t("status.model"));
+                    if (!_isCompLocal && !compilerApiKeyEnv.trim()) cMissing.push("Key Env Name");
+                    if (!_isCompLocal && !compilerApiKeyValue.trim()) cMissing.push("API Key");
+                    if (!currentWorkspaceId && dataMode !== "remote") cMissing.push(t("workspace.title") || "工作区");
+                    const cBtnDisabled = cMissing.length > 0 || !!busy;
+                    return (
+                      <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        <button className="btnPrimary" style={{ padding: "8px 20px", borderRadius: 8 }} onClick={async () => { const ok = await doSaveCompilerEndpoint(); if (ok) { setAddCompDialogOpen(false); setConnTestResult(null); } }} disabled={cBtnDisabled}>
+                          {t("llm.addEndpoint")}
+                        </button>
+                        {cBtnDisabled && !busy && cMissing.length > 0 && (
+                          <span style={{ fontSize: 11, color: "var(--muted)", maxWidth: 220, textAlign: "right" }}>
+                            {t("common.missingFields") || "缺少"}: {cMissing.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

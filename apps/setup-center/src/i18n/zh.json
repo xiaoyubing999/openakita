@@ -546,6 +546,7 @@
     "search": "搜索",
     "noData": "暂无数据",
     "optional": "可选",
+    "missingFields": "缺少",
     "confirmDeleteMsg": "确定要删除",
     "custom": "自定义..."
   },
