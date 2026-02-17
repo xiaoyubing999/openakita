@@ -3221,6 +3221,7 @@ fn install_embedded_python_sync(
                     });
                     let idle = Duration::from_secs(IDLE_TIMEOUT_SECS);
                     let mut write_err: Option<String> = None;
+                    let mut reader_handle = Some(reader_handle);
                     loop {
                         match rx.recv_timeout(idle) {
                             Ok(Ok(chunk)) => {
@@ -3240,22 +3241,21 @@ fn install_embedded_python_sync(
                             Err(mpsc::RecvTimeoutError::Timeout) => {
                                 last_err = format!("下载无进度超时（{}s 内无数据），请检查网络", IDLE_TIMEOUT_SECS);
                                 drop(rx);
-                                let _ = reader_handle.join();
+                                if let Some(h) = reader_handle.take() { let _ = h.join(); }
                                 break;
                             }
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     }
+                    if let Some(h) = reader_handle.take() { let _ = h.join(); }
                     if let Some(e) = write_err {
                         last_err = e;
-                        let _ = reader_handle.join();
                         continue;
                     }
                     if last_err.contains("无进度超时") {
                         let _ = fs::remove_file(&archive_path);
                         continue;
                     }
-                    let _ = reader_handle.join();
                     append_to_onboarding_log(log_path, "[嵌入式 Python] 下载完成，正在解压...");
                     break;
                 }
