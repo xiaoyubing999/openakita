@@ -638,6 +638,8 @@ fn is_first_run() -> bool {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct EnvironmentCheck {
+    /// 实际检查的根目录路径，便于用户核对是否与已删除的目录一致（如以管理员运行可能为另一用户目录）
+    openakita_root: String,
     has_old_venv: bool,
     has_old_runtime: bool,
     has_old_workspaces: bool,
@@ -749,6 +751,7 @@ fn check_environment() -> EnvironmentCheck {
     let disk_usage_mb = dir_size_bytes(&root) / (1024 * 1024);
 
     EnvironmentCheck {
+        openakita_root: root.to_string_lossy().to_string(),
         has_old_venv,
         has_old_runtime,
         has_old_workspaces,

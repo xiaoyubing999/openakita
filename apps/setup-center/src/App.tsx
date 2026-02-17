@@ -946,6 +946,7 @@ export function App() {
   const [obInstallLog, setObInstallLog] = useState<string[]>([]);
   const [obInstalling, setObInstalling] = useState(false);
   const [obEnvCheck, setObEnvCheck] = useState<{
+    openakitaRoot: string;
     hasOldVenv: boolean; hasOldRuntime: boolean; hasOldWorkspaces: boolean;
     oldVersion: string | null; currentVersion: string; conflicts: string[];
     diskUsageMb: number; runningProcesses: string[];
@@ -7983,21 +7984,41 @@ export function App() {
               <img src={logoUrl} alt="OpenAkita" className="obLogo" />
               <h1 className="obTitle">{t("onboarding.welcome.title")}</h1>
               <p className="obDesc">{t("onboarding.welcome.desc")}</p>
-              {obEnvCheck && obEnvCheck.conflicts.length > 0 && (
-                <div className={
-                  obEnvCheck.conflicts.some(c => c.includes("失败") || c.includes("进程"))
-                    ? "obWarning"
-                    : "obInfo"
-                }>
-                  <strong>
-                    {obEnvCheck.conflicts.some(c => c.includes("失败") || c.includes("进程"))
-                      ? t("onboarding.welcome.envWarning")
-                      : t("onboarding.welcome.envCleaned")}
-                  </strong>
-                  <ul>
-                    {obEnvCheck.conflicts.map((c, i) => <li key={i}>{c}</li>)}
-                  </ul>
-                </div>
+              {obEnvCheck && (
+                <>
+                  {obEnvCheck.conflicts.length > 0 && (
+                    <div className={
+                      obEnvCheck.conflicts.some(c => c.includes("失败") || c.includes("进程"))
+                        ? "obWarning"
+                        : "obInfo"
+                    }>
+                      <strong>
+                        {obEnvCheck.conflicts.some(c => c.includes("失败") || c.includes("进程"))
+                          ? t("onboarding.welcome.envWarning")
+                          : t("onboarding.welcome.envCleaned")}
+                      </strong>
+                      <ul>
+                        {obEnvCheck.conflicts.map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                      <p className="obEnvCheckPath" style={{ marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                        检查路径: {obEnvCheck.openakitaRoot ?? "(未知)"}
+                      </p>
+                      <button
+                        type="button"
+                        className="btnSecondary"
+                        style={{ marginTop: 8 }}
+                        onClick={() => obLoadEnvCheck()}
+                      >
+                        重新检测环境
+                      </button>
+                    </div>
+                  )}
+                  {obEnvCheck.conflicts.length === 0 && (
+                    <p className="obEnvCheckPath" style={{ fontSize: 12, opacity: 0.75 }}>
+                      检查路径: {obEnvCheck.openakitaRoot ?? "(未知)"}
+                    </p>
+                  )}
+                </>
               )}
               {obDetectedService && (
                 <div className="obInfo" style={{ marginBottom: 12 }}>
