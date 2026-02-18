@@ -1189,11 +1189,14 @@ def serve():
         """写入一次心跳（原子写入：先写临时文件再重命名）"""
         try:
             _heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+            from openakita import __version__, __git_hash__
             data = {
                 "pid": os.getpid(),
                 "timestamp": time.time(),
                 "phase": _heartbeat_phase,
                 "http_ready": _heartbeat_http_ready,
+                "version": __version__,
+                "git_hash": __git_hash__,
             }
             tmp = _heartbeat_file.with_suffix(".heartbeat.tmp")
             tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -1240,10 +1243,15 @@ def serve():
         shutdown_triggered = False
         _heartbeat_phase = "initializing"
 
+        from openakita import __version__, __git_hash__, get_version_string
+        _version_str = get_version_string()
+        logger.info(f"OpenAkita {_version_str} starting...")
+
         mode_text = "多 Agent 协同模式" if is_orchestration_enabled() else "单 Agent 模式"
         console.print(
             Panel(
                 f"[bold]OpenAkita 服务模式[/bold]\n\n"
+                f"版本: {_version_str}\n"
                 f"模式: {mode_text}\n"
                 "只运行 IM 通道，不启动 CLI 交互。\n"
                 "按 Ctrl+C 停止服务。",

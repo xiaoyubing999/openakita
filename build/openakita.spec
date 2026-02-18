@@ -336,11 +336,21 @@ if providers_json.exists():
 _pyproject_path = PROJECT_ROOT / "pyproject.toml"
 if _pyproject_path.exists():
     import tomllib
+    import subprocess as _sp
     with open(_pyproject_path, "rb") as _f:
         _pyproject_version = tomllib.load(_f)["project"]["version"]
-    # Write a simple version file to bundle directory
+    # Capture git short hash at build time
+    _git_hash = "unknown"
+    try:
+        _git_hash = _sp.check_output(
+            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--short=7", "HEAD"],
+            stderr=_sp.DEVNULL, text=True
+        ).strip()
+    except Exception:
+        pass
+    # Write version+hash file: "1.22.7+823f46b"
     _version_file = SRC_DIR / "openakita" / "_bundled_version.txt"
-    _version_file.write_text(_pyproject_version, encoding="utf-8")
+    _version_file.write_text(f"{_pyproject_version}+{_git_hash}", encoding="utf-8")
     datas.append((str(_version_file), "openakita"))
 
 # Built-in Python interpreter + pip (bundled mode can install optional modules without host Python)

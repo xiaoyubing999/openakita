@@ -168,6 +168,17 @@ def _update_cargo_lock(version: str) -> bool:
     return changed
 
 
+def _update_bundled_version(version: str) -> bool:
+    """Update _bundled_version.txt with clean version (no git hash; hash is appended at build time)."""
+    path = ROOT / "src" / "openakita" / "_bundled_version.txt"
+    old = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    if old == version:
+        return False
+    path.write_text(version, encoding="utf-8", newline="\n")
+    print(f"src/openakita/_bundled_version.txt: {old} -> {version}")
+    return True
+
+
 def sync(version: str) -> int:
     version = _validate_version(version)
     changed_any = False
@@ -177,6 +188,7 @@ def sync(version: str) -> int:
     changed_any |= _update_json_version(ROOT / "apps/setup-center/src-tauri/tauri.conf.json", version)
     changed_any |= _update_cargo_toml(version)
     changed_any |= _update_cargo_lock(version)
+    changed_any |= _update_bundled_version(version)
 
     if not changed_any:
         print("OK: versions already in sync.")

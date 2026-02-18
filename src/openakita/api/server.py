@@ -62,10 +62,11 @@ def create_app(
 ) -> FastAPI:
     """Create the FastAPI application with all routes mounted."""
 
+    from openakita import get_version_string
     app = FastAPI(
         title="OpenAkita API",
         description="OpenAkita HTTP API for Chat, Health, Skills",
-        version="1.0.0",
+        version=get_version_string(),
     )
 
     # CORS: 允许 Setup Center (localhost) 访问
@@ -181,7 +182,8 @@ async def start_api_server(
             server_started.set()
 
     task = asyncio.create_task(_run())
-    logger.info(f"HTTP API server starting on http://{host}:{port}")
+    from openakita import get_version_string
+    logger.info(f"HTTP API server starting on http://{host}:{port} (version: {get_version_string()})")
 
     # 短暂等待确认服务器是否成功开始监听
     # uvicorn 启动监听通常在 1-2 秒内完成
