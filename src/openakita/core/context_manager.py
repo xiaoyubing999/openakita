@@ -57,6 +57,7 @@ class ContextManager:
 
     async def _cancellable_llm(self, **kwargs):
         """可被 cancel_event 中断的 LLM 调用（直接 await，不创建线程）"""
+        logger.debug("[ContextManager] _cancellable_llm 发起 LLM 调用")
         coro = self._brain.messages_create_async(**kwargs)
         if not self._cancel_event:
             return await coro
@@ -72,7 +73,9 @@ class ContextManager:
             except (asyncio.CancelledError, Exception):
                 pass
         if task in done:
+            logger.debug("[ContextManager] _cancellable_llm LLM 调用完成")
             return task.result()
+        logger.info("[ContextManager] _cancellable_llm 被用户取消")
         raise _CancelledError("Context compression cancelled by user")
 
     def get_max_context_tokens(self) -> int:

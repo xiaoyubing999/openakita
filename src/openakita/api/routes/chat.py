@@ -266,11 +266,13 @@ async def chat_cancel(request: Request, body: ChatControlRequest):
     agent = getattr(request.app.state, "agent", None)
     actual_agent = _resolve_agent(agent) if agent else None
     if actual_agent is None:
+        logger.warning("[Chat API] Cancel failed: Agent not initialized")
         return {"status": "error", "message": "Agent not initialized"}
 
     reason = body.reason or "用户从聊天界面取消任务"
+    logger.info(f"[Chat API] Cancel 接收到请求: reason={reason!r}")
     actual_agent.cancel_current_task(reason)
-    logger.info(f"[Chat API] Cancel requested: {reason}")
+    logger.info(f"[Chat API] Cancel 执行完成: reason={reason!r}")
     return {"status": "ok", "action": "cancel", "reason": reason}
 
 
@@ -298,30 +300,33 @@ async def chat_insert(request: Request, body: ChatControlRequest):
     agent = getattr(request.app.state, "agent", None)
     actual_agent = _resolve_agent(agent) if agent else None
     if actual_agent is None:
+        logger.warning("[Chat API] Insert failed: Agent not initialized")
         return {"status": "error", "message": "Agent not initialized"}
 
     if not body.message:
         return {"status": "error", "message": "Message is required for insert"}
 
-    # Classify the message: stop/skip commands should not be inserted as text
+    logger.info(f"[Chat API] Insert 接收到消息: {body.message[:80]!r}")
     msg_type = actual_agent.classify_interrupt(body.message)
+    logger.info(f"[Chat API] Insert 分类结果: msg_type={msg_type!r}, message={body.message[:60]!r}")
 
     if msg_type == "stop":
         reason = f"用户发送停止指令: {body.message}"
+        logger.info(f"[Chat API] Insert -> STOP: reason={reason!r}")
         actual_agent.cancel_current_task(reason)
-        logger.info(f"[Chat API] Insert reclassified as STOP: {body.message[:60]}")
+        logger.info(f"[Chat API] Insert -> STOP 执行完成")
         return {"status": "ok", "action": "cancel", "reason": reason}
 
     if msg_type == "skip":
         reason = f"用户发送跳过指令: {body.message}"
         ok = actual_agent.skip_current_step(reason)
-        logger.info(f"[Chat API] Insert reclassified as SKIP: {body.message[:60]}")
+        logger.info(f"[Chat API] Insert -> SKIP: reason={reason!r}, ok={ok}")
         if not ok:
             return {"status": "warning", "action": "skip", "reason": reason, "message": "No active task to skip"}
         return {"status": "ok", "action": "skip", "reason": reason}
 
     ok = await actual_agent.insert_user_message(body.message)
-    logger.info(f"[Chat API] Insert requested: {body.message[:60]}")
+    logger.info(f"[Chat API] Insert 作为普通消息: ok={ok}, message={body.message[:60]!r}")
     if not ok:
         return {"status": "warning", "action": "insert", "message": "No active task, message dropped"}
     return {"status": "ok", "action": "insert", "message": body.message[:100]}

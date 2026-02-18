@@ -405,17 +405,33 @@ class Brain:
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
         conversation_id = kwargs.get("conversation_id")
 
+        logger.info(
+            f"[Brain] messages_create_async called: msg_count={len(llm_messages)}, "
+            f"max_tokens={max_tokens}, use_thinking={use_thinking}, "
+            f"tools_count={len(llm_tools) if llm_tools else 0}, model_kwarg={kwargs.get('model', 'N/A')}"
+        )
+
         req_id = self._dump_llm_request(system, llm_messages, llm_tools, caller="messages_create_async")
 
-        response = await self._llm_client.chat(
-            messages=llm_messages,
-            system=system,
-            tools=llm_tools,
-            max_tokens=max_tokens,
-            enable_thinking=use_thinking,
-            thinking_depth=thinking_depth,
-            conversation_id=conversation_id,
-        )
+        try:
+            response = await self._llm_client.chat(
+                messages=llm_messages,
+                system=system,
+                tools=llm_tools,
+                max_tokens=max_tokens,
+                enable_thinking=use_thinking,
+                thinking_depth=thinking_depth,
+                conversation_id=conversation_id,
+            )
+            _choices = getattr(response, 'choices', None) or []
+            _content = getattr(response, 'content', None) or []
+            logger.info(
+                f"[Brain] messages_create_async success: "
+                f"choices={len(_choices)}, content_blocks={len(_content)}"
+            )
+        except Exception as e:
+            logger.error(f"[Brain] messages_create_async FAILED: {type(e).__name__}: {e}")
+            raise
 
         self._dump_llm_response(response, caller="messages_create_async", request_id=req_id)
         return self._convert_response_to_anthropic(response)

@@ -1805,16 +1805,31 @@ export function ChatView({
               case "heartbeat":
                 continue;
               case "user_insert": {
-                // 后端回传用户的插入消息（如停止/跳过指令），确保显示为用户气泡。
-                // 检查是否已存在（handleInsertMessage 可能已先行添加），避免重复。
                 const insertContent = (event.content || "").trim();
                 if (insertContent) {
                   setMessages((prev) => {
-                    const alreadyExists = prev.some(
+                    const assistantIdx = prev.findIndex((m) => m.id === assistantMsg.id);
+                    const existingIdx = prev.findIndex(
                       (m) => m.role === "user" && m.content === insertContent && Date.now() - m.timestamp < 10000
                     );
-                    if (alreadyExists) return prev;
-                    return [...prev, { id: genId(), role: "user" as const, content: insertContent, timestamp: Date.now() }];
+
+                    if (existingIdx >= 0 && assistantIdx >= 0 && existingIdx > assistantIdx) {
+                      const newArr = [...prev];
+                      const [moved] = newArr.splice(existingIdx, 1);
+                      const newAIdx = newArr.findIndex((m) => m.id === assistantMsg.id);
+                      if (newAIdx >= 0) newArr.splice(newAIdx, 0, moved);
+                      return newArr;
+                    }
+
+                    if (existingIdx >= 0) return prev;
+
+                    const userMsg = { id: genId(), role: "user" as const, content: insertContent, timestamp: Date.now() };
+                    if (assistantIdx >= 0) {
+                      const newArr = [...prev];
+                      newArr.splice(assistantIdx, 0, userMsg);
+                      return newArr;
+                    }
+                    return [...prev, userMsg];
                   });
                 }
                 continue;

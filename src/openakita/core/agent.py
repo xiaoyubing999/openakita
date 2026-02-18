@@ -3809,6 +3809,7 @@ NEXT: 建议的下一步（如有）"""
 
         当 cancel_event 先于 LLM 返回被 set() 时，抛出 UserCancelledError。
         """
+        logger.info(f"[CancellableLLM] 发起可取消 LLM 调用, cancel_event.is_set={cancel_event.is_set()}")
         llm_task = asyncio.create_task(
             self.brain.messages_create_async(**kwargs)
         )
@@ -3827,10 +3828,13 @@ NEXT: 建议的下一步（如有）"""
                 pass
 
         if llm_task in done:
+            logger.info("[CancellableLLM] LLM 调用先完成，正常返回")
             return llm_task.result()
         else:
+            reason = self._cancel_reason or "用户请求停止"
+            logger.info(f"[CancellableLLM] cancel_event 先触发，抛出 UserCancelledError: {reason!r}")
             raise UserCancelledError(
-                reason=self._cancel_reason or "用户请求停止",
+                reason=reason,
                 source="llm_call",
             )
 
@@ -3856,7 +3860,11 @@ NEXT: 建议的下一步（如有）"""
         cancel_reason = self._cancel_reason or "用户请求停止"
         default_farewell = "✅ 好的，已停止当前任务。"
 
-        # 将中断信息注入上下文，让 LLM 知道发生了什么
+        logger.info(
+            f"[StopTask][CancelFarewell] 进入收尾流程: cancel_reason={cancel_reason!r}, "
+            f"model={current_model}, msg_count={len(working_messages)}"
+        )
+
         cancel_msg = (
             f"[系统通知] 用户发送了停止指令「{cancel_reason}」，"
             "请立即停止当前操作，简要告知用户已停止以及当前进度（1~2 句话即可）。"
@@ -3864,10 +3872,11 @@ NEXT: 建议的下一步（如有）"""
         )
         working_messages.append({"role": "user", "content": cancel_msg})
 
-        # 短超时 LLM 调用，让模型生成有上下文的收尾
-        # 使用 async 版本直接在主事件循环中调用 LLM，避免 asyncio.to_thread
-        # 创建新事件循环导致 httpx 连接池竞争（前一个被取消的请求仍占用连接）
         farewell_text = default_farewell
+        logger.info(
+            f"[StopTask][CancelFarewell] 发起 LLM 收尾调用 (timeout=5s), "
+            f"working_messages count={len(working_messages)}"
+        )
         try:
             response = await asyncio.wait_for(
                 self.brain.messages_create_async(
@@ -3879,15 +3888,28 @@ NEXT: 建议的下一步（如有）"""
                 ),
                 timeout=5.0,
             )
+            logger.info(
+                f"[StopTask][CancelFarewell] LLM 调用返回, "
+                f"content_blocks={len(response.content)}, "
+                f"stop_reason={getattr(response, 'stop_reason', 'N/A')}"
+            )
             for block in response.content:
+                logger.debug(
+                    f"[StopTask][CancelFarewell] block type={block.type}, "
+                    f"text={getattr(block, 'text', '')[:80]!r}"
+                )
                 if block.type == "text" and block.text.strip():
                     farewell_text = block.text.strip()
                     break
-            logger.info(f"[StopTask] LLM farewell: {farewell_text[:100]}")
+            logger.info(f"[StopTask][CancelFarewell] LLM farewell 成功: {farewell_text[:120]}")
         except (TimeoutError, asyncio.TimeoutError):
-            logger.warning("[StopTask] LLM farewell timed out (5s), using default")
+            logger.warning("[StopTask][CancelFarewell] LLM farewell 超时 (5s)，使用默认文本")
         except Exception as e:
-            logger.warning(f"[StopTask] LLM farewell failed: {e}, using default")
+            logger.error(
+                f"[StopTask][CancelFarewell] LLM farewell 失败: "
+                f"{type(e).__name__}: {e}，使用默认文本",
+                exc_info=True,
+            )
 
         self._persist_cancel_to_context(cancel_reason, farewell_text)
         return farewell_text
@@ -4807,14 +4829,19 @@ NEXT: 建议的下一步（如有）"""
         Args:
             reason: 取消原因
         """
-        if hasattr(self, "agent_state") and self.agent_state:
+        has_state = hasattr(self, "agent_state") and self.agent_state
+        has_task = has_state and self.agent_state.current_task is not None
+        task_status = self.agent_state.current_task.status.value if has_task else "N/A"
+        logger.info(
+            f"[StopTask] cancel_current_task 被调用: reason={reason!r}, "
+            f"has_state={has_state}, has_task={has_task}, task_status={task_status}"
+        )
+
+        if has_state:
             self.agent_state.cancel_task(reason)
 
-        # 取消活跃计划（标记为 cancelled，不挂在输入框上面）
         try:
             from ..tools.handlers.plan import cancel_plan
-            # 尝试取消当前可能存在的活跃计划
-            # session_id 可能来自多种场景，遍历所有已注册的 plan
             from ..tools.handlers.plan import _session_active_plans
             for sid in list(_session_active_plans.keys()):
                 if cancel_plan(sid):
@@ -4822,7 +4849,7 @@ NEXT: 建议的下一步（如有）"""
         except Exception as e:
             logger.warning(f"[StopTask] Failed to cancel plan: {e}")
 
-        logger.info(f"[StopTask] Task cancellation requested: {reason}")
+        logger.info(f"[StopTask] Task cancellation completed: {reason}")
 
     def is_stop_command(self, message: str) -> bool:
         """

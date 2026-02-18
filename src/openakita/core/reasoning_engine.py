@@ -2027,18 +2027,21 @@ class ReasoningEngine:
         """流式场景下的取消收尾：注入中断上下文，发起轻量 LLM 调用，流式输出收尾文本。
 
         Yields:
-            {"type": "text_delta", "content": "..."} 事件
+            {"type": "user_insert", ...} 和 {"type": "text_delta", ...} 事件
         """
         cancel_reason = (state.cancel_reason if state else "") or "用户请求停止"
+        logger.info(
+            f"[ReAct-Stream][CancelFarewell] 进入收尾流程: cancel_reason={cancel_reason!r}, "
+            f"model={current_model}, msg_count={len(working_messages)}"
+        )
 
-        # 将用户的原始停止指令文字通过 SSE 回传给前端，
-        # 确保前端一定能显示用户的插入消息（兜底 handleInsertMessage 的 setMessages 竞争问题）
         user_text = ""
         if cancel_reason.startswith("用户发送停止指令: "):
             user_text = cancel_reason[len("用户发送停止指令: "):]
         elif cancel_reason.startswith("用户发送跳过指令: "):
             user_text = cancel_reason[len("用户发送跳过指令: "):]
         if user_text:
+            logger.info(f"[ReAct-Stream][CancelFarewell] 回传用户指令文本: {user_text!r}")
             yield {"type": "user_insert", "content": user_text}
 
         cancel_msg = (
@@ -2049,6 +2052,10 @@ class ReasoningEngine:
         working_messages.append({"role": "user", "content": cancel_msg})
 
         farewell_text = "✅ 好的，已停止当前任务。"
+        logger.info(
+            f"[ReAct-Stream][CancelFarewell] 发起 LLM 收尾调用 (timeout=5s), "
+            f"working_messages count={len(working_messages)}"
+        )
         try:
             farewell_response = await asyncio.wait_for(
                 self._brain.messages_create_async(
@@ -2060,16 +2067,30 @@ class ReasoningEngine:
                 ),
                 timeout=5.0,
             )
+            logger.info(
+                f"[ReAct-Stream][CancelFarewell] LLM 调用返回, "
+                f"content_blocks={len(farewell_response.content)}, "
+                f"stop_reason={getattr(farewell_response, 'stop_reason', 'N/A')}"
+            )
             for block in farewell_response.content:
+                logger.debug(
+                    f"[ReAct-Stream][CancelFarewell] block type={block.type}, "
+                    f"text={getattr(block, 'text', '')[:80]!r}"
+                )
                 if block.type == "text" and block.text.strip():
                     farewell_text = block.text.strip()
                     break
-            logger.info(f"[ReAct-Stream][StopTask] LLM farewell: {farewell_text[:100]}")
+            logger.info(f"[ReAct-Stream][CancelFarewell] LLM farewell 成功: {farewell_text[:120]}")
         except (TimeoutError, asyncio.TimeoutError):
-            logger.warning("[ReAct-Stream][StopTask] LLM farewell timed out (5s)")
+            logger.warning("[ReAct-Stream][CancelFarewell] LLM farewell 超时 (5s)，使用默认文本")
         except Exception as e:
-            logger.warning(f"[ReAct-Stream][StopTask] LLM farewell failed: {e}")
+            logger.error(
+                f"[ReAct-Stream][CancelFarewell] LLM farewell 失败: "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
 
+        logger.info(f"[ReAct-Stream][CancelFarewell] 最终输出文本: {farewell_text[:120]}")
         chunk_size = 20
         for i in range(0, len(farewell_text), chunk_size):
             yield {"type": "text_delta", "content": farewell_text[i:i + chunk_size]}

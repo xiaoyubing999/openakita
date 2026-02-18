@@ -154,13 +154,18 @@ class TaskState:
 
     def cancel(self, reason: str = "用户请求停止") -> None:
         """取消任务，同时触发 cancel_event 通知所有等待方"""
+        prev_status = self.status.value if hasattr(self.status, "value") else str(self.status)
         self.cancelled = True
         self.cancel_reason = reason
         self.cancel_event.set()
-        # 允许从任何活跃状态取消
         if self.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.IDLE):
             self.status = TaskStatus.CANCELLED
-            logger.info(f"[State] Task {self.task_id[:8]} cancelled: {reason}")
+        logger.info(
+            f"[State] Task {self.task_id[:8]} cancel(): "
+            f"prev_status={prev_status}, new_status={self.status.value}, "
+            f"cancel_event.is_set={self.cancel_event.is_set()}, "
+            f"reason={reason!r}"
+        )
 
     def request_skip(self, reason: str = "用户请求跳过当前步骤") -> None:
         """请求跳过当前正在执行的工具/步骤（不终止整个任务）"""
