@@ -3166,6 +3166,9 @@ search_github → install_skill → 使用
         self._current_session = None
         self.agent_state.current_session = None
         self._current_task_monitor = None
+        # 重置任务状态，避免已取消/已完成的任务泄漏到下一次会话
+        if self.agent_state.current_task and not self.agent_state.current_task.is_active:
+            self.agent_state.reset_task()
 
     async def chat_with_session(
         self,
@@ -3206,10 +3209,18 @@ search_github → install_skill → 使用
             logger.info(f"[StopTask] User requested to stop: {message}")
             return "✅ 好的，已停止当前任务。有什么其他需要帮助的吗？"
 
-        # 重置 skip_event 和 pending_user_inserts（清空上轮残留）
+        # 清理上一轮残留的任务状态（尤其是 cancelled 标志），防止新任务被误判为已取消
         if self.agent_state and self.agent_state.current_task:
-            self.agent_state.current_task.clear_skip()
-            await self.agent_state.current_task.drain_user_inserts()
+            if self.agent_state.current_task.cancelled or not self.agent_state.current_task.is_active:
+                logger.info(
+                    f"[Session:{session_id}] Resetting stale task "
+                    f"(cancelled={self.agent_state.current_task.cancelled}, "
+                    f"status={self.agent_state.current_task.status.value})"
+                )
+                self.agent_state.reset_task()
+            else:
+                self.agent_state.current_task.clear_skip()
+                await self.agent_state.current_task.drain_user_inserts()
 
         # 解析 conversation_id
         self._current_session_id = session_id
@@ -3328,10 +3339,18 @@ search_github → install_skill → 使用
             yield {"type": "done"}
             return
 
-        # 重置 skip_event 和 pending_user_inserts（清空上轮残留）
+        # 清理上一轮残留的任务状态（尤其是 cancelled 标志），防止新任务被误判为已取消
         if self.agent_state and self.agent_state.current_task:
-            self.agent_state.current_task.clear_skip()
-            await self.agent_state.current_task.drain_user_inserts()
+            if self.agent_state.current_task.cancelled or not self.agent_state.current_task.is_active:
+                logger.info(
+                    f"[Session:{session_id}] Resetting stale task "
+                    f"(cancelled={self.agent_state.current_task.cancelled}, "
+                    f"status={self.agent_state.current_task.status.value})"
+                )
+                self.agent_state.reset_task()
+            else:
+                self.agent_state.current_task.clear_skip()
+                await self.agent_state.current_task.drain_user_inserts()
 
         # 解析 conversation_id
         self._current_session_id = session_id

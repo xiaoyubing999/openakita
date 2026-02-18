@@ -401,13 +401,23 @@ class ReasoningEngine:
         self._last_exit_reason = "normal"
 
         state = self._state.current_task
-        if not state or not state.is_active:
+        if not state or not state.is_active or state.cancelled:
             state = self._state.begin_task()
         elif state.status == TaskStatus.ACTING:
             logger.warning(
                 f"[State] Previous task stuck in {state.status.value}, force resetting for new message"
             )
             state = self._state.begin_task()
+
+        # 安全校验：begin_task 返回的 state 不应携带取消标志
+        if state.cancelled:
+            logger.error(
+                f"[State] CRITICAL: fresh task {state.task_id[:8]} has cancelled=True, "
+                f"reason={state.cancel_reason!r}. Force clearing."
+            )
+            state.cancelled = False
+            state.cancel_reason = ""
+            state.cancel_event = asyncio.Event()
 
         self._context_manager.set_cancel_event(state.cancel_event)
 
@@ -1050,13 +1060,23 @@ class ReasoningEngine:
 
         # Task state
         state = self._state.current_task
-        if not state or not state.is_active:
+        if not state or not state.is_active or state.cancelled:
             state = self._state.begin_task()
         elif state.status == TaskStatus.ACTING:
             logger.warning(
                 f"[State] Previous task stuck in {state.status.value}, force resetting for new message"
             )
             state = self._state.begin_task()
+
+        # 安全校验：begin_task 返回的 state 不应携带取消标志
+        if state.cancelled:
+            logger.error(
+                f"[State] CRITICAL: fresh task {state.task_id[:8]} has cancelled=True, "
+                f"reason={state.cancel_reason!r}. Force clearing."
+            )
+            state.cancelled = False
+            state.cancel_reason = ""
+            state.cancel_event = asyncio.Event()
 
         self._context_manager.set_cancel_event(state.cancel_event)
 

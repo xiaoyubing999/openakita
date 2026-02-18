@@ -298,6 +298,8 @@ class AgentState:
         """
         开始新任务，创建 TaskState。
 
+        始终先清理旧任务再创建新任务，避免已取消/已完成的任务状态泄漏到新任务。
+
         Args:
             session_id: 会话 ID
             conversation_id: 对话 ID
@@ -306,11 +308,19 @@ class AgentState:
         Returns:
             新创建的 TaskState
         """
-        if self.current_task and self.current_task.is_active:
-            logger.warning(
-                f"[State] Starting new task while previous task {self.current_task.task_id[:8]} "
-                f"is still {self.current_task.status.value}. Force resetting."
-            )
+        if self.current_task:
+            old_status = self.current_task.status.value
+            old_cancelled = self.current_task.cancelled
+            if self.current_task.is_active:
+                logger.warning(
+                    f"[State] Starting new task while previous task {self.current_task.task_id[:8]} "
+                    f"is still {old_status}. Force resetting."
+                )
+            else:
+                logger.info(
+                    f"[State] Cleaning up previous task {self.current_task.task_id[:8]} "
+                    f"(status={old_status}, cancelled={old_cancelled}) before new task"
+                )
             self.reset_task()
 
         self.current_task = TaskState(
@@ -318,7 +328,10 @@ class AgentState:
             session_id=session_id,
             conversation_id=conversation_id,
         )
-        logger.debug(f"[State] New task created: {self.current_task.task_id[:8]}")
+        logger.info(
+            f"[State] New task created: {self.current_task.task_id[:8]} "
+            f"(cancelled={self.current_task.cancelled})"
+        )
         return self.current_task
 
     def reset_task(self) -> None:

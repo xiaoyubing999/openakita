@@ -2171,6 +2171,13 @@ export function ChatView({
 
   const handleInsertMessage = useCallback((text: string) => {
     if (!text.trim()) return;
+    // 将用户插入的文字显示为用户消息气泡（包括停止/跳过等指令）
+    setMessages((prev) => [...prev, {
+      id: genId(),
+      role: "user" as const,
+      content: text.trim(),
+      timestamp: Date.now(),
+    }]);
     // All classification is handled by the backend classify_interrupt endpoint;
     // the backend will route stop/skip commands to cancel/skip handlers automatically.
     // 不需要前端断 SSE——后端会通过 SSE 流发送 LLM 收尾/响应 + done 事件。
