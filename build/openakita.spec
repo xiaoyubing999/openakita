@@ -348,8 +348,8 @@ if _pyproject_path.exists():
         ).strip()
     except Exception:
         pass
-    # Write version+hash file: "1.22.7+823f46b"
-    _version_file = SRC_DIR / "openakita" / "_bundled_version.txt"
+    # Write version+hash to build dir (not source tree) so local builds don't dirty git
+    _version_file = PROJECT_ROOT / "build" / "_bundled_version.txt"
     _version_file.write_text(f"{_pyproject_version}+{_git_hash}", encoding="utf-8")
     datas.append((str(_version_file), "openakita"))
 

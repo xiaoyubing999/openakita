@@ -405,7 +405,7 @@ MODEL_CAPABILITIES = {
         },
     },
     "minimax": {
-        # MiniMax 官方
+        # MiniMax 官方（不支持 /v1/models 端点）
         "minimax-m2.1": {
             "text": True,
             "vision": False,
