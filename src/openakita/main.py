@@ -403,6 +403,7 @@ async def start_im_channels(agent_or_master):
         # 透传 Agent 的中断控制方法，供 Gateway 中断检测使用
         if master._local_agent:
             _la = master._local_agent
+            agent_handler._agent_ref = _la
             agent_handler.is_stop_command = _la.is_stop_command
             agent_handler.is_skip_command = _la.is_skip_command
             agent_handler.classify_interrupt = _la.classify_interrupt
@@ -435,6 +436,7 @@ async def start_im_channels(agent_or_master):
                 return f"❌ 处理出错: {str(e)}"
 
         # 透传 Agent 的中断控制方法，供 Gateway 中断检测使用
+        agent_handler._agent_ref = agent
         agent_handler.is_stop_command = agent.is_stop_command
         agent_handler.is_skip_command = agent.is_skip_command
         agent_handler.classify_interrupt = agent.classify_interrupt

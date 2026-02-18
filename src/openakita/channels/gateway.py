@@ -919,8 +919,30 @@ class MessageGateway:
 
                 # 会话隔离校验：只有当 agent 正在处理本会话的任务时，
                 # cancel/skip/insert 操作才应生效（防止 A 用户误杀 B 用户的任务）
-                _agent_session = getattr(self.agent_handler, "_current_session_id", None) if self.agent_handler else None
-                _session_matches = _agent_session and session_key.endswith(_agent_session)
+                #
+                # agent_handler 是函数闭包，_current_session_id 在 Agent 实例上，
+                # 需要通过 _agent_ref 间接获取。
+                # session_key 格式: "telegram:1241684312:tg_1241684312"
+                # _current_session_id 格式: "telegram_1241684312_20260219_xxx"
+                # 两者都包含 channel 和 raw_user_id，通过提取 user_id 进行匹配。
+                _agent_ref = getattr(self.agent_handler, "_agent_ref", None) if self.agent_handler else None
+                _agent_session = getattr(_agent_ref, "_current_session_id", None) if _agent_ref else None
+
+                _session_matches = False
+                if _agent_session:
+                    _interrupt_parts = session_key.split(":")
+                    _interrupt_user = _interrupt_parts[1] if len(_interrupt_parts) >= 2 else ""
+                    _interrupt_channel = _interrupt_parts[0] if _interrupt_parts else ""
+                    _session_matches = (
+                        bool(_interrupt_user)
+                        and _interrupt_user in _agent_session
+                        and _agent_session.startswith(_interrupt_channel)
+                    )
+
+                logger.debug(
+                    f"[Interrupt] Session check: agent_session={_agent_session!r}, "
+                    f"interrupt_key={session_key!r}, matches={_session_matches}"
+                )
 
                 if self.agent_handler and _session_matches:
                     msg_type = self.agent_handler.classify_interrupt(user_text)
@@ -956,10 +978,11 @@ class MessageGateway:
                             f"[Interrupt] INSERT handled for {session_key}: {user_text[:50]}"
                         )
                 elif self.agent_handler and not _session_matches:
-                    # Agent 正在处理其他会话的任务，不执行中断操作
+                    # Agent 不在处理当前用户的任务（可能空闲或在处理其他用户）
                     await self._add_interrupt_message(session_key, message)
                     logger.info(
-                        f"[Interrupt] Session mismatch (agent={_agent_session}, interrupt={session_key}), "
+                        f"[Interrupt] Session mismatch: agent_session={_agent_session!r}, "
+                        f"interrupt_key={session_key!r}, agent_ref={'present' if _agent_ref else 'None'}, "
                         f"queued for later: {user_text[:50]}"
                     )
                 else:
