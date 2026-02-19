@@ -178,9 +178,14 @@ def _apply_source_env(source: ModelSource) -> None:
 
 
 def _sync_hf_hub_endpoint(endpoint: str) -> None:
-    """同步 huggingface_hub 内部已缓存的 HF_ENDPOINT 常量。
+    """同步 huggingface_hub 内部已缓存的 endpoint 常量。
 
-    如果 huggingface_hub 尚未导入则跳过（后续首次导入会从 os.environ 读取）。
+    huggingface_hub 在模块导入时将 HF_ENDPOINT 环境变量缓存到模块常量，
+    后续修改 os.environ 不会影响缓存值。必须直接 patch 模块属性。
+
+    不同版本的属性名不同:
+    - >=0.25: constants.ENDPOINT (不带 HF_ 前缀)
+    - 旧版本: constants.HF_ENDPOINT
     """
     import sys
 
@@ -188,14 +193,16 @@ def _sync_hf_hub_endpoint(endpoint: str) -> None:
     if hub_mod is None:
         return
 
-    # patch constants 模块
     constants = getattr(hub_mod, "constants", None)
-    if constants is not None and hasattr(constants, "HF_ENDPOINT"):
-        constants.HF_ENDPOINT = endpoint
+    if constants is not None:
+        for attr in ("ENDPOINT", "HF_ENDPOINT"):
+            if hasattr(constants, attr):
+                setattr(constants, attr, endpoint)
+                logger.debug(f"[ModelHub] 已同步 huggingface_hub.constants.{attr}={endpoint}")
 
-    # 部分版本在 huggingface_hub 顶层也导出了 HF_ENDPOINT
-    if hasattr(hub_mod, "HF_ENDPOINT"):
-        hub_mod.HF_ENDPOINT = endpoint
+    for attr in ("ENDPOINT", "HF_ENDPOINT"):
+        if hasattr(hub_mod, attr):
+            setattr(hub_mod, attr, endpoint)
 
 
 def _resolve_source(source: str | ModelSource) -> ModelSource:
