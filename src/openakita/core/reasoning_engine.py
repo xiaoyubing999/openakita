@@ -2763,7 +2763,68 @@ class ReasoningEngine:
         return new_model, new_messages
 
     # 最大模型切换次数（防止死循环）
-    MAX_MODEL_SWITCHES = 5
+    MAX_MODEL_SWITCHES = 2
+
+    # 跨模型切换的全局重试上限：达到后立即终止并告知用户
+    MAX_TOTAL_LLM_RETRIES = 3
+
+    @staticmethod
+    def _strip_heavy_content(messages: list[dict]) -> tuple[list[dict], bool]:
+        """从消息中剥离重型多媒体内容（视频/大 data URL），替换为文字描述。
+
+        Returns:
+            (处理后的消息列表, 是否有内容被剥离)
+        """
+        DATA_URL_SIZE_THRESHOLD = 5 * 1024 * 1024  # 5MB
+        stripped = False
+        result = []
+
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+
+            new_parts = []
+            for part in content:
+                part_type = part.get("type", "")
+
+                if part_type == "video_url":
+                    url = (part.get("video_url") or {}).get("url", "")
+                    if len(url) > DATA_URL_SIZE_THRESHOLD:
+                        new_parts.append({
+                            "type": "text",
+                            "text": "[视频内容已移除：视频文件过大，超过 API data-uri 限制。请发送更小的视频文件。]",
+                        })
+                        stripped = True
+                        continue
+
+                elif part_type == "video":
+                    source = part.get("source", {})
+                    data = source.get("data", "")
+                    if len(data) > DATA_URL_SIZE_THRESHOLD:
+                        new_parts.append({
+                            "type": "text",
+                            "text": "[视频内容已移除：视频文件过大，超过 API data-uri 限制。请发送更小的视频文件。]",
+                        })
+                        stripped = True
+                        continue
+
+                elif part_type == "image_url":
+                    url = (part.get("image_url") or {}).get("url", "")
+                    if len(url) > DATA_URL_SIZE_THRESHOLD:
+                        new_parts.append({
+                            "type": "text",
+                            "text": "[图片内容已移除：文件过大，超过 API 限制。]",
+                        })
+                        stripped = True
+                        continue
+
+                new_parts.append(part)
+
+            result.append({**msg, "content": new_parts})
+
+        return result, stripped
 
     def _handle_llm_error(
         self,
@@ -2781,24 +2842,69 @@ class ReasoningEngine:
             (new_model, new_messages) - 切换模型
             None - 重新抛出
         """
+        from ..llm.types import AllEndpointsFailedError
+
         if not task_monitor:
             return None
 
+        # ── 全局重试计数器（跨模型切换） ──
+        # 无论错误类型，总重试次数达到上限即终止并告知用户。
+        total_retries = getattr(state, '_total_llm_retries', 0) + 1
+        state._total_llm_retries = total_retries
+
+        if total_retries > self.MAX_TOTAL_LLM_RETRIES:
+            logger.error(
+                f"[ReAct] Global retry limit reached ({total_retries}/{self.MAX_TOTAL_LLM_RETRIES}). "
+                f"Aborting and notifying user. Last error: {str(error)[:200]}"
+            )
+            return None
+
+        # ── 方案 A+B: 结构性错误快速熔断 ──
+        if isinstance(error, AllEndpointsFailedError) and error.is_structural:
+            already_stripped = getattr(state, '_structural_content_stripped', False)
+
+            if not already_stripped:
+                stripped_messages, did_strip = self._strip_heavy_content(working_messages)
+                if did_strip:
+                    logger.warning(
+                        "[ReAct] Structural API error detected. "
+                        "Stripping heavy content (video/large attachments) "
+                        "and retrying once with degraded content."
+                    )
+                    state._structural_content_stripped = True
+                    working_messages.clear()
+                    working_messages.extend(stripped_messages)
+                    llm_client = getattr(self._brain, "_llm_client", None)
+                    if llm_client:
+                        llm_client.reset_all_cooldowns(include_structural=True)
+                    return "retry"
+
+            logger.error(
+                f"[ReAct] Structural API error, cannot recover "
+                f"(content already stripped={already_stripped}). "
+                f"Aborting. Error: {str(error)[:200]}"
+            )
+            return None
+
+        # ── 常规错误：TaskMonitor 重试链 ──
         should_retry = task_monitor.record_error(str(error))
 
         if should_retry:
-            logger.info(f"[LLM] Will retry (attempt {task_monitor.retry_count})")
+            logger.info(
+                f"[LLM] Will retry (attempt {task_monitor.retry_count}, "
+                f"global {total_retries}/{self.MAX_TOTAL_LLM_RETRIES})"
+            )
             return "retry"
 
-        # --- 熔断：超过最大模型切换次数时终止，防止死循环 ---
+        # --- 熔断：超过最大模型切换次数时终止 ---
         switch_count = getattr(state, '_model_switch_count', 0) + 1
         state._model_switch_count = switch_count
         if switch_count > self.MAX_MODEL_SWITCHES:
             logger.error(
                 f"[ReAct] Exceeded max model switches ({self.MAX_MODEL_SWITCHES}), "
-                f"aborting to prevent infinite loop. Last error: {str(error)[:200]}"
+                f"aborting. Last error: {str(error)[:200]}"
             )
-            return None  # 终止循环
+            return None
 
         # --- 检查 fallback 是否与当前模型实际相同 ---
         new_model = task_monitor.fallback_model
@@ -2809,7 +2915,7 @@ class ReasoningEngine:
                 f"[ModelSwitch] Fallback model '{new_model}' resolves to same endpoint "
                 f"as current '{current_model}' ({resolved}), aborting retry loop"
             )
-            return None  # 切换目标与当前相同，无意义，终止循环
+            return None
 
         self._switch_llm_endpoint(new_model, reason=f"LLM error fallback: {error}")
         task_monitor.switch_model(new_model, "LLM 调用失败后切换", reset_context=True)

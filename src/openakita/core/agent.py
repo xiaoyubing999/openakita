@@ -3171,6 +3171,11 @@ search_github → install_skill → 使用
         conversation_id = self._resolve_conversation_id(session, session_id)
         self._current_conversation_id = conversation_id
 
+        # 用户主动发新消息 → 无条件清除所有端点冷却期，不让上一轮的错误阻塞本轮
+        llm_client = getattr(self.brain, "_llm_client", None)
+        if llm_client:
+            llm_client.reset_all_cooldowns(force_all=True)
+
         im_tokens = None
         try:
             # === 共享准备 ===
@@ -3302,6 +3307,11 @@ search_github → install_skill → 使用
         self._current_session_id = session_id
         conversation_id = self._resolve_conversation_id(session, session_id)
         self._current_conversation_id = conversation_id
+
+        # 用户主动发新消息 → 无条件清除所有端点冷却期
+        llm_client = getattr(self.brain, "_llm_client", None)
+        if llm_client:
+            llm_client.reset_all_cooldowns(force_all=True)
 
         im_tokens = None
         _reply_text = ""
@@ -4118,8 +4128,10 @@ NEXT: 建议的下一步（如有）"""
         delivery_receipts: list[dict] = []
 
         # === 模型切换熔断（与 ReasoningEngine.MAX_MODEL_SWITCHES 对齐） ===
-        MAX_TASK_MODEL_SWITCHES = 5
+        MAX_TASK_MODEL_SWITCHES = 2
         _task_switch_count = 0  # 模型切换次数计数器
+        _total_llm_retries = 0  # 全局重试计数（跨模型切换）
+        MAX_TOTAL_LLM_RETRIES = 3
 
         # === C7: 重构循环检测 ===
         # 不设硬上限，改为 LLM 自检 + 真正重复模式检测 + 极端安全阈值（提醒用户）
@@ -4337,14 +4349,50 @@ NEXT: 建议的下一步（如有）"""
             except Exception as e:
                 logger.error(f"[LLM] Brain call failed: {e}")
 
+                # ── 全局重试计数 ──
+                _total_llm_retries += 1
+                if _total_llm_retries > MAX_TOTAL_LLM_RETRIES:
+                    logger.error(
+                        f"[CLI] Global retry limit reached ({_total_llm_retries}/{MAX_TOTAL_LLM_RETRIES}), "
+                        f"aborting: {str(e)[:200]}"
+                    )
+                    return (
+                        f"❌ 调用失败，已重试 {MAX_TOTAL_LLM_RETRIES} 次仍无法恢复。\n"
+                        f"错误: {str(e)[:200]}\n"
+                        "💡 你可以直接重新发送消息来重试。"
+                    )
+
+                # ── 结构性错误快速熔断 ──
+                from .reasoning_engine import ReasoningEngine
+                from ..llm.types import AllEndpointsFailedError as _AEFE
+                if isinstance(e, _AEFE) and e.is_structural:
+                    _already = getattr(self, '_cli_structural_stripped', False)
+                    if not _already:
+                        stripped, did_strip = ReasoningEngine._strip_heavy_content(working_messages)
+                        if did_strip:
+                            logger.warning("[CLI] Structural error: stripping heavy content, retrying once")
+                            self._cli_structural_stripped = True
+                            working_messages.clear()
+                            working_messages.extend(stripped)
+                            llm_client = getattr(self.brain, "_llm_client", None)
+                            if llm_client:
+                                llm_client.reset_all_cooldowns(include_structural=True)
+                            continue
+                    logger.error(f"[CLI] Structural error, aborting: {str(e)[:200]}")
+                    return (
+                        f"❌ API 请求格式错误，无法恢复。请检查附件大小或格式。\n"
+                        f"错误: {str(e)[:200]}\n"
+                        "💡 你可以直接重新发送消息来重试。"
+                    )
+
                 # 记录错误并判断是否应该重试
                 if task_monitor:
                     should_retry = task_monitor.record_error(str(e))
 
                     if should_retry:
-                        # 继续重试，跳过这次迭代
                         logger.info(
-                            f"[LLM] Will retry (attempt {task_monitor.retry_count}/{task_monitor.retry_before_switch})"
+                            f"[LLM] Will retry (attempt {task_monitor.retry_count}, "
+                            f"global {_total_llm_retries}/{MAX_TOTAL_LLM_RETRIES})"
                         )
                         try:
                             await self._cancellable_await(asyncio.sleep(2), _cancel_event)
@@ -4362,9 +4410,9 @@ NEXT: 建议的下一步（如有）"""
                                 f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
                             )
                             return (
-                                "❌ 任务失败：所有模型均不可用，已达到最大切换次数。\n"
-                                "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
-                                "如果是配额耗尽，充值后即可恢复。"
+                                "❌ 调用失败，已尝试多个模型仍无法恢复。\n"
+                                f"错误: {str(e)[:200]}\n"
+                                "💡 你可以直接重新发送消息来重试。"
                             )
 
                         new_model = task_monitor.fallback_model
@@ -5327,10 +5375,10 @@ NEXT: 建议的下一步（如有）"""
         recent_tool_calls: list[str] = []  # 记录最近的工具调用
         max_repeated_calls = 3  # 连续相同调用超过此次数则强制结束
 
-        # 模型切换熔断：与 ReasoningEngine.MAX_MODEL_SWITCHES 对齐
-        # 防止并行任务路径因所有模型不可用而无限循环切换
-        MAX_TASK_MODEL_SWITCHES = 5
+        MAX_TASK_MODEL_SWITCHES = 2
         _task_switch_count = 0
+        _total_llm_retries = 0
+        MAX_TOTAL_LLM_RETRIES = 3
 
         # 追问计数器：当 LLM 没有调用工具时，最多追问几次
         no_tool_call_count = 0
@@ -5369,9 +5417,8 @@ NEXT: 建议的下一步（如有）"""
                             f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
                         )
                         return (
-                            f"❌ 任务失败：已尝试切换 {MAX_TASK_MODEL_SWITCHES} 次模型，所有模型均不可用。\n"
-                            "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
-                            "如果是配额耗尽，充值后即可恢复。"
+                            f"❌ 任务执行失败，已尝试多个模型仍无法恢复。\n"
+                            "💡 你可以直接重新发送来重试。"
                         )
 
                     new_model = task_monitor.fallback_model
@@ -5454,12 +5501,49 @@ NEXT: 建议的下一步（如有）"""
                 except Exception as e:
                     logger.error(f"[LLM] Brain call failed in task {task.id}: {e}")
 
+                    # ── 全局重试计数 ──
+                    _total_llm_retries += 1
+                    if _total_llm_retries > MAX_TOTAL_LLM_RETRIES:
+                        logger.error(
+                            f"[Task:{task.id}] Global retry limit reached "
+                            f"({_total_llm_retries}/{MAX_TOTAL_LLM_RETRIES}), aborting"
+                        )
+                        return (
+                            f"❌ 任务执行失败，已重试 {MAX_TOTAL_LLM_RETRIES} 次仍无法恢复。\n"
+                            f"错误: {str(e)[:200]}\n"
+                            "💡 你可以直接重新发送来重试。"
+                        )
+
+                    # ── 结构性错误快速熔断 ──
+                    from .reasoning_engine import ReasoningEngine
+                    from ..llm.types import AllEndpointsFailedError as _AEFE
+                    if isinstance(e, _AEFE) and e.is_structural:
+                        _already = getattr(self, '_task_structural_stripped', False)
+                        if not _already:
+                            stripped, did_strip = ReasoningEngine._strip_heavy_content(messages)
+                            if did_strip:
+                                logger.warning(f"[Task:{task.id}] Structural error: stripping heavy content, retrying once")
+                                self._task_structural_stripped = True
+                                messages.clear()
+                                messages.extend(stripped)
+                                llm_client = getattr(self.brain, "_llm_client", None)
+                                if llm_client:
+                                    llm_client.reset_all_cooldowns(include_structural=True)
+                                continue
+                        logger.error(f"[Task:{task.id}] Structural error, aborting: {str(e)[:200]}")
+                        return (
+                            f"❌ API 请求格式错误，无法恢复。\n"
+                            f"错误: {str(e)[:200]}\n"
+                            "💡 你可以直接重新发送来重试。"
+                        )
+
                     # 记录错误并判断是否应该重试
                     should_retry = task_monitor.record_error(str(e))
 
                     if should_retry:
                         logger.info(
-                            f"[LLM] Will retry (attempt {task_monitor.retry_count}/{task_monitor.retry_before_switch})"
+                            f"[LLM] Will retry (attempt {task_monitor.retry_count}, "
+                            f"global {_total_llm_retries}/{MAX_TOTAL_LLM_RETRIES})"
                         )
                         try:
                             await self._cancellable_await(asyncio.sleep(2), _cancel_event)
@@ -5469,8 +5553,6 @@ NEXT: 建议的下一步（如有）"""
                             )
                         continue
                     else:
-                        # 重试次数用尽，切换模型（per-conversation override）
-                        # 熔断检查：防止无限模型切换循环
                         _task_switch_count += 1
                         if _task_switch_count > MAX_TASK_MODEL_SWITCHES:
                             logger.error(
@@ -5478,9 +5560,9 @@ NEXT: 建议的下一步（如有）"""
                                 f"({MAX_TASK_MODEL_SWITCHES}), aborting task"
                             )
                             return (
-                                f"❌ 任务失败：已尝试切换 {MAX_TASK_MODEL_SWITCHES} 次模型，所有模型均不可用。\n"
-                                "💡 建议：请检查 API Key 是否正确、账户余额是否充足、网络连接是否正常。"
-                                f"如果是配额耗尽，充值后即可恢复。\n最后错误: {e}"
+                                f"❌ 任务执行失败，已尝试多个模型仍无法恢复。\n"
+                                f"错误: {str(e)[:200]}\n"
+                                "💡 你可以直接重新发送来重试。"
                             )
 
                         new_model = task_monitor.fallback_model

@@ -255,7 +255,7 @@ class LLMRecorder:
         return response
 
     def _save(self, messages: list, kwargs: dict, response: LLMResponse) -> None:
-        msg_hash = _hash_messages(messages)
+        msg_hash = _hash_messages([self._serialize_msg(m) for m in messages])
         recording = {
             "messages_hash": msg_hash,
             "messages": [self._serialize_msg(m) for m in messages],

@@ -586,7 +586,9 @@ class UnsupportedMediaError(LLMError):
 class AllEndpointsFailedError(LLMError):
     """所有端点都失败"""
 
-    pass
+    def __init__(self, message: str, *, is_structural: bool = False):
+        super().__init__(message)
+        self.is_structural = is_structural
 
 
 class ConfigurationError(LLMError):

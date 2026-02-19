@@ -14,17 +14,18 @@ from ..types import EndpointConfig, LLMRequest, LLMResponse
 logger = logging.getLogger(__name__)
 
 # 冷静期时长（秒）- 按错误类型区分
-COOLDOWN_AUTH = 300       # 认证错误: 5 分钟（持久性问题，短时间内不会自愈）
-COOLDOWN_QUOTA = 60       # 配额耗尽: 1 分钟（用户充值后恢复很快，不宜过长）
-COOLDOWN_STRUCTURAL = 120  # 结构性错误: 2 分钟（消息格式问题，需上层修复）
-COOLDOWN_TRANSIENT = 30    # 瞬时错误: 30 秒（超时/连接失败，很可能快速恢复）
-COOLDOWN_DEFAULT = 180     # 默认: 3 分钟（向后兼容）
-COOLDOWN_GLOBAL_FAILURE = 10  # 全局故障（所有端点同时失败）: 10 秒
+# 设计原则：冷却只防止秒级连续轰炸，不阻塞其他会话；
+# 重试上限由上层（TaskMonitor / ReasoningEngine）控制，
+# 超过 3 次即终止并告知用户，用户重新发送即可重试。
+COOLDOWN_AUTH = 60         # 认证错误: 1 分钟（需要人工干预，但不宜锁太久）
+COOLDOWN_QUOTA = 20        # 配额耗尽: 20 秒
+COOLDOWN_STRUCTURAL = 10   # 结构性错误: 10 秒（上层会快速识别处理）
+COOLDOWN_TRANSIENT = 5     # 瞬时错误: 5 秒（超时/连接失败，很可能快速恢复）
+COOLDOWN_DEFAULT = 30      # 默认: 30 秒
+COOLDOWN_GLOBAL_FAILURE = 3  # 全局故障（所有端点同时失败）: 3 秒
 
-# 渐进式冷静期退避 —— 替代旧的 1 小时升级冷静期
-# 连续失败时，冷静期从 COOLDOWN_ESCALATION_STEPS 按次数递增，上限 5 分钟
-# 对齐 LiteLLM/Portkey 行业实践：避免过长冷静期锁死端点
-COOLDOWN_ESCALATION_STEPS = [30, 60, 120, 300]  # 30s -> 1min -> 2min -> 5min(上限)
+# 渐进式冷静期退避 —— 连续失败时按次数递增，上限 1 分钟
+COOLDOWN_ESCALATION_STEPS = [5, 10, 20, 60]  # 5s -> 10s -> 20s -> 60s(上限)
 
 # 向后兼容（旧代码引用）
 COOLDOWN_EXTENDED = COOLDOWN_ESCALATION_STEPS[-1]  # 300s，旧的 3600 已废弃
@@ -110,11 +111,11 @@ class LLMProvider(ABC):
         Args:
             error: 错误信息
             category: 错误分类，影响冷静期时长
-                - "auth": 认证错误 (300s)
-                - "quota": 配额耗尽 (1800s)
-                - "structural": 结构性/格式错误 (120s)
-                - "transient": 超时/连接错误 (30s)
-                - "": 默认 (180s)
+                - "auth": 认证错误 (60s)
+                - "quota": 配额耗尽 (20s)
+                - "structural": 结构性/格式错误 (10s)
+                - "transient": 超时/连接错误 (5s)
+                - "": 默认 (30s)
             is_local: 是否为本地端点（Ollama 等），本地端点 transient
                 错误不参与渐进升级（超时是资源不足，非远程故障）
 

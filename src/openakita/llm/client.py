@@ -629,7 +629,8 @@ class LLMClient:
                     hint = _friendly_error_hint(structural)
                     raise AllEndpointsFailedError(
                         f"All endpoints failed with structural errors "
-                        f"(cooldown {min_cd}s). {hint} Last error: {last_err}"
+                        f"(cooldown {min_cd}s). {hint} Last error: {last_err}",
+                        is_structural=True,
                     )
 
                 # ── 全部是配额/认证错误，重试无意义 → 快速报错 ──
@@ -829,6 +830,8 @@ class LLMClient:
 
         errors = []
         failed_providers: list[LLMProvider] = []  # 跟踪本次调用中失败的端点
+        for p in providers:
+            p._content_error = False
         retry_count = self._settings.get("retry_count", 2)
         retry_delay = self._settings.get("retry_delay_seconds", 2)
         retry_same_first = self._settings.get("retry_same_endpoint_first", False)
@@ -927,6 +930,33 @@ class LLMClient:
                     )
 
                     if is_non_retryable:
+                        # 区分内容级错误 vs 端点级错误：
+                        # 内容级错误（请求 payload 有问题）不应给端点加冷却，
+                        # 否则会殃及其他正常会话。
+                        _content_error_patterns = [
+                            "exceeded limit",
+                            "max bytes",
+                            "payload too large",
+                            "request entity too large",
+                            "content too large",
+                            "maximum context length",
+                            "too many tokens",
+                            "string too long",
+                        ]
+                        _is_content_error = any(
+                            p in error_str.lower() for p in _content_error_patterns
+                        )
+
+                        if _is_content_error:
+                            logger.error(
+                                f"[LLM] endpoint={provider.name} content-level error detected "
+                                f"(NOT cooling down endpoint): {error_str[:200]}"
+                            )
+                            errors.append(f"{provider.name}: {error_str}")
+                            failed_providers.append(provider)
+                            provider._content_error = True
+                            break
+
                         logger.error(
                             f"[LLM] endpoint={provider.name} non-retryable structural error detected, "
                             f"skipping remaining retries. Error: {error_str[:200]}"
@@ -1002,8 +1032,13 @@ class LLMClient:
             )
 
         hint = _friendly_error_hint(failed_providers)
+        has_content_error = any(getattr(fp, '_content_error', False) for fp in failed_providers)
+        all_structural = has_content_error or all(
+            fp.error_category == "structural" for fp in failed_providers
+        )
         raise AllEndpointsFailedError(
-            f"All endpoints failed: {'; '.join(errors)}\n{hint}"
+            f"All endpoints failed: {'; '.join(errors)}\n{hint}",
+            is_structural=all_structural,
         )
 
     def _has_images(self, messages: list[Message]) -> bool:
@@ -1070,20 +1105,23 @@ class LLMClient:
                             return True
         return False
 
-    def reset_all_cooldowns(self):
-        """重置所有端点冷静期
+    def reset_all_cooldowns(self, *, include_structural: bool = False, force_all: bool = False):
+        """重置端点冷静期
 
-        用于全局故障恢复场景：当检测到网络已恢复时，
-        立即清除所有瞬时错误的冷静期，让端点可以立即被使用。
+        Args:
+            include_structural: 同时重置结构性错误的冷静期。
+            force_all: 无条件重置所有端点冷静期（用户主动重试时使用）。
         """
         reset_count = 0
         for name, provider in self._providers.items():
-            if not provider.is_healthy and provider.error_category == "transient":
-                provider.reset_cooldown()
-                reset_count += 1
-                logger.info(f"[LLM] endpoint={name} cooldown reset (global recovery)")
+            if not provider.is_healthy:
+                cat = provider.error_category
+                if force_all or cat == "transient" or (include_structural and cat == "structural"):
+                    provider.reset_cooldown()
+                    reset_count += 1
+                    logger.info(f"[LLM] endpoint={name} cooldown reset (category={cat}, force_all={force_all})")
         if reset_count:
-            logger.info(f"[LLM] Reset cooldowns for {reset_count} transient-error endpoints")
+            logger.info(f"[LLM] Reset cooldowns for {reset_count} endpoints")
         return reset_count
 
     async def health_check(self) -> dict[str, bool]:
