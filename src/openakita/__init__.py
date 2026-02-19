@@ -55,7 +55,7 @@ def _resolve_version_info() -> tuple[str, str]:
         import subprocess
         git_hash = subprocess.check_output(
             ["git", "-C", str(project_root), "rev-parse", "--short=7", "HEAD"],
-            stderr=subprocess.DEVNULL, text=True
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
         ).strip()
     except Exception:
         git_hash = "dev"

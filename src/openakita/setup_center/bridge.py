@@ -12,6 +12,8 @@ Setup Center Bridge
 
 from __future__ import annotations
 
+import openakita._ensure_utf8  # noqa: F401  # isort: skip
+
 import argparse
 import asyncio
 import json
@@ -20,24 +22,6 @@ import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
-
-
-def _ensure_utf8_stdout() -> None:
-    """确保 stdout 使用 UTF-8 编码（Windows 防御）。
-
-    bridge 作为独立入口 (python -m openakita.setup_center.bridge) 运行，
-    不经过 __main__.py，需要自行处理编码。
-    Tauri 端虽然会设置 PYTHONUTF8=1，但手动调用时可能没有。
-    """
-    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-        try:
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
 
 
 def _json_print(obj: Any) -> None:
@@ -454,6 +438,8 @@ def ensure_channel_deps(workspace_dir: str) -> None:
             pip_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=180,
         )
         if result.returncode == 0:
@@ -569,6 +555,8 @@ def install_skill(workspace_dir: str, url: str) -> None:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     elif url.startswith("http://") or url.startswith("https://"):
         skill_name = url.rstrip("/").split("/")[-1].replace(".git", "")
@@ -580,6 +568,8 @@ def install_skill(workspace_dir: str, url: str) -> None:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     elif _looks_like_github_shorthand(url):
         # GitHub 简写格式: "owner/repo@skill-name" 或 "owner/repo"
@@ -610,6 +600,8 @@ def install_skill(workspace_dir: str, url: str) -> None:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
             # 优先查找 skills/<skill_name> 子目录（常见的多技能仓库布局）
@@ -736,8 +728,6 @@ def get_skill_config(workspace_dir: str, skill_name: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    _ensure_utf8_stdout()
-
     argv = list(sys.argv[1:] if argv is None else argv)
 
     p = argparse.ArgumentParser(prog="openakita.setup_center.bridge")

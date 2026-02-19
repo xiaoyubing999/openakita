@@ -87,8 +87,8 @@ class SubprocessBridge:
         import os
 
         env = os.environ.copy()
-        # 确保子进程 Python 使用 UTF-8 编码 stdout/stderr，
-        # 防止 json.dumps(ensure_ascii=False) 输出非 ASCII 时因 GBK 编码崩溃
+        # _ensure_utf8 已在父进程设置了这些环境变量，os.environ.copy() 会继承。
+        # 这里保留 setdefault 作为防御，以防本模块在 _ensure_utf8 之前被使用。
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         if env_extra:
@@ -124,7 +124,7 @@ class SubprocessBridge:
                     return {"success": True, "data": out_text}
             return {"success": True, "data": None}
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"success": False, "error": f"子进程执行超时 ({timeout}s)"}
         except Exception as e:
             return {"success": False, "error": f"子进程执行异常: {e}"}
@@ -232,7 +232,7 @@ asyncio.run(main())
                 return {"success": False, "error": info["error"]}
             info["process"] = proc
             return {"success": True, "data": info}
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             return {"success": False, "error": "Playwright CDP 服务启动超时"}
         except Exception as e:

@@ -41,7 +41,7 @@ def api_request(url: str, method: str = "GET", token: str | None = None) -> dict
         with urllib.request.urlopen(req, timeout=30) as resp:
             if resp.status == 204:  # No Content (successful delete)
                 return None
-            return json.loads(resp.read().decode())
+            return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         print(f"  Error {e.code}: {e.reason}", file=sys.stderr)
         return None

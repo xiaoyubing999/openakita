@@ -57,8 +57,8 @@ class ColoredConsoleHandler(logging.StreamHandler):
 
     def __init__(self, stream: TextIO = None):
         output_stream = stream or sys.stdout
-        # Windows 下强制将 stdout/stderr 重新包装为 UTF-8 编码，
-        # 防止 GBK 默认编码无法输出 emoji 等 Unicode 字符。
+        # 双保险：即使 _ensure_utf8 已全局 reconfigure stdout，这里仍对 handler 自身
+        # 的 stream 做 UTF-8 包装，防止 logging 在 _ensure_utf8 导入之前初始化的极端场景。
         if sys.platform == "win32" and hasattr(output_stream, "buffer"):
             import io
 

@@ -59,7 +59,7 @@ def fetch_json(url: str, token: str | None = None) -> dict:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def find_asset(assets: list[dict], platform_config: dict) -> dict | None:
@@ -102,7 +102,7 @@ def find_sig_content(assets: list[dict], asset_name: str) -> str | None:
                     headers["Authorization"] = f"Bearer {token}"
                 req = urllib.request.Request(asset["url"], headers=headers)
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    return resp.read().decode().strip()
+                    return resp.read().decode("utf-8").strip()
             except Exception as e:
                 print(f"Warning: could not download sig for {asset_name}: {e}", file=sys.stderr)
                 return None
@@ -148,7 +148,7 @@ def main():
             # Try to read from local file (CI artifact)
             local_sig = asset["name"] + ".sig"
             if os.path.exists(local_sig):
-                with open(local_sig) as f:
+                with open(local_sig, encoding="utf-8") as f:
                     sig = f.read().strip()
 
         if not sig:

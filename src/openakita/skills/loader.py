@@ -331,6 +331,8 @@ class SkillLoader:
                 cwd=cwd or skill.skill_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
 
