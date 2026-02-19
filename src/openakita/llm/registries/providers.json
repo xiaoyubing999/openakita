@@ -248,6 +248,16 @@
     "registry_class": "OpenAIRegistry"
   },
   {
+    "name": "NVIDIA NIM (Build API)",
+    "slug": "nvidia-nim",
+    "api_type": "openai",
+    "default_base_url": "https://integrate.api.nvidia.com/v1",
+    "api_key_env_suggestion": "NVIDIA_API_KEY",
+    "supports_model_list": true,
+    "supports_capability_api": false,
+    "registry_class": "OpenAIRegistry"
+  },
+  {
     "name": "Groq",
     "slug": "groq",
     "api_type": "openai",
