@@ -821,7 +821,7 @@ function AttachmentPreview({ att, onRemove }: { att: ChatAttachment; onRemove?: 
       </div>
     );
   }
-  const icon = att.type === "voice" ? <IconMic size={14} /> : att.type === "image" ? <IconImage size={14} /> : <IconPaperclip size={14} />;
+  const icon = att.type === "voice" ? <IconMic size={14} /> : att.type === "video" ? <IconPlay size={14} /> : att.type === "image" ? <IconImage size={14} /> : <IconPaperclip size={14} />;
   const sizeStr = att.size ? `${(att.size / 1024).toFixed(1)} KB` : "";
   return (
     <div style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 28px 6px 10px", borderRadius: 10, border: "1px solid var(--line)", fontSize: 12 }}>
@@ -2311,17 +2311,19 @@ export function ChatView({
         size: file.size,
         mimeType: file.type,
       };
-      // 图片预览
-      if (att.type === "image") {
+      if (att.type === "video" && file.size > 7 * 1024 * 1024) {
+        alert(`视频文件过大 (${(file.size / 1024 / 1024).toFixed(1)}MB)，桌面端最大支持 7MB（base64 编码后需 < 10MB）`);
+        continue;
+      }
+      if (att.type === "image" || att.type === "video") {
         const reader = new FileReader();
         reader.onload = () => {
-          att.previewUrl = reader.result as string;
+          att.previewUrl = att.type === "image" ? reader.result as string : undefined;
           att.url = reader.result as string;
           setPendingAttachments((prev) => [...prev, att]);
         };
         reader.readAsDataURL(file);
       } else {
-        // 先添加占位，然后异步上传
         setPendingAttachments((prev) => [...prev, att]);
         uploadFile(file, file.name)
           .then((serverUrl) => {
@@ -2390,9 +2392,12 @@ export function ChatView({
               const name = filePath.split(/[\\/]/).pop() || "file";
               const ext = (name.split(".").pop() || "").toLowerCase();
               const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
+              const isVideo = ["mp4", "webm", "avi", "mov", "mkv"].includes(ext);
               const mimeMap: Record<string, string> = {
                 png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
                 gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
+                mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
+                mov: "video/quicktime", mkv: "video/x-matroska",
                 pdf: "application/pdf", txt: "text/plain", md: "text/plain",
                 json: "application/json", csv: "text/csv",
               };
@@ -2400,9 +2405,19 @@ export function ChatView({
               invoke<string>("read_file_base64", { path: filePath })
                 .then((dataUrl) => {
                   if (cancelled) return;
+                  if (isVideo) {
+                    const commaIdx = dataUrl.indexOf(",");
+                    const base64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
+                    const estimatedSize = base64Len * 3 / 4;
+                    const VIDEO_MAX_SIZE = 7 * 1024 * 1024;
+                    if (estimatedSize > VIDEO_MAX_SIZE) {
+                      alert(`视频文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 7MB（base64 编码后需 < 10MB）`);
+                      return;
+                    }
+                  }
                   console.log("[DragDrop] file read OK:", name, dataUrl.length, "bytes");
                   setPendingAttachments((prev) => [...prev, {
-                    type: isImage ? "image" : "file",
+                    type: isImage ? "image" : isVideo ? "video" : "file",
                     name,
                     previewUrl: isImage ? dataUrl : undefined,
                     url: dataUrl,
@@ -2432,15 +2447,33 @@ export function ChatView({
               const name = filePath.split(/[\\/]/).pop() || "file";
               const ext = (name.split(".").pop() || "").toLowerCase();
               const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
+              const isVideo = ["mp4", "webm", "avi", "mov", "mkv"].includes(ext);
+              const videoMimeMap: Record<string, string> = {
+                mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
+                mov: "video/quicktime", mkv: "video/x-matroska",
+              };
               invoke<string>("read_file_base64", { path: filePath })
                 .then((dataUrl) => {
                   if (cancelled) return;
+                  if (isVideo) {
+                    const commaIdx = dataUrl.indexOf(",");
+                    const base64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
+                    const estimatedSize = base64Len * 3 / 4;
+                    const VIDEO_MAX_SIZE = 7 * 1024 * 1024;
+                    if (estimatedSize > VIDEO_MAX_SIZE) {
+                      alert(`视频文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 7MB（base64 编码后需 < 10MB）`);
+                      return;
+                    }
+                  }
+                  const mimeType = isImage ? `image/${ext === "jpg" ? "jpeg" : ext}`
+                    : isVideo ? (videoMimeMap[ext] || "video/mp4")
+                    : "application/octet-stream";
                   setPendingAttachments((prev) => [...prev, {
-                    type: isImage ? "image" : "file",
+                    type: isImage ? "image" : isVideo ? "video" : "file",
                     name,
                     previewUrl: isImage ? dataUrl : undefined,
                     url: dataUrl,
-                    mimeType: isImage ? `image/${ext === "jpg" ? "jpeg" : ext}` : "application/octet-stream",
+                    mimeType,
                   }]);
                 })
                 .catch((err) => console.error("[DragDrop-fallback] read failed:", err));
@@ -2901,7 +2934,7 @@ export function ChatView({
                 <button onClick={() => fileInputRef.current?.click()} className="chatInputIconBtn" title={t("chat.attach")}>
                   <IconPaperclip size={16} />
                 </button>
-                <input ref={fileInputRef} type="file" multiple accept="image/*,audio/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv" style={{ display: "none" }} onChange={handleFileSelect} />
+                <input ref={fileInputRef} type="file" multiple accept="image/*,video/*,audio/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv" style={{ display: "none" }} onChange={handleFileSelect} />
 
                 <button onClick={toggleRecording} className={`chatInputIconBtn ${isRecording ? "chatInputIconBtnDanger" : ""}`} title={isRecording ? t("chat.stopRecording") : t("chat.voice")}>
                   {isRecording ? <IconStopCircle size={16} /> : <IconMic size={16} />}

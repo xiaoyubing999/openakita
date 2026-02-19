@@ -5,7 +5,10 @@
 """
 
 import base64
+import logging as _multimodal_logging
 import re
+
+_converter_logger = _multimodal_logging.getLogger(__name__)
 
 from ..types import (
     AudioBlock,
@@ -126,6 +129,31 @@ def convert_openai_image_to_internal(item: dict) -> ImageContent | None:
     return None
 
 
+_DASHSCOPE_MAX_DATA_URI_BYTES = 10 * 1024 * 1024  # DashScope API 限制 10MB per data-uri
+_KIMI_MAX_DATA_URI_BYTES = 10 * 1024 * 1024  # Kimi 保守按 10MB 限制
+
+
+def _check_video_data_uri_size(video: VideoContent, provider_name: str, max_bytes: int) -> str | None:
+    """检查视频 data URL 是否超过 provider 大小限制，超过则返回降级文本"""
+    if video.media_type == "url":
+        return None
+    data_url = video.to_data_url()
+    data_url_bytes = len(data_url.encode("utf-8"))
+    if data_url_bytes > max_bytes:
+        size_mb = len(video.data) * 3 / 4 / 1024 / 1024
+        limit_mb = max_bytes / 1024 / 1024
+        _converter_logger.warning(
+            f"Video data-uri too large for {provider_name}: "
+            f"{data_url_bytes / 1024 / 1024:.1f}MB > {limit_mb:.0f}MB limit. "
+            f"Degrading to text."
+        )
+        return (
+            f"[视频内容：视频文件约 {size_mb:.1f}MB，编码后超过 {provider_name} "
+            f"的 {limit_mb:.0f}MB data-uri 限制，已跳过。请发送更小的视频。]"
+        )
+    return None
+
+
 def convert_video_to_kimi(video: VideoContent) -> dict:
     """
     将内部视频格式转换为 Kimi 格式
@@ -138,6 +166,9 @@ def convert_video_to_kimi(video: VideoContent) -> dict:
         }
     }
     """
+    degraded = _check_video_data_uri_size(video, "Kimi", _KIMI_MAX_DATA_URI_BYTES)
+    if degraded:
+        return {"type": "text", "text": degraded}
     return {
         "type": "video_url",
         "video_url": {
@@ -180,7 +211,12 @@ def convert_video_to_dashscope(video: VideoContent) -> dict:
             "url": "data:video/mp4;base64,..."
         }
     }
+
+    注意: DashScope 限制单个 data-uri 不超过 10MB
     """
+    degraded = _check_video_data_uri_size(video, "DashScope", _DASHSCOPE_MAX_DATA_URI_BYTES)
+    if degraded:
+        return {"type": "text", "text": degraded}
     return {
         "type": "video_url",
         "video_url": {
@@ -303,11 +339,6 @@ DOCUMENT_CONVERTERS: dict[str, object] = {
     "anthropic": convert_document_to_anthropic,
     "google": convert_document_to_gemini,
 }
-
-
-import logging as _multimodal_logging
-
-_converter_logger = _multimodal_logging.getLogger(__name__)
 
 
 def _degrade_video(block: VideoBlock) -> dict:

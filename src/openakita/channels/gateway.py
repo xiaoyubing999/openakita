@@ -1623,7 +1623,7 @@ class MessageGateway:
 
             # 处理视频文件 - 多模态输入
             videos_data = []
-            VIDEO_SIZE_LIMIT = 20 * 1024 * 1024  # 20MB
+            VIDEO_SIZE_LIMIT = 7 * 1024 * 1024  # 7MB (base64 后 ~9.3MB，低于 DashScope 10MB data-uri 限制)
             for vid in message.content.videos:
                 if vid.local_path and Path(vid.local_path).exists():
                     try:
@@ -1646,7 +1646,7 @@ class MessageGateway:
                         else:
                             # 视频超过大小限制，用 ffmpeg 截取关键帧降级为图片
                             logger.info(
-                                f"Video too large ({file_size / 1024 / 1024:.1f}MB > 20MB), "
+                                f"Video too large ({file_size / 1024 / 1024:.1f}MB > 7MB), "
                                 f"extracting keyframes: {vid.local_path}"
                             )
                             keyframes = await self._extract_video_keyframes(vid.local_path)
