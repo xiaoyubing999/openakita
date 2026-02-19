@@ -37,7 +37,8 @@ class BrowserHandler:
     ]
 
     # browser_get_content 默认最大字符数
-    CONTENT_DEFAULT_MAX_LENGTH = 12000
+    # 网页内容通常较大，12K 经常截断重要信息；提升到 32K 覆盖大多数页面。
+    CONTENT_DEFAULT_MAX_LENGTH = 32000
 
     def __init__(self, agent: "Agent"):
         self.agent = agent

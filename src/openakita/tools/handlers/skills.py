@@ -14,6 +14,7 @@
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,9 +25,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Skill 内容专用阈值（~16000 tokens），高于通用的 MAX_TOOL_RESULT_CHARS (16000 chars)。
+# Skill 内容专用阈值（~32000 tokens），高于通用的 MAX_TOOL_RESULT_CHARS (16000 chars)。
 # Skill body 是高质量结构化指令，截断会严重影响 LLM 执行效果。
-SKILL_MAX_CHARS = 32000
+# 部分技能（如 docx）的 SKILL.md 引用了多个同目录子文件，内联后总量可达 50K+。
+SKILL_MAX_CHARS = 64000
 
 
 class SkillsHandler:
@@ -92,13 +94,64 @@ class SkillsHandler:
 
         return output
 
+    # Markdown 链接中引用同目录 .md 文件的正则：
+    #   [`filename.md`](filename.md)  或  [filename.md](filename.md)
+    _MD_LINK_RE = re.compile(
+        r"\[`?([a-zA-Z0-9_-]+\.md)`?\]\(([a-zA-Z0-9_-]+\.md)\)"
+    )
+
+    @staticmethod
+    def _inline_referenced_files(body: str, skill_dir: Path) -> str:
+        """解析 body 中引用的同目录 .md 文件并追加到末尾。
+
+        许多 Anthropic 技能（docx, pptx 等）在 SKILL.md 中用 Markdown 链接
+        引用同目录下的参考文件（如 docx-js.md, ooxml.md），并标注
+        "MANDATORY - READ ENTIRE FILE"。此方法自动将这些文件内联，
+        使 get_skill_info 一次返回完整的技能知识。
+        """
+        if not skill_dir or not skill_dir.is_dir():
+            return body
+
+        seen: set[str] = set()
+        appendices: list[str] = []
+
+        for match in SkillsHandler._MD_LINK_RE.finditer(body):
+            filename = match.group(2)
+            if filename.upper() == "SKILL.MD" or filename in seen:
+                continue
+            seen.add(filename)
+
+            ref_path = skill_dir / filename
+            if not ref_path.is_file():
+                continue
+
+            try:
+                ref_content = ref_path.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to read referenced file {ref_path}: {e}")
+                continue
+
+            appendices.append(
+                f"\n\n---\n\n"
+                f"# [Inlined Reference] {filename}\n\n"
+                f"{ref_content}"
+            )
+            logger.info(
+                f"[SkillInline] Inlined {filename} ({len(ref_content)} chars) "
+                f"from {skill_dir.name}"
+            )
+
+        if appendices:
+            return body + "".join(appendices)
+        return body
+
     @staticmethod
     def _truncate_skill_content(tool_name: str, content: str) -> str:
         """Skill 专用截断：阈值高于通用守卫，超长时自行截断并带标记跳过守卫。
 
         - <= MAX_TOOL_RESULT_CHARS (16000)：原样返回，通用守卫也不会截断
-        - 16000 < len <= SKILL_MAX_CHARS (32000)：全量返回 + OVERFLOW_MARKER 跳过守卫
-        - > SKILL_MAX_CHARS：截断到 32000 + 溢出文件 + 分段读取指引
+        - 16000 < len <= SKILL_MAX_CHARS (64000)：全量返回 + OVERFLOW_MARKER 跳过守卫
+        - > SKILL_MAX_CHARS：截断到 64000 + 溢出文件 + 分段读取指引
         """
         if not content or len(content) <= MAX_TOOL_RESULT_CHARS:
             return content
@@ -122,14 +175,19 @@ class SkillsHandler:
         return truncated + hint
 
     def _get_skill_info(self, params: dict) -> str:
-        """获取技能详细信息"""
+        """获取技能详细信息（自动内联引用的子文件）"""
         skill_name = params["skill_name"]
         skill = self.agent.skill_registry.get(skill_name)
 
         if not skill:
             return f"❌ 未找到技能: {skill_name}"
 
-        body = skill.get_body()
+        body = skill.get_body() or "(无详细指令)"
+
+        # 自动内联 SKILL.md body 中引用的同目录 .md 文件
+        if skill.skill_path:
+            skill_dir = Path(skill.skill_path).parent
+            body = self._inline_referenced_files(body, skill_dir)
 
         output = f"# 技能: {skill.name}\n\n"
         output += f"**描述**: {skill.description}\n"
@@ -142,7 +200,7 @@ class SkillsHandler:
         if skill.compatibility:
             output += f"**兼容性**: {skill.compatibility}\n"
         output += "\n---\n\n"
-        output += body or "(无详细指令)"
+        output += body
 
         return self._truncate_skill_content("get_skill_info", output)
 
