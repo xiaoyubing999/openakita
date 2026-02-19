@@ -11,7 +11,7 @@ Prompt Budget - Token 预算裁剪模块
   - skills: ~6600 tokens（index 全量 + detail 全量，60+ skills）
   - mcp: ~1200 tokens
 - user_budget: 300 tokens (user.summary + runtime_facts)
-- memory_budget: 500 tokens (retriever 输出)
+- memory_budget: 1500 tokens (retriever 输出)
 
 总预算约 ~15000 tokens，占 128k 上下文约 11.7%。
 """
@@ -33,10 +33,10 @@ class BudgetConfig:
     identity_budget: int = 1600   # soul + agent.core + agent.tooling + policies(627)
     catalogs_budget: int = 12000  # tools(33%) + skills(55%) + mcp(10%) 全量注入
     user_budget: int = 300        # user.summary + runtime_facts
-    memory_budget: int = 500      # retriever 输出
+    memory_budget: int = 1500     # retriever 输出（含 MEMORY.md + vector memory）
 
     # 总预算（作为硬限制）
-    total_budget: int = 15000
+    total_budget: int = 16000
 
     # 裁剪优先级（数字越小越先被裁剪）
     # 高优先级的内容会在预算不足时保留

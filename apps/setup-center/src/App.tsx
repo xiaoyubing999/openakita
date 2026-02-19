@@ -914,6 +914,7 @@ export function App() {
   const [appInitializing, setAppInitializing] = useState(true); // 首次加载检测中，防止闪烁
   const [configExpanded, setConfigExpanded] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [disabledViews, setDisabledViews] = useState<string[]>([]);
 
   // ── Data mode: "local" (Tauri commands) or "remote" (HTTP API) ──
   const [dataMode, setDataMode] = useState<"local" | "remote">("local");
@@ -2280,6 +2281,36 @@ export function App() {
   function httpApiBase(): string {
     return dataMode === "remote" ? apiBaseUrl : "http://127.0.0.1:18900";
   }
+
+  // ── Disabled views management ──
+  const fetchDisabledViews = useCallback(async () => {
+    if (!shouldUseHttpApi()) return;
+    try {
+      const resp = await fetch(`${httpApiBase()}/api/config/disabled-views`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setDisabledViews(data.disabled_views || []);
+      }
+    } catch { /* ignore */ }
+  }, [serviceStatus?.running, dataMode, apiBaseUrl]);
+
+  useEffect(() => { fetchDisabledViews(); }, [fetchDisabledViews]);
+
+  const toggleViewDisabled = useCallback(async (viewName: string) => {
+    const next = disabledViews.includes(viewName)
+      ? disabledViews.filter((v) => v !== viewName)
+      : [...disabledViews, viewName];
+    setDisabledViews(next);
+    if (shouldUseHttpApi()) {
+      try {
+        await fetch(`${httpApiBase()}/api/config/disabled-views`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ views: next }),
+        });
+      } catch { /* ignore */ }
+    }
+  }, [disabledViews, serviceStatus?.running, dataMode, apiBaseUrl]);
 
   async function readWorkspaceFile(relativePath: string): Promise<string> {
     // ── 后端运行中 → 优先 HTTP API（读取后端内存中的实时状态）──
@@ -8627,28 +8658,90 @@ export function App() {
     if (!info) return <div className="card">加载中...</div>;
     if (view === "status") return renderStatus();
     if (view === "chat") return null;  // ChatView 始终挂载，不在此渲染
+
+    const _disableToggle = (viewKey: string, label: string) => (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 12 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#64748b", cursor: "pointer" }}>
+          <span>{disabledViews.includes(viewKey) ? `${label} 已禁用` : `${label} 已启用`}</span>
+          <div
+            onClick={() => toggleViewDisabled(viewKey)}
+            style={{
+              width: 40, height: 22, borderRadius: 11, cursor: "pointer",
+              background: disabledViews.includes(viewKey) ? "#cbd5e1" : "#22c55e",
+              position: "relative", transition: "background 0.2s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: 9, background: "#fff",
+              position: "absolute", top: 2,
+              left: disabledViews.includes(viewKey) ? 2 : 20,
+              transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+            }} />
+          </div>
+        </label>
+      </div>
+    );
+
     if (view === "skills") {
       return (
-        <SkillManager
-          venvDir={venvDir}
-          currentWorkspaceId={currentWorkspaceId}
-          envDraft={envDraft}
-          onEnvChange={setEnvDraft}
-          onSaveEnvKeys={saveEnvKeysExternal}
-          apiBaseUrl={apiBaseUrl}
-          serviceRunning={!!serviceStatus?.running}
-          dataMode={dataMode}
-        />
+        <div>
+          {_disableToggle("skills", "技能管理")}
+          {disabledViews.includes("skills") ? (
+            <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
+              <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，点击上方开关启用</p>
+            </div>
+          ) : (
+            <SkillManager
+              venvDir={venvDir}
+              currentWorkspaceId={currentWorkspaceId}
+              envDraft={envDraft}
+              onEnvChange={setEnvDraft}
+              onSaveEnvKeys={saveEnvKeysExternal}
+              apiBaseUrl={apiBaseUrl}
+              serviceRunning={!!serviceStatus?.running}
+              dataMode={dataMode}
+            />
+          )}
+        </div>
       );
     }
     if (view === "im") {
-      return <IMView serviceRunning={serviceStatus?.running ?? false} />;
+      return (
+        <div>
+          {_disableToggle("im", "IM 通道")}
+          {disabledViews.includes("im") ? (
+            <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
+              <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，点击上方开关启用</p>
+            </div>
+          ) : (
+            <IMView serviceRunning={serviceStatus?.running ?? false} />
+          )}
+        </div>
+      );
     }
     if (view === "token_stats") {
-      return <TokenStatsView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />;
+      return (
+        <div>
+          {_disableToggle("token_stats", "Token 统计")}
+          {disabledViews.includes("token_stats") ? (
+            <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
+              <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，点击上方开关启用</p>
+            </div>
+          ) : (
+            <TokenStatsView serviceRunning={serviceStatus?.running ?? false} apiBaseUrl={apiBaseUrl} />
+          )}
+        </div>
+      );
     }
     if (view === "modules") {
       return (
+        <div>
+          {_disableToggle("modules", "模块管理")}
+          {disabledViews.includes("modules") ? (
+            <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
+              <p style={{ color: "#94a3b8", fontSize: 15 }}>此模块已禁用，点击上方开关启用</p>
+            </div>
+          ) : (
         <div className="card">
           <h2 className="cardTitle">{t("modules.title")}</h2>
           <p style={{ color: "#64748b", fontSize: 13, marginBottom: 16 }}>{t("modules.desc")}</p>
@@ -8761,6 +8854,8 @@ export function App() {
             {t("modules.refresh")}
           </button>
         </div>
+          )}
+        </div>
       );
     }
     switch (stepId) {
@@ -8863,19 +8958,19 @@ export function App() {
           <div className={`navItem ${view === "chat" ? "navItemActive" : ""}`} onClick={() => setView("chat")} role="button" tabIndex={0} title={t("sidebar.chat")}>
             <IconChat size={16} /> {!sidebarCollapsed && <span>{t("sidebar.chat")}</span>}
           </div>
-          <div className={`navItem ${view === "im" ? "navItemActive" : ""}`} onClick={() => setView("im")} role="button" tabIndex={0} title={t("sidebar.im")}>
+          <div className={`navItem ${view === "im" ? "navItemActive" : ""}`} onClick={() => setView("im")} role="button" tabIndex={0} title={t("sidebar.im")} style={disabledViews.includes("im") ? { opacity: 0.4 } : undefined}>
             <IconIM size={16} /> {!sidebarCollapsed && <span>{t("sidebar.im")}</span>}
           </div>
-          <div className={`navItem ${view === "skills" ? "navItemActive" : ""}`} onClick={() => setView("skills")} role="button" tabIndex={0} title={t("sidebar.skills")}>
+          <div className={`navItem ${view === "skills" ? "navItemActive" : ""}`} onClick={() => setView("skills")} role="button" tabIndex={0} title={t("sidebar.skills")} style={disabledViews.includes("skills") ? { opacity: 0.4 } : undefined}>
             <IconSkills size={16} /> {!sidebarCollapsed && <span>{t("sidebar.skills")}</span>}
           </div>
-          <div className={`navItem ${view === "modules" ? "navItemActive" : ""}`} onClick={() => { setView("modules"); obLoadModules(); }} role="button" tabIndex={0} title={t("sidebar.modules")}>
+          <div className={`navItem ${view === "modules" ? "navItemActive" : ""}`} onClick={() => { setView("modules"); obLoadModules(); }} role="button" tabIndex={0} title={t("sidebar.modules")} style={disabledViews.includes("modules") ? { opacity: 0.4 } : undefined}>
             <IconGear size={16} /> {!sidebarCollapsed && <span>{t("sidebar.modules")}</span>}
           </div>
           <div className={`navItem ${view === "status" ? "navItemActive" : ""}`} onClick={async () => { setView("status"); try { await refreshStatus(); } catch { /* ignore */ } }} role="button" tabIndex={0} title={t("sidebar.status")}>
             <IconStatus size={16} /> {!sidebarCollapsed && <span>{t("sidebar.status")}</span>}
           </div>
-          <div className={`navItem ${view === "token_stats" ? "navItemActive" : ""}`} onClick={() => setView("token_stats")} role="button" tabIndex={0} title={t("sidebar.tokenStats", "Token 统计")}>
+          <div className={`navItem ${view === "token_stats" ? "navItemActive" : ""}`} onClick={() => setView("token_stats")} role="button" tabIndex={0} title={t("sidebar.tokenStats", "Token 统计")} style={disabledViews.includes("token_stats") ? { opacity: 0.4 } : undefined}>
             <IconZap size={16} /> {!sidebarCollapsed && <span>{t("sidebar.tokenStats", "Token 统计")}</span>}
           </div>
         </div>

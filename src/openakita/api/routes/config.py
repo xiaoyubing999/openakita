@@ -102,6 +102,10 @@ class SkillsWriteRequest(BaseModel):
     content: dict  # Full JSON content of skills.json
 
 
+class DisabledViewsRequest(BaseModel):
+    views: list[str]  # e.g. ["skills", "im", "token_stats", "modules"]
+
+
 class ListModelsRequest(BaseModel):
     api_type: str  # "openai" | "anthropic"
     base_url: str
@@ -309,6 +313,32 @@ async def write_skills_config(body: SkillsWriteRequest):
     )
     logger.info("[Config API] Updated skills.json")
     return {"status": "ok"}
+
+
+@router.get("/api/config/disabled-views")
+async def read_disabled_views():
+    """Read the list of disabled module views."""
+    dv_path = _project_root() / "data" / "disabled_views.json"
+    if not dv_path.exists():
+        return {"disabled_views": []}
+    try:
+        data = json.loads(dv_path.read_text(encoding="utf-8"))
+        return {"disabled_views": data.get("disabled_views", [])}
+    except Exception as e:
+        return {"error": str(e), "disabled_views": []}
+
+
+@router.post("/api/config/disabled-views")
+async def write_disabled_views(body: DisabledViewsRequest):
+    """Update the list of disabled module views."""
+    dv_path = _project_root() / "data" / "disabled_views.json"
+    dv_path.parent.mkdir(parents=True, exist_ok=True)
+    dv_path.write_text(
+        json.dumps({"disabled_views": body.views}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    logger.info(f"[Config API] Updated disabled_views: {body.views}")
+    return {"status": "ok", "disabled_views": body.views}
 
 
 @router.get("/api/config/providers")

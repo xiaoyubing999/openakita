@@ -59,6 +59,12 @@ class IMChannelHandler:
                 return await self._deliver_artifacts_desktop(params)
             return await self._deliver_artifacts(params)
 
+        # get_chat_history 在 Desktop 模式下也可用（从 session 读取）
+        if tool_name == "get_chat_history":
+            if get_im_session():
+                return await self._get_chat_history(params)
+            return self._get_chat_history_desktop(params)
+
         if not get_im_session():
             return "❌ 当前不在 IM 会话中，无法使用此工具"
 
@@ -66,8 +72,6 @@ class IMChannelHandler:
             return self._get_voice_file(params)
         elif tool_name == "get_image_file":
             return self._get_image_file(params)
-        elif tool_name == "get_chat_history":
-            return await self._get_chat_history(params)
         else:
             return f"❌ Unknown IM channel tool: {tool_name}"
 
@@ -694,6 +698,33 @@ class IMChannelHandler:
                 return f"图片文件路径: {local_path}"
 
         return "❌ 当前消息没有图片文件"
+
+    def _get_chat_history_desktop(self, params: dict) -> str:
+        """Desktop 模式下从当前 session 读取聊天历史"""
+        limit = params.get("limit", 20)
+        session = getattr(self.agent, "_current_session", None)
+        if not session:
+            sid = getattr(self.agent, "_current_session_id", None)
+            if sid:
+                sm = getattr(self.agent, "_session_manager", None)
+                if sm:
+                    session = sm.get_session(sid)
+        if not session:
+            return "当前没有活跃的会话，无法获取聊天历史"
+
+        messages = session.context.get_messages(limit=limit)
+        if not messages:
+            return "没有聊天历史"
+
+        output = f"最近 {len(messages)} 条消息:\n\n"
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                output += f"[{role}] {content[:1000]}{'...' if len(content) > 1000 else ''}\n"
+            else:
+                output += f"[{role}] [复杂内容]\n"
+        return output
 
     async def _get_chat_history(self, params: dict) -> str:
         """获取聊天历史"""

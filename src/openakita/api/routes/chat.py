@@ -211,6 +211,19 @@ async def _stream_chat(
                 for o in _ask_user_options:
                     parts.append(f"  - {o.get('id', '')}: {o.get('label', '')}")
             assistant_text_to_save = "\n".join(parts)
+
+        # Append tool execution summary so next turn's LLM sees what was done
+        try:
+            _tool_summary = actual_agent.build_tool_trace_summary()
+            if _tool_summary:
+                if assistant_text_to_save:
+                    assistant_text_to_save += _tool_summary
+                else:
+                    assistant_text_to_save = _tool_summary.lstrip("\n")
+                logger.debug(f"[Chat API] Appended tool trace summary ({len(_tool_summary)} chars)")
+        except Exception:
+            pass
+
         if session and assistant_text_to_save:
             try:
                 session.add_message("assistant", assistant_text_to_save)
@@ -223,7 +236,8 @@ async def _stream_chat(
         _usage_data: dict | None = None
         try:
             re = getattr(actual_agent, "reasoning_engine", None)
-            trace = getattr(re, "_last_react_trace", []) if re else []
+            trace = getattr(actual_agent, "_last_finalized_trace", None) or \
+                (getattr(re, "_last_react_trace", []) if re else [])
             if trace:
                 total_in = sum(t.get("tokens", {}).get("input", 0) for t in trace)
                 total_out = sum(t.get("tokens", {}).get("output", 0) for t in trace)

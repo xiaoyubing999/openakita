@@ -1252,16 +1252,26 @@ class MessageGateway:
             for hook in self._post_process_hooks:
                 response_text = await hook(message, response_text)
 
-            # 8. 记录响应到会话（含思维链摘要）
+            # 8. 记录响应到会话（含思维链摘要 + 工具执行摘要）
             _chain_summary = None
             try:
                 _chain_summary = session.get_metadata("_last_chain_summary")
                 session.set_metadata("_last_chain_summary", None)  # 清除，避免下次复用
             except Exception:
                 pass
+            _save_text = response_text
+            try:
+                _agent_obj = getattr(self.agent_handler, "_agent_ref", None)
+                if _agent_obj and hasattr(_agent_obj, "build_tool_trace_summary"):
+                    _tool_summary = _agent_obj.build_tool_trace_summary()
+                    if _tool_summary:
+                        _save_text += _tool_summary
+                        logger.debug(f"[Gateway] Appended tool trace summary ({len(_tool_summary)} chars)")
+            except Exception:
+                pass
             session.add_message(
                 role="assistant",
-                content=response_text,
+                content=_save_text,
                 **({"chain_summary": _chain_summary} if _chain_summary else {}),
             )
             self.session_manager.mark_dirty()  # 触发保存
@@ -1319,16 +1329,25 @@ class MessageGateway:
                 for hook in self._post_process_hooks:
                     response_text = await hook(interrupt_msg, response_text)
 
-                # 记录响应（含思维链摘要）
+                # 记录响应（含思维链摘要 + 工具执行摘要）
                 _int_chain = None
                 try:
                     _int_chain = session.get_metadata("_last_chain_summary")
                     session.set_metadata("_last_chain_summary", None)
                 except Exception:
                     pass
+                _int_save = response_text
+                try:
+                    _int_agent = getattr(self.agent_handler, "_agent_ref", None)
+                    if _int_agent and hasattr(_int_agent, "build_tool_trace_summary"):
+                        _int_tool_summary = _int_agent.build_tool_trace_summary()
+                        if _int_tool_summary:
+                            _int_save += _int_tool_summary
+                except Exception:
+                    pass
                 session.add_message(
                     role="assistant",
-                    content=response_text,
+                    content=_int_save,
                     **({"chain_summary": _int_chain} if _int_chain else {}),
                 )
                 self.session_manager.mark_dirty()  # 触发保存

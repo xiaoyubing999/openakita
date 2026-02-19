@@ -349,6 +349,7 @@ class Agent:
         # 状态
         self._initialized = False
         self._running = False
+        self._last_finalized_trace: list[dict] = []
 
         # Handler Registry（模块化工具执行）
         self.handler_registry = SystemHandlerRegistry()
@@ -766,7 +767,7 @@ class Agent:
         self.handler_registry.register(
             "memory",
             create_memory_handler(self),
-            ["add_memory", "search_memory", "get_memory_stats"],
+            ["add_memory", "search_memory", "get_memory_stats", "search_conversation_traces"],
         )
 
         # 浏览器
@@ -1945,8 +1946,6 @@ search_github → install_skill → 使用
 
         return "\n".join(lines)
 
-    # ==================== 上下文管理 ====================
-
     def _get_max_context_tokens(self) -> int:
         """
         动态获取当前模型的上下文窗口大小
@@ -2008,21 +2007,8 @@ search_github → install_skill → 使用
         return max(int(chinese_tokens + english_tokens), 1)
 
     def _estimate_messages_tokens(self, messages: list[dict]) -> int:
-        """估算消息列表的 token 数量（使用 JSON 序列化方式，与 brain.py 一致）"""
-        try:
-            messages_text = json.dumps(messages, ensure_ascii=False, default=str)
-            return max(int(len(messages_text) / 2), 1)
-        except Exception:
-            # fallback: 逐条估算
-            total = 0
-            for msg in messages:
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    total += self._estimate_tokens(content)
-                elif isinstance(content, list):
-                    total += self._estimate_tokens(json.dumps(content, ensure_ascii=False, default=str))
-                total += 4
-            return total
+        """估算消息列表的 token 数量（委托给 context_manager 的统一算法）"""
+        return self.context_manager.estimate_messages_tokens(messages)
 
     @staticmethod
     def _group_messages(messages: list[dict]) -> list[list[dict]]:
@@ -2098,130 +2084,23 @@ search_github → install_skill → 使用
     async def _compress_context(
         self, messages: list[dict], max_tokens: int = None, system_prompt: str = None
     ) -> list[dict]:
-        """
-        压缩对话上下文（使用 LLM 分块压缩，保证 tool 配对完整性）
-
-        策略:
-        1. 先对单条过大的 tool_result 内容独立 LLM 压缩
-        2. 将消息按工具交互组分组（assistant+tool_calls 与后续 tool_result 为原子组）
-        3. 按组边界切割，保留最近若干组完整
-        4. 早期组整体送 LLM 摘要压缩
-        5. 如果还是太长，递归压缩（减少保留组数）
-
-        Args:
-            messages: 消息列表
-            max_tokens: 最大 token 数 (默认动态获取或使用 DEFAULT_MAX_CONTEXT_TOKENS)
-            system_prompt: 实际发送给 LLM 的 system_prompt（用于更准确估算系统 token）
-
-        Returns:
-            压缩后的消息列表
-        """
-        max_tokens = max_tokens or self._get_max_context_tokens()
-
-        # 估算系统提示的 token：优先使用传入的实际 system_prompt
-        system_tokens = self._estimate_tokens(system_prompt or self._context.system)
-
-        # 估算工具定义的 token（60 个工具可达 15K-25K tokens）
-        tools_tokens = 0
-        if hasattr(self, '_tools') and self._tools:
-            try:
-                tools_text = json.dumps(self._tools, ensure_ascii=False, default=str)
-                tools_tokens = int(len(tools_text) / 2)
-            except Exception:
-                tools_tokens = len(self._tools) * 300  # 保守估算每个工具 300 tokens
-
-        hard_limit = max_tokens - system_tokens - tools_tokens - 1000  # 绝对上限（留 1000 给响应）
-        # 安全保护：hard_limit 不能为负或过小（system+tools 过大时兜底）
-        if hard_limit < 4096:
-            logger.warning(
-                f"[Compress] hard_limit too small ({hard_limit}), "
-                f"max={max_tokens}, system={system_tokens}, tools={tools_tokens}. "
-                f"Falling back to 4096."
-            )
-            hard_limit = 4096
-        soft_limit = int(hard_limit * 0.7)  # 70% 提前压缩阈值，留出充足缓冲
-
-        current_tokens = self._estimate_messages_tokens(messages)
-
-        # 如果没超过 70% 软阈值，直接返回
-        if current_tokens <= soft_limit:
-            if current_tokens > soft_limit * 0.5:
-                logger.debug(
-                    f"[Compress] Skip: {current_tokens} tokens < soft_limit {soft_limit} "
-                    f"(max={max_tokens}, system={system_tokens}, tools={tools_tokens})"
-                )
-            return messages
-
-        logger.info(
-            f"Context approaching limit ({current_tokens} tokens, soft={soft_limit}, hard={hard_limit}), "
-            f"compressing with LLM (target {COMPRESSION_RATIO * 100:.0f}%)..."
+        """委托给统一的 context_manager.compress_if_needed()。"""
+        _sp = system_prompt or getattr(self._context, "system", "")
+        _tools = getattr(self, "_tools", None)
+        _msg_count_before = len(messages)
+        result = await self.context_manager.compress_if_needed(
+            messages,
+            system_prompt=_sp,
+            tools=_tools,
+            max_tokens=max_tokens,
         )
-
-        # 第一步：对单条过大的 tool_result 内容独立压缩
-        messages = await self._compress_large_tool_results(messages)
-        current_tokens = self._estimate_messages_tokens(messages)
-        if current_tokens <= soft_limit:
-            logger.info(f"After tool_result compression: {current_tokens} tokens, within limit")
-            return messages
-
-        # 第二步：按工具交互组分组，保证 tool_calls/tool 配对不被拆散
-        groups = self._group_messages(messages)
-
-        # 计算需要保留的最近组数量（目标保留 MIN_RECENT_TURNS 组）
-        recent_group_count = min(MIN_RECENT_TURNS, len(groups))
-
-        if len(groups) <= recent_group_count:
-            # 组数不多但每组很大——已在上面做了 tool_result 压缩
-            logger.warning(
-                f"Only {len(groups)} groups but still {current_tokens} tokens, "
-                f"attempting aggressive tool_result compression..."
+        if len(result) != _msg_count_before:
+            logger.info(
+                f"[Compress] Delegated: {_msg_count_before} → {len(result)} msgs "
+                f"(system_prompt={'custom' if system_prompt else 'default'}, "
+                f"tools={len(_tools) if _tools else 0})"
             )
-            messages = await self._compress_large_tool_results(messages, threshold=2000)
-            return self._hard_truncate_if_needed(messages, hard_limit)
-
-        # 按组边界切割：早期组 vs 最近组
-        early_groups = groups[:-recent_group_count]
-        recent_groups = groups[-recent_group_count:]
-
-        # 展平组为消息列表
-        early_messages = [msg for group in early_groups for msg in group]
-        recent_messages = [msg for group in recent_groups for msg in group]
-
-        logger.info(
-            f"Split into {len(early_groups)} early groups ({len(early_messages)} msgs) "
-            f"and {len(recent_groups)} recent groups ({len(recent_messages)} msgs) "
-            f"at safe tool-pair boundary"
-        )
-
-        # 使用 LLM 分块摘要早期对话
-        early_tokens = self._estimate_messages_tokens(early_messages)
-        target_summary_tokens = max(int(early_tokens * COMPRESSION_RATIO), 200)
-        summary = await self._summarize_messages_chunked(early_messages, target_summary_tokens)
-
-        # 构建压缩后的消息列表
-        compressed = []
-
-        if summary:
-            compressed.append({"role": "user", "content": f"[之前的对话摘要]\n{summary}"})
-            compressed.append(
-                {"role": "assistant", "content": "好的，我已了解之前的对话内容，请继续。"}
-            )
-
-        compressed.extend(recent_messages)
-
-        # 检查压缩后的大小
-        compressed_tokens = self._estimate_messages_tokens(compressed)
-
-        if compressed_tokens <= soft_limit:
-            logger.info(f"Compressed context from {current_tokens} to {compressed_tokens} tokens")
-            return compressed
-
-        # 还是太长，递归压缩（减少保留的最近组数量）
-        logger.warning(f"Context still large ({compressed_tokens} tokens), compressing further...")
-        compressed = await self._compress_further(compressed, soft_limit)
-
-        # === 硬保底：无论如何保证不超过 hard_limit ===
-        return self._hard_truncate_if_needed(compressed, hard_limit)
+        return result
 
     async def _compress_large_tool_results(
         self, messages: list[dict], threshold: int = LARGE_TOOL_RESULT_THRESHOLD
@@ -2775,8 +2654,15 @@ search_github → install_skill → 使用
             gateway=None,  # CLI 无 Gateway
         )
 
-        # 记录 Assistant 响应到 Session
-        self._cli_session.add_message("assistant", response)
+        # 记录 Assistant 响应到 Session（追加工具执行摘要）
+        _cli_save_text = response
+        try:
+            _cli_tool_summary = self.build_tool_trace_summary()
+            if _cli_tool_summary:
+                _cli_save_text += _cli_tool_summary
+        except Exception:
+            pass
+        self._cli_session.add_message("assistant", _cli_save_text)
 
         # 同步更新旧属性（保持向后兼容：conversation_history 属性、/status 命令等依赖）
         self._conversation_history.append(
@@ -2929,18 +2815,17 @@ search_github → install_skill → 使用
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
+                if messages and messages[-1]["role"] == role:
+                    messages[-1]["content"] += "\n" + content
+                else:
+                    messages.append({"role": role, "content": content})
 
-        # 上下文边界标记
-        if messages:
-            messages.append({
-                "role": "user",
-                "content": "[上下文结束，以下是用户的最新消息]",
-            })
-            messages.append({
-                "role": "assistant",
-                "content": "好的，我已了解之前的对话上下文。请告诉我你现在的需求。",
-            })
+        # 上下文连续标记（合并到当前用户消息前缀，避免插入假 assistant 回复破坏对话连贯性）
+        _has_history = bool(messages)
+        logger.debug(
+            f"[Session:{session_id}] _prepare_session_context: "
+            f"{len(messages)} history msgs, has_history={_has_history}"
+        )
 
         # 当前用户消息（支持多模态）
         pending_images = session.get_metadata("pending_images") if session else None
@@ -3015,6 +2900,13 @@ search_github → install_skill → 使用
                                 logger.warning(f"[Session:{session_id}] Online STT failed: {e}")
                 # Tier 3: 本地 Whisper（已由 Gateway 处理，transcription 已在 input_text 中）
                 # 不需要额外操作
+
+        # 如果有历史消息，给当前用户消息加上连续提示前缀
+        if _has_history and compiled_message:
+            compiled_message = (
+                "[以上是之前的对话历史，请基于这些上下文继续对话。以下是我的最新消息：]\n"
+                + compiled_message
+            )
 
         # Desktop Chat 附件处理（与 IM 的 pending_images 对齐）
         if attachments and not pending_images:
@@ -3129,12 +3021,14 @@ search_github → install_skill → 使用
         3. 记录 assistant 响应到 memory
         4. 清理临时状态
         """
+        # 0. 快照当前 trace（防止并发会话覆盖 _last_react_trace）
+        _trace_snapshot = list(getattr(self.reasoning_engine, "_last_react_trace", None) or [])
+        self._last_finalized_trace = _trace_snapshot
+
         # 1. 思维链摘要 → session metadata
         if session:
             try:
-                chain_summary = self._build_chain_summary(
-                    self.reasoning_engine._last_react_trace
-                )
+                chain_summary = self._build_chain_summary(_trace_snapshot)
                 if chain_summary:
                     session.set_metadata("_last_chain_summary", chain_summary)
             except Exception as e:
@@ -3146,8 +3040,24 @@ search_github → install_skill → 使用
             asyncio.create_task(self._do_task_retrospect_background(task_monitor, session_id))
             logger.info(f"[Session:{session_id}] Task retrospect scheduled (background)")
 
-        # 3. Memory: 记录 assistant 响应
-        self.memory_manager.record_turn("assistant", response_text)
+        # 3. Memory: 记录 assistant 响应（含工具调用数据）
+        _trace = _trace_snapshot
+        _all_tool_calls: list[dict] = []
+        _all_tool_results: list[dict] = []
+        for _it in _trace:
+            _all_tool_calls.extend(_it.get("tool_calls", []))
+            _all_tool_results.extend(_it.get("tool_results", []))
+        logger.debug(
+            f"[Session:{session_id}] record_turn: "
+            f"text={len(response_text)} chars, "
+            f"tool_calls={len(_all_tool_calls)}, tool_results={len(_all_tool_results)}, "
+            f"trace_iterations={len(_trace)}"
+        )
+        self.memory_manager.record_turn(
+            "assistant", response_text,
+            tool_calls=_all_tool_calls,
+            tool_results=_all_tool_results,
+        )
         try:
             logger.info(f"[Session:{session_id}] Agent: {response_text}")
         except (UnicodeEncodeError, OSError):
@@ -3167,6 +3077,14 @@ search_github → install_skill → 使用
                     logger.info(f"[Session:{session_id}] Plan auto-closed at finalize")
             except Exception as e:
                 logger.debug(f"[Plan] auto_close_plan failed: {e}")
+
+            # 及时结束 memory session，触发记忆提取
+            try:
+                task_desc = response_text[:200] if response_text else "task completed"
+                self.memory_manager.end_session(task_desc, success=True)
+                logger.debug(f"[Session:{session_id}] memory_manager.end_session() called")
+            except Exception as e:
+                logger.debug(f"[Session:{session_id}] memory end_session failed: {e}")
 
         # 5. Cleanup（总是执行，放在 finally 中由调用方保证）
         # 注意：此方法不做 cleanup，cleanup 统一在 _cleanup_session_state() 中
@@ -3450,14 +3368,13 @@ search_github → install_skill → 使用
                     _reply_text += event.get("content", "")
                 yield event
 
-            # === 共享收尾 ===
-            if _reply_text:
-                await self._finalize_session(
-                    response_text=_reply_text,
-                    session=session,
-                    session_id=session_id,
-                    task_monitor=task_monitor,
-                )
+            # === 共享收尾（始终执行，即使回复文本为空也要记录 memory/trace） ===
+            await self._finalize_session(
+                response_text=_reply_text,
+                session=session,
+                session_id=session_id,
+                task_monitor=task_monitor,
+            )
 
         except Exception as e:
             logger.error(f"chat_with_session_stream error: {e}", exc_info=True)
@@ -3478,6 +3395,53 @@ search_github → install_skill → 使用
             conversation_id = ""
         return conversation_id or session_id
 
+    def build_tool_trace_summary(self) -> str:
+        """
+        从最新的 react_trace 生成工具执行摘要文本。
+
+        返回形如:
+          [执行摘要]
+          - tool_name({key: val}) → result_hint...
+
+        供 session 保存 assistant 消息时追加，确保下一轮 LLM 能看到上一轮做了什么。
+        空字符串表示无工具调用。
+        """
+        trace = getattr(self, "_last_finalized_trace", None) or \
+            getattr(self.reasoning_engine, "_last_react_trace", None) or []
+        if not trace:
+            return ""
+        lines: list[str] = []
+        for it in trace:
+            for tc in it.get("tool_calls", []):
+                name = tc.get("name", "")
+                if not name:
+                    continue
+                tc_input = tc.get("input", {})
+                param_hint = ""
+                if isinstance(tc_input, dict):
+                    kv = {
+                        k: (str(v)[:80] + "..." if len(str(v)) > 80 else str(v))
+                        for k, v in list(tc_input.items())[:3]
+                    }
+                    param_hint = str(kv) if kv else ""
+                result_hint = ""
+                for tr in it.get("tool_results", []):
+                    if tr.get("tool_use_id") == tc.get("id", ""):
+                        raw = str(tr.get("result_content", tr.get("result_preview", "")))
+                        result_hint = raw[:120].replace("\n", " ")
+                        if len(raw) > 120:
+                            result_hint += "..."
+                        break
+                line = f"- {name}"
+                if param_hint:
+                    line += f"({param_hint})"
+                if result_hint:
+                    line += f" → {result_hint}"
+                lines.append(line)
+        if not lines:
+            return ""
+        return "\n\n[执行摘要]\n" + "\n".join(lines)
+
     def _build_chain_summary(self, react_trace: list[dict]) -> list[dict] | None:
         """
         从 ReAct trace 构建思维链摘要（用于 IM 消息 metadata）。
@@ -3494,7 +3458,7 @@ search_github → install_skill → 使用
                 "tools": [
                     {
                         "name": tc.get("name", ""),
-                        "input_preview": str(tc.get("input_preview", ""))[:80],
+                        "input_preview": str(tc.get("input", tc.get("input_preview", "")))[:80],
                     }
                     for tc in t.get("tool_calls", [])
                 ],

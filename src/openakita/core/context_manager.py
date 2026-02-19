@@ -125,20 +125,31 @@ class ContextManager:
         return max(int(chinese_tokens + english_tokens), 1)
 
     def estimate_messages_tokens(self, messages: list[dict]) -> int:
-        """估算消息列表的 token 数量"""
-        try:
-            messages_text = json.dumps(messages, ensure_ascii=False, default=str)
-            return max(int(len(messages_text) / 2), 1)
-        except Exception:
-            total = 0
-            for msg in messages:
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    total += self.estimate_tokens(content)
-                elif isinstance(content, list):
-                    total += self.estimate_tokens(json.dumps(content, ensure_ascii=False, default=str))
-                total += 4
-            return total
+        """
+        估算消息列表的 token 数量。
+
+        对每条消息的 content 使用与 estimate_tokens 相同的中英文感知算法，
+        并为每条消息加固定结构开销（role / tool_use_id 等约 10 tokens）。
+        """
+        total = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total += self.estimate_tokens(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text", "") or item.get("content", "")
+                        if isinstance(text, str) and text:
+                            total += self.estimate_tokens(text)
+                        else:
+                            total += self.estimate_tokens(
+                                json.dumps(item, ensure_ascii=False, default=str)
+                            )
+                    elif isinstance(item, str):
+                        total += self.estimate_tokens(item)
+            total += 10  # 每条消息的结构开销
+        return max(total, 1)
 
     @staticmethod
     def group_messages(messages: list[dict]) -> list[list[dict]]:
@@ -249,6 +260,11 @@ class ContextManager:
         soft_limit = int(hard_limit * 0.7)
 
         current_tokens = self.estimate_messages_tokens(messages)
+
+        logger.debug(
+            f"[Compress] Check: {len(messages)} msgs, ~{current_tokens} tokens, "
+            f"soft_limit={soft_limit}, hard_limit={hard_limit}"
+        )
 
         if current_tokens <= soft_limit:
             return messages

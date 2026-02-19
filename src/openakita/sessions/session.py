@@ -35,7 +35,7 @@ class SessionConfig:
     可覆盖全局配置，实现会话级别的定制
     """
 
-    max_history: int = 50  # 最大历史消息数
+    max_history: int = 100  # 最大历史消息数
     timeout_minutes: int = 30  # 超时时间（分钟）
     language: str = "zh"  # 语言
     model: str | None = None  # 覆盖默认模型
@@ -272,10 +272,36 @@ class Session:
             self._truncate_history()
 
     def _truncate_history(self) -> None:
-        """截断历史消息"""
-        keep_count = self.config.max_history // 2
-        self.context.messages = self.context.messages[-keep_count:]
-        logger.debug(f"Session {self.id}: truncated history to {keep_count} messages")
+        """截断历史消息，保留 75%，对丢弃部分生成简要摘要插入头部"""
+        keep_count = int(self.config.max_history * 3 / 4)
+        messages = self.context.messages
+        dropped = messages[:-keep_count]
+        kept = messages[-keep_count:]
+
+        summary_parts: list[str] = []
+        for msg in dropped:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, str) and content:
+                preview = content[:80].replace("\n", " ")
+                if len(content) > 80:
+                    preview += "..."
+                summary_parts.append(f"{role}: {preview}")
+        if summary_parts:
+            summary_text = (
+                "[早期对话摘要（已截断的消息概要）]\n"
+                + "\n".join(summary_parts[-20:])  # 最多保留 20 条摘要行
+            )
+            # 确保消息交替：如果 kept 的第一条已是 user，用 assistant 占位分隔
+            if kept and kept[0].get("role") == "user":
+                kept.insert(0, {"role": "assistant", "content": "好的，我已了解之前的对话概要。"})
+            kept.insert(0, {"role": "user", "content": summary_text})
+
+        self.context.messages = kept
+        logger.debug(
+            f"Session {self.id}: truncated history — "
+            f"dropped {len(dropped)}, kept {len(kept)} messages"
+        )
 
     def to_dict(self) -> dict:
         """序列化"""
@@ -330,7 +356,7 @@ class Session:
             last_active=datetime.fromisoformat(data["last_active"]),
             context=SessionContext.from_dict(data.get("context", {})),
             config=SessionConfig(
-                max_history=config_data.get("max_history", 50),
+                max_history=config_data.get("max_history", 100),
                 timeout_minutes=config_data.get("timeout_minutes", 30),
                 language=config_data.get("language", "zh"),
                 model=config_data.get("model"),

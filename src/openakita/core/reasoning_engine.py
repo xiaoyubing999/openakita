@@ -405,6 +405,7 @@ class ReasoningEngine:
             最终响应文本
         """
         self._last_exit_reason = "normal"
+        self._last_react_trace = []
 
         _session_key = conversation_id or ""
         state = self._state.get_task_for_session(_session_key) if _session_key else self._state.current_task
@@ -675,7 +676,7 @@ class ReasoningEngine:
                     {
                         "name": tc.get("name"),
                         "id": tc.get("id"),
-                        "input_preview": str(tc.get("input", {}))[:500],
+                        "input": tc.get("input", {}),
                     }
                     for tc in (decision.tool_calls or [])
                 ],
@@ -911,6 +912,7 @@ class ReasoningEngine:
                         })
                         react_trace.append(_iter_trace)
                         self._save_react_trace(react_trace, conversation_id, session_type, "waiting_user", _trace_started_at)
+                        self._last_exit_reason = "ask_user"
                         logger.info(
                             f"[ReAct] === WAITING_USER (CLI) after {iteration+1} iterations ==="
                         )
@@ -988,11 +990,11 @@ class ReasoningEngine:
                 except ValueError:
                     pass
 
-                # 收集工具结果到 trace
+                # 收集工具结果到 trace（保存完整内容，不截断）
                 _iter_trace["tool_results"] = [
                     {
                         "tool_use_id": tr.get("tool_use_id", ""),
-                        "result_preview": str(tr.get("content", ""))[:1000],
+                        "result_content": str(tr.get("content", "")),
                     }
                     for tr in tool_results
                     if isinstance(tr, dict)
@@ -1123,6 +1125,7 @@ class ReasoningEngine:
         """
         tools = tools or []
         self._last_exit_reason = "normal"
+        self._last_react_trace = []
 
         react_trace: list[dict] = []
         _trace_started_at = datetime.now().isoformat()
@@ -1447,7 +1450,7 @@ class ReasoningEngine:
                         {
                             "name": tc.get("name"),
                             "id": tc.get("id"),
-                            "input_preview": str(tc.get("input", {}))[:500],
+                            "input": tc.get("input", {}),
                         }
                         for tc in (decision.tool_calls or [])
                     ],
@@ -1774,11 +1777,11 @@ class ReasoningEngine:
                             is_error = any(m in r_content for m in ["❌", "⚠️ 工具执行错误", "错误类型:"])
                             self._record_tool_result(t_name, success=not is_error)
 
-                    # 收集工具结果到 trace
+                    # 收集工具结果到 trace（保存完整内容，不截断）
                     _iter_trace["tool_results"] = [
                         {
                             "tool_use_id": tr.get("tool_use_id", ""),
-                            "result_preview": str(tr.get("content", ""))[:1000],
+                            "result_content": str(tr.get("content", "")),
                         }
                         for tr in tool_results_for_msg
                     ]
@@ -2034,6 +2037,14 @@ class ReasoningEngine:
         self._last_react_trace = react_trace or []
         if working_messages is not None:
             self._last_working_messages = working_messages
+
+        _tc_count = sum(len(t.get("tool_calls", [])) for t in (react_trace or []))
+        _tr_count = sum(len(t.get("tool_results", [])) for t in (react_trace or []))
+        logger.debug(
+            f"[ReAct] _save_react_trace: status={status}, "
+            f"iterations={len(react_trace or [])}, "
+            f"tool_calls={_tc_count}, tool_results={_tr_count}"
+        )
 
         if not react_trace:
             return

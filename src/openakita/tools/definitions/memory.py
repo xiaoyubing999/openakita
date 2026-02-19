@@ -5,6 +5,7 @@ Memory 工具定义
 - add_memory: 记录重要信息
 - search_memory: 搜索相关记忆
 - get_memory_stats: 获取记忆统计
+- search_conversation_traces: 搜索完整对话历史（含工具调用和结果）
 """
 
 MEMORY_TOOLS = [
@@ -79,5 +80,34 @@ MEMORY_TOOLS = [
 - 按类型分布
 - 按重要性分布""",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "search_conversation_traces",
+        "category": "Memory",
+        "description": "Search full conversation history including tool calls and results by keyword. Use when you need to recall specific details of what you did in past conversations - what tools were called, what parameters were used, what results were returned. Searches both conversation history (JSONL) and reasoning traces (JSON). Uses keyword matching so provide specific terms.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "搜索关键词（在对话内容、工具名、工具参数、工具结果中匹配）",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "限定搜索某个会话 ID（可选，不填则搜索所有会话）",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "最大返回条数（默认 10）",
+                    "default": 10,
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "搜索最近几天的记录（默认 7）",
+                    "default": 7,
+                },
+            },
+            "required": ["keyword"],
+        },
     },
 ]
