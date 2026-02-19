@@ -154,12 +154,17 @@ class TestEnhancedQuery:
 
     def test_empty_recent(self, engine):
         enhanced = engine._build_enhanced_query("query", None)
-        assert enhanced == "query"
+        assert "query" in enhanced
 
     def test_truncates_long_messages(self, engine):
         recent = [{"role": "user", "content": "x" * 500}]
         enhanced = engine._build_enhanced_query("q", recent)
         assert len(enhanced) < 200
+
+    def test_keywords_appended(self, engine):
+        enhanced = engine._build_enhanced_query("我要看猫", search_keywords=["猫", "宠物"])
+        assert "猫" in enhanced
+        assert "宠物" in enhanced
 
 
 class TestMergeDedup:
@@ -177,6 +182,146 @@ class TestMergeDedup:
         assert ids == {"shared", "a-only", "b-only"}
         shared = next(c for c in merged if c.memory_id == "shared")
         assert shared.relevance == 0.8
+
+
+class TestQueryDecomposition:
+    """测试查询拆解: LLM 降级到规则."""
+
+    def test_rules_extracts_chinese_keywords(self, engine):
+        result = engine._decompose_with_rules("那天我发给你的那张猫的照片给我一下")
+        assert len(result["keywords"]) >= 1
+        kw_text = " ".join(result["keywords"])
+        assert "猫" in kw_text or "照片" in kw_text
+
+    def test_rules_detects_file_intent(self, engine):
+        result = engine._decompose_with_rules("把上次的报告文件发给我")
+        assert result["intent"] == "search_file"
+
+    def test_rules_extracts_filenames(self, engine):
+        result = engine._decompose_with_rules("找一下 storage.py 这个文件")
+        kw_text = " ".join(result["keywords"])
+        assert "storage.py" in kw_text
+
+    def test_rules_extracts_paths(self, engine):
+        result = engine._decompose_with_rules("项目在 D:\\coder\\myagent")
+        kw_text = " ".join(result["keywords"])
+        assert "D:\\coder\\myagent" in kw_text
+
+    def test_rules_deduplicates(self, engine):
+        result = engine._decompose_with_rules("Python Python 好语言")
+        lower_kws = [kw.lower() for kw in result["keywords"]]
+        assert lower_kws.count("python") == 1
+
+    def test_rules_max_6_keywords(self, engine):
+        result = engine._decompose_with_rules(
+            "这是一段很长的话包含很多词语来测试关键词数量限制功能是否正常工作"
+        )
+        assert len(result["keywords"]) <= 6
+
+    def test_rules_short_query(self, engine):
+        result = engine._decompose_with_rules("好")
+        assert result["keywords"] == ["好"]
+        assert result["intent"] == "general"
+
+    def test_rules_general_intent(self, engine):
+        result = engine._decompose_with_rules("Python 3.12 有什么新特性")
+        assert result["intent"] == "general"
+
+    def test_decompose_without_brain_uses_rules(self, engine):
+        result = engine._decompose_query("上次的合同文件")
+        assert "keywords" in result
+        assert "intent" in result
+        assert result["intent"] == "search_file"
+
+    def test_decompose_caches_result(self, engine):
+        engine._decompose_cache.clear()
+        r1 = engine._decompose_query("测试缓存")
+        r2 = engine._decompose_query("测试缓存")
+        assert r1 is r2
+
+    def test_decompose_empty_query(self, engine):
+        result = engine._decompose_query("")
+        assert result["keywords"] == [""]
+        assert result["intent"] == "general"
+
+
+class TestAttachmentSearchTerms:
+    def test_filters_media_stop_words(self):
+        terms = RetrievalEngine._get_attachment_search_terms(
+            "给我那张猫的照片", ["猫", "照片"]
+        )
+        assert "猫" in terms
+        assert "照片" not in terms
+
+    def test_fallback_to_raw_split(self):
+        terms = RetrievalEngine._get_attachment_search_terms(
+            "橘猫沙发上", None
+        )
+        assert len(terms) >= 1
+
+    def test_returns_raw_if_nothing_extracted(self):
+        terms = RetrievalEngine._get_attachment_search_terms("的", None)
+        assert len(terms) >= 1
+
+
+class TestDecomposeWithLLM:
+    """测试 LLM 查询拆解 (使用 SimpleMockBrain)."""
+
+    def test_llm_decompose_json(self, store):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class _Resp:
+            content: str = ""
+
+        class _Brain:
+            async def think_lightweight(self, prompt, **kw):
+                return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
+
+        engine = RetrievalEngine(store, brain=_Brain())
+        result = engine._decompose_query("那张橘猫在沙发上的照片")
+        assert result["keywords"] == ["橘猫", "沙发"]
+        assert result["intent"] == "search_file"
+
+    def test_llm_decompose_malformed_fallback(self, store):
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Resp:
+            content: str = ""
+
+        class _Brain:
+            async def think_lightweight(self, prompt, **kw):
+                return _Resp(content="not json!")
+
+        engine = RetrievalEngine(store, brain=_Brain())
+        result = engine._decompose_query("那张橘猫在沙发上的照片")
+        assert "keywords" in result
+        assert result["intent"] == "search_file"
+
+    def test_llm_e2e_attachment_retrieval(self, store):
+        """LLM 拆解 → 逐关键词搜索 → 找到附件."""
+        from dataclasses import dataclass
+
+        store.save_attachment(Attachment(
+            id="att-cat-llm",
+            filename="cat.jpg",
+            mime_type="image/jpeg",
+            description="一只橘猫趴在沙发上",
+            direction=AttachmentDirection.INBOUND,
+        ))
+
+        @dataclass
+        class _Resp:
+            content: str = ""
+
+        class _Brain:
+            async def think_lightweight(self, prompt, **kw):
+                return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
+
+        engine = RetrievalEngine(store, brain=_Brain())
+        result = engine.retrieve("那天我发给你的那张猫的照片给我一下")
+        assert "cat.jpg" in result
 
 
 class TestScoringHelpers:

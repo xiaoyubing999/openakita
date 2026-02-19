@@ -90,8 +90,8 @@ class MemoryManager:
             api_model=embedding_api_model,
         )
 
-        # v2: Retrieval Engine
-        self.retrieval_engine = RetrievalEngine(self.store)
+        # v2: Retrieval Engine (with brain for LLM query decomposition)
+        self.retrieval_engine = RetrievalEngine(self.store, brain=brain)
 
         # v1 compat: in-memory cache
         self.memories_file = self.data_dir / "memories.json"
