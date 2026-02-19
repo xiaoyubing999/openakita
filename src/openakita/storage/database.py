@@ -552,8 +552,8 @@ class Database:
 
     async def get_token_usage_summary(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        start_time: str | datetime,
+        end_time: str | datetime,
         group_by: str = "endpoint_name",
         endpoint_name: str | None = None,
         operation_type: str | None = None,
@@ -564,7 +564,10 @@ class Database:
             group_by = "endpoint_name"
 
         where = ["timestamp >= ?", "timestamp <= ?"]
-        params: list[Any] = [start_time.isoformat(), end_time.isoformat()]
+        params: list[Any] = [
+            start_time if isinstance(start_time, str) else start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            end_time if isinstance(end_time, str) else end_time.strftime("%Y-%m-%d %H:%M:%S"),
+        ]
         if endpoint_name:
             where.append("endpoint_name = ?")
             params.append(endpoint_name)
@@ -592,8 +595,8 @@ class Database:
 
     async def get_token_usage_timeline(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        start_time: str | datetime,
+        end_time: str | datetime,
         interval: str = "hour",
         endpoint_name: str | None = None,
     ) -> list[dict]:
@@ -602,7 +605,10 @@ class Database:
         time_fmt = fmt_map.get(interval, "%Y-%m-%d %H:00")
 
         where = ["timestamp >= ?", "timestamp <= ?"]
-        params: list[Any] = [start_time.isoformat(), end_time.isoformat()]
+        params: list[Any] = [
+            start_time if isinstance(start_time, str) else start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            end_time if isinstance(end_time, str) else end_time.strftime("%Y-%m-%d %H:%M:%S"),
+        ]
         if endpoint_name:
             where.append("endpoint_name = ?")
             params.append(endpoint_name)
@@ -624,8 +630,8 @@ class Database:
 
     async def get_token_usage_sessions(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        start_time: str | datetime,
+        end_time: str | datetime,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -647,16 +653,16 @@ class Database:
             ORDER BY last_call DESC
             LIMIT ? OFFSET ?
         """
-        cursor = await self._connection.execute(
-            sql, (start_time.isoformat(), end_time.isoformat(), limit, offset)
-        )
+        s = start_time if isinstance(start_time, str) else start_time.strftime("%Y-%m-%d %H:%M:%S")
+        e = end_time if isinstance(end_time, str) else end_time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._connection.execute(sql, (s, e, limit, offset))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
     async def get_token_usage_total(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        start_time: str | datetime,
+        end_time: str | datetime,
     ) -> dict:
         """获取总计 token 用量"""
         sql = """
@@ -670,8 +676,8 @@ class Database:
             FROM token_usage
             WHERE timestamp >= ? AND timestamp <= ?
         """
-        cursor = await self._connection.execute(
-            sql, (start_time.isoformat(), end_time.isoformat())
-        )
+        s = start_time if isinstance(start_time, str) else start_time.strftime("%Y-%m-%d %H:%M:%S")
+        e = end_time if isinstance(end_time, str) else end_time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._connection.execute(sql, (s, e))
         row = await cursor.fetchone()
         return dict(row) if row else {}

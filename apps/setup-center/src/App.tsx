@@ -1194,6 +1194,7 @@ export function App() {
   const [detectedProcesses, setDetectedProcesses] = useState<Array<{ pid: number; cmd: string }>>([]);
   const [serviceLog, setServiceLog] = useState<{ path: string; content: string; truncated: boolean } | null>(null);
   const [serviceLogError, setServiceLogError] = useState<string | null>(null);
+  const serviceLogRef = useRef<HTMLPreElement>(null);
   const [appVersion, setAppVersion] = useState<string>("");
   const [openakitaVersion, setOpenakitaVersion] = useState<string>("");
 
@@ -1489,7 +1490,7 @@ export function App() {
       unlisten = await listen("open_status", async () => {
         setView("status");
         try {
-          await refreshStatus();
+          await refreshStatus(undefined, undefined, true);
         } catch {
           // ignore
         }
@@ -1560,7 +1561,7 @@ export function App() {
         setView("status");
         setError(msg);
         try {
-          await refreshStatus();
+          await refreshStatus(undefined, undefined, true);
         } catch {
           // ignore
         }
@@ -4154,6 +4155,11 @@ export function App() {
     };
   }, [view, currentWorkspaceId, serviceStatus?.running, dataMode]);
 
+  useEffect(() => {
+    const el = serviceLogRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [serviceLog?.content]);
+
   // Skills selection default sync (only when user hasn't changed it)
   useEffect(() => {
     if (!skillsDetail) return;
@@ -4607,7 +4613,7 @@ export function App() {
               <span className="statusCardLabel">{t("status.log")}</span>
               <button className="btnSmall" onClick={() => { const wsId = effectiveWsId || (dataMode === "remote" ? "__remote__" : null); if (wsId) refreshServiceLog(wsId); }}>{t("topbar.refresh")}</button>
             </div>
-            <pre className="logPre">{(serviceLog?.content || "").trim() || t("status.noLog")}</pre>
+            <pre ref={serviceLogRef} className="logPre">{(serviceLog?.content || "").trim() || t("status.noLog")}</pre>
           </div>
         )}
       </>
@@ -9032,7 +9038,7 @@ export function App() {
           <div className={`navItem ${view === "modules" ? "navItemActive" : ""}`} onClick={() => { setView("modules"); obLoadModules(); }} role="button" tabIndex={0} title={t("sidebar.modules")} style={disabledViews.includes("modules") ? { opacity: 0.4 } : undefined}>
             <IconGear size={16} /> {!sidebarCollapsed && <span>{t("sidebar.modules")}</span>}
           </div>
-          <div className={`navItem ${view === "status" ? "navItemActive" : ""}`} onClick={async () => { setView("status"); try { await refreshStatus(); } catch { /* ignore */ } }} role="button" tabIndex={0} title={t("sidebar.status")}>
+          <div className={`navItem ${view === "status" ? "navItemActive" : ""}`} onClick={async () => { setView("status"); try { await refreshStatus(undefined, undefined, true); } catch { /* ignore */ } }} role="button" tabIndex={0} title={t("sidebar.status")}>
             <IconStatus size={16} /> {!sidebarCollapsed && <span>{t("sidebar.status")}</span>}
           </div>
           <div className={`navItem ${view === "token_stats" ? "navItemActive" : ""}`} onClick={() => setView("token_stats")} role="button" tabIndex={0} title={t("sidebar.tokenStats", "Token 统计")} style={disabledViews.includes("token_stats") ? { opacity: 0.4 } : undefined}>
@@ -9203,7 +9209,7 @@ export function App() {
                 </button>
               </>
             )}
-            <button className="topbarRefreshBtn" onClick={async () => { await refreshAll(); try { await refreshStatus(); } catch {} }} disabled={!!busy} title={t("topbar.refresh")}>
+            <button className="topbarRefreshBtn" onClick={async () => { await refreshAll(); try { await refreshStatus(undefined, undefined, true); } catch {} }} disabled={!!busy} title={t("topbar.refresh")}>
               <IconRefresh size={14} />
             </button>
             <button

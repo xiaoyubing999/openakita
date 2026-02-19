@@ -93,17 +93,19 @@ export function TokenStatsView({
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [fetchError, setFetchError] = useState(false);
+
   const fetchAll = useCallback(async () => {
-    if (!serviceRunning) return;
     setLoading(true);
+    setFetchError(false);
     try {
       const base = `${apiBaseUrl}/api/stats/tokens`;
       const [totalRes, epRes, opRes, tlRes, sessRes] = await Promise.all([
-        fetch(`${base}/total?period=${period}`),
-        fetch(`${base}/summary?period=${period}&group_by=endpoint_name`),
-        fetch(`${base}/summary?period=${period}&group_by=operation_type`),
-        fetch(`${base}/timeline?period=${period}&interval=${period === "1d" ? "hour" : "day"}`),
-        fetch(`${base}/sessions?period=${period}&limit=20`),
+        fetch(`${base}/total?period=${period}`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${base}/summary?period=${period}&group_by=endpoint_name`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${base}/summary?period=${period}&group_by=operation_type`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${base}/timeline?period=${period}&interval=${period === "1d" ? "hour" : "day"}`, { signal: AbortSignal.timeout(5000) }),
+        fetch(`${base}/sessions?period=${period}&limit=20`, { signal: AbortSignal.timeout(5000) }),
       ]);
       const [totalJ, epJ, opJ, tlJ, sessJ] = await Promise.all([
         totalRes.json(), epRes.json(), opRes.json(), tlRes.json(), sessRes.json(),
@@ -113,18 +115,22 @@ export function TokenStatsView({
       setByOp(opJ.data || []);
       setTimeline(tlJ.data || []);
       setSessions(sessJ.data || []);
-    } catch (e) {
-      console.warn("TokenStats fetch error:", e);
+    } catch {
+      setFetchError(true);
     } finally {
       setLoading(false);
     }
-  }, [serviceRunning, apiBaseUrl, period]);
+  }, [apiBaseUrl, period]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  useEffect(() => {
+    if (serviceRunning && fetchError) fetchAll();
+  }, [serviceRunning, fetchError, fetchAll]);
+
   const maxTl = Math.max(...timeline.map((r) => r.total_tokens), 1);
 
-  if (!serviceRunning) {
+  if (fetchError && !serviceRunning) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40, opacity: 0.5 }}>
         {t("tokenStats.serviceNotRunning", "服务未运行，无法查看统计")}

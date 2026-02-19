@@ -38,11 +38,19 @@ def _parse_range(
     start: str | None,
     end: str | None,
     period: str | None,
-) -> tuple[datetime, datetime]:
-    """Resolve time range from explicit start/end or preset period."""
-    now = datetime.now()
+) -> tuple[str, str]:
+    """Resolve time range and return as SQLite-compatible UTC timestamp strings.
+
+    SQLite CURRENT_TIMESTAMP stores UTC in 'YYYY-MM-DD HH:MM:SS' format (space separator).
+    We must query with the same format and timezone to get correct string comparisons.
+    """
     if start and end:
-        return datetime.fromisoformat(start), datetime.fromisoformat(end)
+        s = datetime.fromisoformat(start)
+        e = datetime.fromisoformat(end)
+        return s.strftime("%Y-%m-%d %H:%M:%S"), e.strftime("%Y-%m-%d %H:%M:%S")
+
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     delta_map = {
         "1d": timedelta(days=1),
@@ -53,7 +61,8 @@ def _parse_range(
         "1y": timedelta(days=365),
     }
     delta = delta_map.get(period or "1d", timedelta(days=1))
-    return now - delta, now
+    start_utc = now_utc - delta
+    return start_utc.strftime("%Y-%m-%d %H:%M:%S"), now_utc.strftime("%Y-%m-%d %H:%M:%S")
 
 
 @router.get("/summary")
@@ -69,15 +78,15 @@ async def summary(
     db = await _get_db()
     if db is None:
         return {"error": "database not available"}
-    start_dt, end_dt = _parse_range(start, end, period)
+    start_str, end_str = _parse_range(start, end, period)
     rows = await db.get_token_usage_summary(
-        start_time=start_dt,
-        end_time=end_dt,
+        start_time=start_str,
+        end_time=end_str,
         group_by=group_by,
         endpoint_name=endpoint_name,
         operation_type=operation_type,
     )
-    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "group_by": group_by, "data": rows}
+    return {"start": start_str, "end": end_str, "group_by": group_by, "data": rows}
 
 
 @router.get("/timeline")
@@ -92,14 +101,14 @@ async def timeline(
     db = await _get_db()
     if db is None:
         return {"error": "database not available"}
-    start_dt, end_dt = _parse_range(start, end, period)
+    start_str, end_str = _parse_range(start, end, period)
     rows = await db.get_token_usage_timeline(
-        start_time=start_dt,
-        end_time=end_dt,
+        start_time=start_str,
+        end_time=end_str,
         interval=interval,
         endpoint_name=endpoint_name,
     )
-    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "interval": interval, "data": rows}
+    return {"start": start_str, "end": end_str, "interval": interval, "data": rows}
 
 
 @router.get("/sessions")
@@ -114,11 +123,11 @@ async def sessions(
     db = await _get_db()
     if db is None:
         return {"error": "database not available"}
-    start_dt, end_dt = _parse_range(start, end, period)
+    start_str, end_str = _parse_range(start, end, period)
     rows = await db.get_token_usage_sessions(
-        start_time=start_dt, end_time=end_dt, limit=limit, offset=offset
+        start_time=start_str, end_time=end_str, limit=limit, offset=offset
     )
-    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "data": rows}
+    return {"start": start_str, "end": end_str, "data": rows}
 
 
 @router.get("/total")
@@ -131,9 +140,9 @@ async def total(
     db = await _get_db()
     if db is None:
         return {"error": "database not available"}
-    start_dt, end_dt = _parse_range(start, end, period)
-    row = await db.get_token_usage_total(start_time=start_dt, end_time=end_dt)
-    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "data": row}
+    start_str, end_str = _parse_range(start, end, period)
+    row = await db.get_token_usage_total(start_time=start_str, end_time=end_str)
+    return {"start": start_str, "end": end_str, "data": row}
 
 
 @router.get("/context")
