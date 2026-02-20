@@ -37,6 +37,39 @@ terms. No endorsement by Anthropic is implied.
 
 ---
 
+## Browser Automation
+
+The following packages are bundled for browser automation:
+
+### Playwright
+
+**Source:** https://github.com/Microsoft/playwright-python  
+**License:** Apache License 2.0  
+**Copyright:** © Microsoft Corporation
+
+Playwright enables reliable browser automation via Chromium, Firefox, and WebKit.
+The bundled package includes the Playwright Python bindings and Chromium browser binary.
+
+### browser-use
+
+**Source:** https://github.com/browser-use/browser-use  
+**License:** MIT License  
+**Copyright:** © browser-use contributors
+
+browser-use provides AI-driven browser automation, enabling LLM agents to
+interact with web pages autonomously.
+
+### LangChain OpenAI / LangChain Core
+
+**Source:** https://github.com/langchain-ai/langchain  
+**License:** MIT License  
+**Copyright:** © LangChain, Inc.
+
+LangChain Core and LangChain OpenAI adapter are used for LLM integration
+within the browser automation module.
+
+---
+
 ## Community Skills
 
 The following skills are inspired by or adapted from the

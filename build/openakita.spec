@@ -203,6 +203,27 @@ hidden_imports_core = [
     "langchain_core.messages",
     "langsmith",                # LangChain 依赖
     "pydantic_settings",        # browser-use 依赖 (已在上面声明)
+    # -- browser-use 运行时传递依赖 --
+    "pyee",                     # playwright 依赖: EventEmitter
+    "greenlet",                 # playwright 依赖: 协程桥接
+    "tiktoken",                 # langchain-openai 依赖: token 计数
+    "bubus",                    # browser-use 事件总线
+    "cdp_use",                  # browser-use CDP 协议支持
+    "browser_use_sdk",          # browser-use SDK 客户端
+    "posthog",                  # browser-use 遥测 (运行时加载)
+    "screeninfo",               # browser-use 屏幕信息检测
+    "pyotp",                    # browser-use OTP 支持
+    "markdownify",              # browser-use HTML→Markdown 转换
+    "beautifulsoup4",           # markdownify 依赖
+    "bs4",                      # beautifulsoup4 实际导入名
+    "portalocker",              # bubus 依赖: 文件锁
+    "uuid7",                    # bubus 依赖: UUID v7
+    "uuid_extensions",          # uuid7 运行时依赖
+    "simplejson",               # browser-use JSON 序列化
+    "cloudpickle",              # browser-use 序列化
+    "backoff",                  # posthog 依赖: 重试
+    "monotonic",                # posthog 依赖: 单调时钟
+    "distro",                   # posthog 依赖: Linux 发行版检测
 ]
 
 hidden_imports_full = [
@@ -272,6 +293,21 @@ excludes_core = [
     "zmq",
     "pyzmq",
     "whisper",
+    # browser-use 的 provider SDK (lazy import，我们只用 langchain_openai，其他排除)
+    "google_genai",         # Google GenAI (~50MB) — browser-use 可选
+    "google.genai",
+    "google.api_core",      # Google API Core
+    "google.auth",          # Google Auth
+    "google_auth_oauthlib",
+    "google_api_core",
+    "google_api_python_client",
+    "googleapiclient",
+    "groq",                 # Groq SDK — browser-use 可选
+    "ollama",               # Ollama SDK — browser-use 可选
+    "reportlab",            # PDF 生成 (~20MB) — browser-use 可选
+    "authlib",              # OAuth 库 — browser-use 可选
+    "inquirerpy",           # CLI 交互 — browser-use 可选
+    "langchain",            # LangChain 全量框架 (~50MB)，只需 langchain_core
     # Heavy packages not needed for core (often pulled in from global site-packages)
     "cv2",                  # OpenCV (~122MB) — not a core dependency
     "opencv_python",
