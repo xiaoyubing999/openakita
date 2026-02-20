@@ -391,10 +391,18 @@ jobs:
       - name: Publish release (remove draft flag)
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_STABLE: ${{ needs.create_release.outputs.is_stable }}
         run: |
+          LATEST_FLAG=""
+          if [ "$IS_STABLE" = "true" ]; then
+            LATEST_FLAG="--latest"
+          else
+            LATEST_FLAG="--latest=false"
+          fi
           gh release edit "${{ env.RELEASE_TAG }}" \
             --repo "${{ github.repository }}" \
-            --draft=false
+            --draft=false \
+            ${LATEST_FLAG}
 
       - name: Generate latest.json for updater
         env:
