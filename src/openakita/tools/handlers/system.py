@@ -121,49 +121,53 @@ class SystemHandler:
 
         root = settings.project_root
 
-        # 统计已安装技能数
-        skills_dir = settings.skills_path
-        skill_count = 0
-        if skills_dir.is_dir():
-            skill_count = sum(1 for d in skills_dir.iterdir() if d.is_dir())
+        # 统计已安装技能数（用户工作区目录）
+        user_skills_dir = settings.skills_path
+        user_skill_count = 0
+        if user_skills_dir.is_dir():
+            user_skill_count = sum(1 for d in user_skills_dir.iterdir() if d.is_dir())
+
+        # 项目级 skills/ 目录（开发模式）
+        project_skills_dir = root / "skills"
+        project_skill_count = 0
+        if project_skills_dir.is_dir():
+            project_skill_count = sum(1 for d in project_skills_dir.iterdir() if d.is_dir())
 
         try:
             identity_rel = settings.identity_path.relative_to(root)
         except ValueError:
             identity_rel = settings.identity_path
         try:
-            skills_rel = skills_dir.relative_to(root)
-        except ValueError:
-            skills_rel = skills_dir
-        try:
             logs_rel = settings.log_dir_path.relative_to(root)
         except ValueError:
             logs_rel = settings.log_dir_path
 
         lines = [
-            f"## 工作区路径地图",
-            f"",
+            "## 工作区路径地图",
+            "",
             f"- **项目根目录**: {root}",
+            f"- **用户数据目录**: {settings.openakita_home}",
             f"- **Identity**: {identity_rel}/ — 身份文档 (SOUL.md, AGENT.md, USER.md, MEMORY.md)",
-            f"- **Skills**: {skills_rel}/ — 已安装技能 ({skill_count} 个)",
-            f"- **Data**: data/ — 运行数据根目录",
-            f"  - sessions/ — 会话持久化",
-            f"  - memory/ — 记忆存储",
-            f"  - plans/ — 计划文件",
-            f"  - media/ — IM 媒体文件",
-            f"  - temp/ — 临时文件（可安全读写）",
-            f"  - llm_debug/ — LLM 调试日志",
-            f"  - scheduler/ — 定时任务",
-            f"  - screenshots/ — 桌面/浏览器截图",
-            f"  - generated_images/ — AI 生成的图片",
-            f"  - tool_overflow/ — 工具大输出溢出文件",
-            f"  - llm_endpoints.json — LLM 端点配置",
-            f"  - agent.db — SQLite 数据库（记忆/会话）",
+            f"- **用户技能**: {user_skills_dir}/ — 用户安装的技能 ({user_skill_count} 个)",
+            f"- **项目技能**: skills/ — 项目自带技能 ({project_skill_count} 个)" if project_skills_dir.is_dir() else None,
+            "- **Data**: data/ — 运行数据根目录",
+            "  - sessions/ — 会话持久化",
+            "  - memory/ — 记忆存储",
+            "  - plans/ — 计划文件",
+            "  - media/ — IM 媒体文件",
+            "  - temp/ — 临时文件（可安全读写）",
+            "  - llm_debug/ — LLM 调试日志",
+            "  - scheduler/ — 定时任务",
+            "  - screenshots/ — 桌面/浏览器截图",
+            "  - generated_images/ — AI 生成的图片",
+            "  - tool_overflow/ — 工具大输出溢出文件",
+            "  - llm_endpoints.json — LLM 端点配置",
+            "  - agent.db — SQLite 数据库（记忆/会话）",
             f"- **Logs**: {logs_rel}/",
             f"  - {settings.log_file_prefix}.log — 主日志（滚动，最新）",
-            f"  - error.log — 错误日志（按天滚动）",
+            "  - error.log — 错误日志（按天滚动）",
         ]
-        return "\n".join(lines)
+        return "\n".join(line for line in lines if line is not None)
 
     async def _generate_image(self, params: dict) -> str:
         """

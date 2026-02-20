@@ -984,7 +984,7 @@ class Agent:
         extra_files: list[str] | None = None,
     ) -> str:
         """
-        安装技能到本地 skills/ 目录
+        安装技能到用户技能目录 (~/.openakita/workspaces/default/skills/)
 
         支持：
         1. Git 仓库 URL (克隆并查找 SKILL.md)
@@ -1001,6 +1001,7 @@ class Agent:
         """
 
         skills_dir = settings.skills_path
+        skills_dir.mkdir(parents=True, exist_ok=True)
 
         # 判断是 Git 仓库还是文件 URL
         is_git = self._is_git_url(source)

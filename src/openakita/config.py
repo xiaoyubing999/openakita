@@ -417,9 +417,24 @@ class Settings(BaseSettings):
         return self.project_root / self.sticker_data_dir
 
     @property
+    def openakita_home(self) -> Path:
+        """用户数据根目录 ~/.openakita"""
+        return Path.home() / ".openakita"
+
+    @property
+    def user_workspace_path(self) -> Path:
+        """用户工作区路径 ~/.openakita/workspaces/default"""
+        return self.openakita_home / "workspaces" / "default"
+
+    @property
     def skills_path(self) -> Path:
-        """技能目录路径"""
-        return self.project_root / "skills"
+        """用户技能安装目录 (~/.openakita/workspaces/default/skills)
+
+        所有通过 install_skill / skill-creator 安装或创建的技能都存放在此目录。
+        该目录位于用户 home 下，打包版本也有写权限。
+        开发模式下项目级 skills/ 仍会被扫描（通过 SKILL_DIRECTORIES），但安装目标统一为此路径。
+        """
+        return self.user_workspace_path / "skills"
 
     @property
     def specs_path(self) -> Path:

@@ -94,7 +94,7 @@ class SkillManager:
         extra_files: list[str] | None = None,
     ) -> str:
         """
-        安装技能到本地 skills/ 目录。
+        安装技能到用户技能目录 (~/.openakita/workspaces/default/skills/)。
 
         支持:
         1. Git 仓库 URL
@@ -110,6 +110,7 @@ class SkillManager:
             安装结果消息
         """
         skills_dir = settings.skills_path
+        skills_dir.mkdir(parents=True, exist_ok=True)
 
         if self._is_git_url(source):
             return await self._install_from_git(source, name, subdir, skills_dir)

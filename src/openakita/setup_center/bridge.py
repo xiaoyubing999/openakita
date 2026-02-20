@@ -529,10 +529,20 @@ def _looks_like_github_shorthand(url: str) -> bool:
     return "/" in parts and len(parts.split("/")) == 2
 
 
+def _resolve_skills_dir(workspace_dir: str) -> Path:
+    """计算技能安装目录。
+
+    优先使用 Tauri 传入的 workspace_dir（支持多工作区），
+    若参数为空则回退到 ~/.openakita/workspaces/default/skills。
+    """
+    if workspace_dir and workspace_dir.strip():
+        return Path(workspace_dir).expanduser().resolve() / "skills"
+    return Path.home() / ".openakita" / "workspaces" / "default" / "skills"
+
+
 def install_skill(workspace_dir: str, url: str) -> None:
     """安装技能（从 Git URL、GitHub 简写或本地目录）"""
-    wd = Path(workspace_dir).expanduser().resolve()
-    skills_dir = wd / "skills"
+    skills_dir = _resolve_skills_dir(workspace_dir)
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     import subprocess
@@ -640,8 +650,7 @@ def uninstall_skill(workspace_dir: str, skill_name: str) -> None:
     """卸载技能"""
     import shutil
 
-    wd = Path(workspace_dir).expanduser().resolve()
-    skills_dir = wd / "skills"
+    skills_dir = _resolve_skills_dir(workspace_dir)
     target = (skills_dir / skill_name).resolve()
 
     if not target.exists():

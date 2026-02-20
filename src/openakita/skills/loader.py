@@ -36,12 +36,14 @@ def _builtin_skills_root() -> Path | None:
 SKILL_DIRECTORIES = [
     # 内置系统技能（随 pip 包分发，优先级最高）
     "__builtin__",
-    # 项目级别
+    # 用户工作区（用户安装/创建的技能，打包版本的主技能目录）
+    "~/.openakita/workspaces/default/skills",
+    # 项目级别（开发模式下仍可扫描）
     ".cursor/skills",
     ".claude/skills",
     ".codex/skills",
     "skills",
-    # 用户级别 (全局)
+    # 用户级别 (全局，兼容其他产品的技能)
     "~/.cursor/skills",
     "~/.claude/skills",
     "~/.codex/skills",
