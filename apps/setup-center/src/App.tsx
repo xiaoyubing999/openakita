@@ -6525,7 +6525,7 @@ export function App() {
                     onClick={() => setEnvDraft((d) => ({ ...d, QQBOT_MODE: m }))}>{m === "websocket" ? "WebSocket" : "Webhook"}</button>
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
                 {(envDraft["QQBOT_MODE"] || "websocket") === "websocket"
                   ? t("config.imQQBotModeWsHint")
                   : t("config.imQQBotModeWhHint")}
@@ -7360,7 +7360,7 @@ export function App() {
                     <FieldText k="WEWORK_TOKEN" label="回调 Token" placeholder="在企业微信后台「接收消息」设置中获取" />
                     <FieldText k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey" placeholder="在企业微信后台「接收消息」设置中获取" type="password" />
                     <FieldText k="WEWORK_CALLBACK_PORT" label="回调端口" placeholder="9880" />
-                    <div style={{ fontSize: 12, color: "#888", margin: "4px 0 0 0", lineHeight: 1.6 }}>
+                    <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 0 0", lineHeight: 1.6 }}>
                       💡 企业微信后台「接收消息服务器配置」的 URL 请填：<code style={{ background: "#f5f5f5", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>http://your-domain:9880/callback</code>
                     </div>
                   </>
@@ -7394,7 +7394,7 @@ export function App() {
                             onClick={() => setEnvDraft((d) => ({ ...d, QQBOT_MODE: m }))}>{m === "websocket" ? "WebSocket" : "Webhook"}</button>
                         ))}
                       </div>
-                      <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
                         {(envDraft["QQBOT_MODE"] || "websocket") === "websocket"
                           ? t("config.imQQBotModeWsHint")
                           : t("config.imQQBotModeWhHint")}
