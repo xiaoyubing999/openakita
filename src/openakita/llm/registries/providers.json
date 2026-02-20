@@ -296,5 +296,15 @@
     "supports_model_list": true,
     "supports_capability_api": false,
     "registry_class": "OpenAIRegistry"
+  },
+  {
+    "name": "云雾 API (YUNWU)",
+    "slug": "yunwu",
+    "api_type": "openai",
+    "default_base_url": "https://yunwu.ai/v1",
+    "api_key_env_suggestion": "YUNWU_API_KEY",
+    "supports_model_list": true,
+    "supports_capability_api": false,
+    "registry_class": "OpenAIRegistry"
   }
 ]
