@@ -1963,9 +1963,9 @@ export function App() {
 
   useEffect(() => {
     if (!selectedProvider) return;
-    // Coding Plan 固定为 Anthropic 兼容协议，URL 与协议一致
+    // Coding Plan：根据 provider 的 coding_plan_api_type 切换协议与 URL
     if (codingPlanMode && selectedProvider.coding_plan_base_url) {
-      setApiType("anthropic");
+      setApiType((selectedProvider.coding_plan_api_type as "openai" | "anthropic") || "anthropic");
       if (!baseUrlTouched) setBaseUrl(selectedProvider.coding_plan_base_url);
       setAddEpContextWindow(150000);
       setAddEpMaxTokens((selectedProvider as ProviderInfo).default_max_tokens ?? 8192);
