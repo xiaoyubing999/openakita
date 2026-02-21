@@ -5,7 +5,16 @@ fn main() {
     // 注意：这里生成的只是占位图标。正式发布建议用 `tauri icon` 生成完整图标集。
     ensure_placeholder_windows_icon();
 
+    ensure_resource_dir();
+
     tauri_build::build()
+}
+
+fn ensure_resource_dir() {
+    let dir = std::path::Path::new("resources").join("openakita-server");
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
 }
 
 fn ensure_placeholder_windows_icon() {
