@@ -983,7 +983,7 @@ class MessageGateway:
                     # Agent 不在处理当前用户的任务（可能空闲或在处理其他用户）
                     await self._add_interrupt_message(session_key, message)
                     logger.info(
-                        f"[Interrupt] Session mismatch: agent_session={_agent_session!r}, "
+                        f"[Interrupt] Session mismatch: resolved_sid={_resolved_sid!r}, "
                         f"interrupt_key={session_key!r}, agent_ref={'present' if _agent_ref else 'None'}, "
                         f"queued for later: {user_text[:50]}"
                     )
